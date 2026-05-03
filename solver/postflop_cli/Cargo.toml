@@ -1,0 +1,19 @@
+[package]
+name = "postflop_cli"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-or-later"
+description = "Resident CLI wrapper for postflop-solver. Communicates via stdin/stdout JSON lines."
+
+[dependencies]
+# postflop-solver: path will be adjusted at build time to point to a local clone.
+# Build instructions: see solver/README.md
+# IMPORTANT: bincode feature is intentionally excluded to avoid API incompatibility
+#            with bincode >= 2.0.0 (the library was written for 2.0.0-rc.3).
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dependencies.postflop-solver]
+path = "../../postflop-solver-local"
+default-features = false
+features = ["rayon"]

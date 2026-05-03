@@ -1,0 +1,1047 @@
+{
+  "meta": {
+    "description": "Card recognition analysis for primary screenshots",
+    "image_count": 14
+  },
+  "results": [
+    {
+      "filename": "cp_01_preflop_my_turnb.png",
+      "exists": true,
+      "hero_cards": [
+        "Td",
+        "9c"
+      ],
+      "board_cards": [],
+      "board_card_count": 0,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": true,
+            "card": "Td",
+            "rank": "T",
+            "suit": "d",
+            "rank_confidence": 0.8737424419817976
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": true,
+            "card": "9c",
+            "rank": "9",
+            "suit": "c",
+            "rank_confidence": 0.9999122638873814
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_02_preflop_not_my_turn.png",
+      "exists": true,
+      "hero_cards": [
+        "Ts",
+        null
+      ],
+      "board_cards": [],
+      "board_card_count": 0,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": true,
+            "card": "Ts",
+            "rank": "T",
+            "suit": "s",
+            "rank_confidence": 0.9993440988664624
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": true,
+            "card": null,
+            "rank": null,
+            "suit": "s",
+            "rank_confidence": null
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_03_flop_my_turn.png",
+      "exists": true,
+      "hero_cards": [
+        "3s",
+        "3c"
+      ],
+      "board_cards": [
+        "8c",
+        "7d",
+        "8d"
+      ],
+      "board_card_count": 3,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": true,
+            "card": "3s",
+            "rank": "3",
+            "suit": "s",
+            "rank_confidence": 0.9999978542339392
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": true,
+            "card": "3c",
+            "rank": "3",
+            "suit": "c",
+            "rank_confidence": 0.9388438375440842
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": true,
+            "card": "8c",
+            "rank": "8",
+            "suit": "c",
+            "rank_confidence": 0.6295379917884759
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": true,
+            "card": "7d",
+            "rank": "7",
+            "suit": "d",
+            "rank_confidence": 0.8806608424770843
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": true,
+            "card": "8d",
+            "rank": "8",
+            "suit": "d",
+            "rank_confidence": 1.0
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_04_flop_not_my_turn.png",
+      "exists": true,
+      "hero_cards": [
+        "3s",
+        "3c"
+      ],
+      "board_cards": [
+        "8c",
+        "7d",
+        "8d"
+      ],
+      "board_card_count": 3,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": true,
+            "card": "3s",
+            "rank": "3",
+            "suit": "s",
+            "rank_confidence": 0.9999978542339392
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": true,
+            "card": "3c",
+            "rank": "3",
+            "suit": "c",
+            "rank_confidence": 0.9397364535585808
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": true,
+            "card": "8c",
+            "rank": "8",
+            "suit": "c",
+            "rank_confidence": 0.6295379917884759
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": true,
+            "card": "7d",
+            "rank": "7",
+            "suit": "d",
+            "rank_confidence": 0.8806608424770843
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": true,
+            "card": "8d",
+            "rank": "8",
+            "suit": "d",
+            "rank_confidence": 1.0
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_05_turn.png",
+      "exists": true,
+      "hero_cards": [
+        "3s",
+        "3c"
+      ],
+      "board_cards": [
+        "8c",
+        "7d",
+        "8d",
+        "Ah"
+      ],
+      "board_card_count": 4,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": true,
+            "card": "3s",
+            "rank": "3",
+            "suit": "s",
+            "rank_confidence": 0.9999978542339392
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": true,
+            "card": "3c",
+            "rank": "3",
+            "suit": "c",
+            "rank_confidence": 0.9397364535585808
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": true,
+            "card": "8c",
+            "rank": "8",
+            "suit": "c",
+            "rank_confidence": 0.6295379917884759
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": true,
+            "card": "7d",
+            "rank": "7",
+            "suit": "d",
+            "rank_confidence": 0.8806608424770843
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": true,
+            "card": "8d",
+            "rank": "8",
+            "suit": "d",
+            "rank_confidence": 1.0
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": true,
+            "card": "Ah",
+            "rank": "A",
+            "suit": "h",
+            "rank_confidence": 0.9941905717942632
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_06_river.png",
+      "exists": true,
+      "hero_cards": [
+        "3s",
+        "3c"
+      ],
+      "board_cards": [
+        "8c",
+        "7d",
+        "8d",
+        "Ah",
+        "Jh"
+      ],
+      "board_card_count": 5,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": true,
+            "card": "3s",
+            "rank": "3",
+            "suit": "s",
+            "rank_confidence": 0.9999978542339392
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": true,
+            "card": "3c",
+            "rank": "3",
+            "suit": "c",
+            "rank_confidence": 0.9388438375440842
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": true,
+            "card": "8c",
+            "rank": "8",
+            "suit": "c",
+            "rank_confidence": 0.6295379917884759
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": true,
+            "card": "7d",
+            "rank": "7",
+            "suit": "d",
+            "rank_confidence": 0.8806608424770843
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": true,
+            "card": "8d",
+            "rank": "8",
+            "suit": "d",
+            "rank_confidence": 1.0
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": true,
+            "card": "Ah",
+            "rank": "A",
+            "suit": "h",
+            "rank_confidence": 0.9941905717942632
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": true,
+            "card": "Jh",
+            "rank": "J",
+            "suit": "h",
+            "rank_confidence": 0.9993277726173346
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_07_showdown.png",
+      "exists": true,
+      "hero_cards": [
+        null,
+        null
+      ],
+      "board_cards": [
+        "4s",
+        "3d",
+        "5d",
+        "Js",
+        "8c"
+      ],
+      "board_card_count": 5,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": true,
+            "card": "4s",
+            "rank": "4",
+            "suit": "s",
+            "rank_confidence": 0.9999897480273745
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": true,
+            "card": "3d",
+            "rank": "3",
+            "suit": "d",
+            "rank_confidence": 0.9999982118614561
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": true,
+            "card": "5d",
+            "rank": "5",
+            "suit": "d",
+            "rank_confidence": 0.9996365639036107
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": true,
+            "card": "Js",
+            "rank": "J",
+            "suit": "s",
+            "rank_confidence": 0.9993226483476612
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": true,
+            "card": "8c",
+            "rank": "8",
+            "suit": "c",
+            "rank_confidence": 0.6802297073852417
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_07_showdownb.png",
+      "exists": true,
+      "hero_cards": [
+        null,
+        null
+      ],
+      "board_cards": [
+        "Kh",
+        "8c",
+        "2d",
+        "4h",
+        "Ks"
+      ],
+      "board_card_count": 5,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": true,
+            "card": "Kh",
+            "rank": "K",
+            "suit": "h",
+            "rank_confidence": 0.9999351511978603
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": true,
+            "card": "8c",
+            "rank": "8",
+            "suit": "c",
+            "rank_confidence": 0.999999880790714
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": true,
+            "card": "2d",
+            "rank": "2",
+            "suit": "d",
+            "rank_confidence": 1.0
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": true,
+            "card": "4h",
+            "rank": "4",
+            "suit": "h",
+            "rank_confidence": 0.9999784232349818
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": true,
+            "card": "Ks",
+            "rank": "K",
+            "suit": "s",
+            "rank_confidence": 0.9997769718560257
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_08_allin.png",
+      "exists": true,
+      "hero_cards": [
+        "7s",
+        null
+      ],
+      "board_cards": [],
+      "board_card_count": 0,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": true,
+            "card": "7s",
+            "rank": "7",
+            "suit": "s",
+            "rank_confidence": 0.9994439659792
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": true,
+            "card": null,
+            "rank": null,
+            "suit": "h",
+            "rank_confidence": null
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_09_player_away.png",
+      "exists": true,
+      "hero_cards": [
+        null,
+        null
+      ],
+      "board_cards": [],
+      "board_card_count": 0,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_10_full_table_6players.png",
+      "exists": true,
+      "hero_cards": [
+        null,
+        null
+      ],
+      "board_cards": [],
+      "board_card_count": 0,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_11_timebank_countdown.png",
+      "exists": true,
+      "hero_cards": [
+        "Kc",
+        null
+      ],
+      "board_cards": [],
+      "board_card_count": 0,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": true,
+            "card": "Kc",
+            "rank": "K",
+            "suit": "c",
+            "rank_confidence": 0.9999681713729593
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": true,
+            "card": null,
+            "rank": null,
+            "suit": "d",
+            "rank_confidence": null
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_12_folded_spectating.png",
+      "exists": true,
+      "hero_cards": [
+        null,
+        null
+      ],
+      "board_cards": [],
+      "board_card_count": 0,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    },
+    {
+      "filename": "cp_13_between_hands.png",
+      "exists": true,
+      "hero_cards": [
+        null,
+        null
+      ],
+      "board_cards": [],
+      "board_card_count": 0,
+      "details": {
+        "hero": [
+          {
+            "region_key": "hero_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "hero_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ],
+        "board": [
+          {
+            "region_key": "board_card_1",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_2",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_3",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_4",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          },
+          {
+            "region_key": "board_card_5",
+            "visible": false,
+            "card": null,
+            "rank": null,
+            "suit": null,
+            "rank_confidence": null
+          }
+        ]
+      }
+    }
+  ]
+}

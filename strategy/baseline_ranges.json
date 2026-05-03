@@ -1,0 +1,30 @@
+{
+  "RFI": {
+    "UTG": "77+,ATs+,AJo+,KQs,KJs",
+    "MP": "66+,A9s+,ATo+,KTs+,KQo,QTs+,JTs",
+    "CO": "55+,A2s+,A9o+,K9s+,KTo+,Q9s+,QTo+,J9s+,JTo,T8s+,98s,87s",
+    "BTN": "22+,A2s+,A7o+,K5s+,K9o+,Q7s+,Q9o+,J7s+,J9o+,T7s+,T9o,96s+,86s+,75s+,65s,54s",
+    "SB": "22+,A2s+,A8o+,K4s+,K9o+,Q6s+,Q9o+,J7s+,J9o+,T7s+,T9o,96s+,86s+,75s+,65s,54s",
+    "BB": "22+,A2s+,A2o+,K2s+,K5o+,Q4s+,Q8o+,J6s+,J8o+,T6s+,T8o+,96s+,86s+,76s,75s,65s,54s"
+  },
+  "vs_raise": {
+    "UTG": "QQ+,AKs",
+    "MP": "QQ+,AKs,AQs",
+    "CO": "JJ+,AKs,AQs,AKo",
+    "BTN": "TT+,AQs+,AKo",
+    "SB": "TT+,AQs+,AKo",
+    "BB": "JJ+,AKs,AQs,AKo"
+  },
+  "vs_raise_call": {
+    "UTG": "JJ-77,AQs,AJs,ATs,AKo,KQs",
+    "MP": "JJ-66,AJs,ATs,AQo,KQs,KJs",
+    "CO": "TT-55,AJs-A9s,AQo,AJo,KQs,KJs,QJs,JTs",
+    "BTN": "99-22,AJs-A7s,AQo-ATo,KQs-K9s,QJs-Q9s,JTs-J9s,T9s,98s,87s",
+    "SB": "99-22,AJs-A8s,AQo-ATo,KQs-KTs,QJs-QTs,JTs,T9s,98s",
+    "BB": "TT-22,AJs-A2s,AQo-A8o,KQs-K5s,KQo-KTo,QJs-Q7s,QJo-Q9o,JTs-J8s,JTo,T8s+,97s+,87s,76s,65s"
+  },
+  "cbet_defend": {
+    "IP": "22+,A2s+,A8o+,K9s+,KTo+,Q9s+,QTo+,J9s+,T8s+,97s+,87s,76s",
+    "OOP": "33+,A5s+,A9o+,KTs+,KJo+,QTs+,JTs,T9s"
+  }
+}

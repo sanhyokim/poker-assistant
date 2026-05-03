@@ -1,0 +1,107 @@
+{
+  "description": "Heads-up: hero bets, opponent all-in, bets collected, turn card",
+  "blinds": {"sb": 50, "bb": 100},
+  "frames": [
+    {
+      "frame_id": 0,
+      "description": "Flop: no bets yet",
+      "state": {
+        "pot": 600,
+        "board_card_count": 3,
+        "hero_stack": 4400,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 500, "bet": 0},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {"game_event": null, "actions": []}
+    },
+    {
+      "frame_id": 1,
+      "description": "Hero BETs 360. Stack 4400->4040, bet 0->360",
+      "state": {
+        "pot": 960,
+        "board_card_count": 3,
+        "hero_stack": 4040,
+        "hero_bet": 360,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 500, "bet": 0},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": [{"seat": 1, "action": "BET", "amount": 360}]
+      }
+    },
+    {
+      "frame_id": 2,
+      "description": "Seat 2 ALL_IN: stack 500->0, bet 0->500",
+      "state": {
+        "pot": 1460,
+        "board_card_count": 3,
+        "hero_stack": 4040,
+        "hero_bet": 360,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 0, "bet": 500},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": [{"seat": 2, "action": "ALL_IN", "amount": 500}]
+      }
+    },
+    {
+      "frame_id": 3,
+      "description": "Bets clear after pot has already updated; no BETS_COLLECTED",
+      "state": {
+        "pot": 1460,
+        "board_card_count": 3,
+        "hero_stack": 4040,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 0, "bet": 0},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {"game_event": null, "actions": []}
+    },
+    {
+      "frame_id": 4,
+      "description": "NEW_STREET: turn card appears (board 3->4)",
+      "state": {
+        "pot": 1460,
+        "board_card_count": 4,
+        "hero_stack": 4040,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 0, "bet": 0},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {"game_event": "NEW_STREET", "actions": []}
+    }
+  ]
+}

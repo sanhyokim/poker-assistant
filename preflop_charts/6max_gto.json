@@ -1,0 +1,165 @@
+{
+  "6max": {
+    "UTG": {
+      "RFI": {
+        "raise": "77+,ATs+,AJo+,KQs,KJs",
+        "fold": "remainder"
+      },
+      "vs_3bet": {
+        "4bet": "QQ+,AKs",
+        "call": "JJ-77,AQs,AJs,ATs,AKo,KQs",
+        "fold": "remainder"
+      },
+      "vs_limp": {
+        "raise": "77+,ATs+,AJo+,KQs,KJs",
+        "call": "22-66,A2s-A9s,ATo,KQo,KTs,QJs,QTs,JTs,T9s,98s,87s,76s",
+        "fold": "remainder"
+      },
+      "vs_all_in": {
+        "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
+        "fold": "remainder"
+      }
+    },
+    "MP": {
+      "RFI": {
+        "raise": "66+,A9s+,ATo+,KTs+,KQo,QTs+,JTs",
+        "fold": "remainder"
+      },
+      "vs_3bet": {
+        "4bet": "QQ+,AKs",
+        "call": "JJ-66,AQs,AJs,ATs,A9s,AKo,AQo,KQs,KJs",
+        "fold": "remainder"
+      },
+      "vs_limp": {
+        "raise": "66+,ATs+,AJo+,KQs,KJs,KTs",
+        "call": "22-55,A2s-A9s,ATo,KQo,KJo,QJs,QTs,JTs,T9s,98s,87s,76s,65s",
+        "fold": "remainder"
+      },
+      "vs_all_in": {
+        "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
+        "fold": "remainder"
+      }
+    },
+    "CO": {
+      "RFI": {
+        "raise": "55+,A2s+,A9o+,K9s+,KTo+,Q9s+,QTo+,J9s+,JTo,T8s+,98s,87s",
+        "fold": "remainder"
+      },
+      "vs_3bet": {
+        "4bet": "QQ+,AKs,AKo",
+        "call": "JJ-55,AQs-A9s,AQo,AJo,KQs,KJs,KTs,QJs,QTs,JTs",
+        "fold": "remainder"
+      },
+      "vs_limp": {
+        "raise": "55+,A8s+,ATo+,KTs+,KQo,QJs,QTs,JTs",
+        "call": "22-44,A2s-A7s,A8o-A9o,KJo,K9s-K8s,Q9s,J9s,T8s+,97s+,87s,76s,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_all_in": {
+        "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
+        "fold": "remainder"
+      }
+    },
+    "BTN": {
+      "RFI": {
+        "raise": "22+,A2s+,A7o+,K5s+,K9o+,Q7s+,Q9o+,J7s+,J9o+,T7s+,T9o,96s+,86s+,75s+,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_3bet": {
+        "4bet": "QQ+,AKs,AKo,AQs",
+        "call": "JJ-22,AJs,ATs,A9s,A8s,A7s,A5s,A4s,AQo,AJo,ATo,KQs,KJs,KTs,K9s,QJs,QTs,JTs,T9s,98s,87s",
+        "fold": "remainder"
+      },
+      "vs_limp": {
+        "raise": "44+,A2s+,A8o+,K9s+,KTo+,QTs+,QJo,JTs,J9s,T9s",
+        "call": "22-33,A2o-A7o,K8s-K5s,K9o,Q9s-Q7s,QTo,J8s,T8s,97s,87s,86s,76s,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_all_in": {
+        "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
+        "fold": "remainder"
+      }
+    },
+    "SB": {
+      "RFI": {
+        "raise": "22+,A2s+,A8o+,K4s+,K9o+,Q6s+,Q9o+,J7s+,J9o+,T7s+,T9o,96s+,86s+,75s+,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_3bet": {
+        "4bet": "QQ+,AKs,AKo",
+        "call": "JJ-22,AQs,AJs,ATs,A9s,A8s,A5s,A4s,AQo,AJo,KQs,KJs,KTs,QJs,QTs,JTs,T9s,98s",
+        "fold": "remainder"
+      },
+      "vs_limp": {
+        "raise": "55+,A8s+,ATo+,KTs+,KQo,QJs,QTs,JTs",
+        "call": "22-44,A2s-A7s,A9o,K9s,Q9s,J9s,T8s+,97s+,87s,76s,65s",
+        "fold": "remainder"
+      },
+      "vs_UTG_raise": {
+        "3bet": "QQ+,AKs,AKo",
+        "call": "JJ-22,AQs-A2s,AQo-ATo,KQs-KTs,KQo,QJs-QTs,JTs,T9s,98s,87s,76s",
+        "fold": "remainder"
+      },
+      "vs_MP_raise": {
+        "3bet": "QQ+,AKs,AQs,AKo",
+        "call": "JJ-22,AJs-A2s,AQo-ATo,KQs-K9s,KQo-KJo,QJs-Q9s,JTs-J9s,T9s-T8s,98s,87s,76s,65s",
+        "fold": "remainder"
+      },
+      "vs_CO_raise": {
+        "3bet": "JJ+,AKs,AQs,AKo,AQo",
+        "call": "TT-22,AJs-A2s,AJo-A9o,KQs-K9s,KQo-KTo,QJs-Q9s,QJo,JTs-J8s,T8s+,97s+,87s,76s,65s",
+        "fold": "remainder"
+      },
+      "vs_BTN_raise": {
+        "3bet": "TT+,AQs+,A5s-A4s,AKo,AQo,AJo",
+        "call": "99-22,AJs-A2s,ATo-A8o,KQs-K6s,KQo-K9o,QJs-Q7s,QJo-Q9o,JTs-J7s,JTo,T7s+,T9o,96s+,86s+,76s,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_all_in": {
+        "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
+        "fold": "remainder"
+      }
+    },
+    "BB": {
+      "vs_UTG_raise": {
+        "3bet": "QQ+,AKs,AKo",
+        "call": "JJ-22,AQs-A2s,AQo-ATo,KQs-K9s,KQo-KJo,QJs-Q9s,QJo,JTs-J9s,T9s-T8s,98s-97s,87s-86s,76s-75s,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_MP_raise": {
+        "3bet": "QQ+,AKs,AKo,AQs",
+        "call": "JJ-22,AJs-A2s,AQo-ATo,KQs-K9s,KQo-KJo,QJs-Q9s,QJo-QTo,JTs-J9s,JTo,T9s-T8s,98s-97s,87s-86s,76s-75s,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_CO_raise": {
+        "3bet": "JJ+,AKs,AQs,AKo,AQo",
+        "call": "TT-22,AJs-A2s,AJo-A8o,KQs-K5s,KQo-KTo,QJs-Q7s,QJo-Q9o,JTs-J8s,JTo,T8s+,T9o,97s+,87s,86s,76s,75s,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_BTN_raise": {
+        "3bet": "TT+,AQs+,A5s-A4s,AKo,AQo",
+        "call": "99-22,AJs-A2s,AJo-A7o,KQs-K3s,KQo-K9o,QJs-Q5s,QJo-Q8o,JTs-J7s,JTo-J9o,T7s+,T9o,96s+,86s+,76s,75s,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_SB_raise": {
+        "3bet": "TT+,AQs+,A5s,AKo,AQo,AJo",
+        "call": "99-22,AJs-A2s,ATo-A7o,KQs-K2s,KQo-K8o,QJs-Q4s,QJo-Q8o,JTs-J6s,JTo-J8o,T6s+,T9o-T8o,96s+,85s+,75s+,65s,54s",
+        "fold": "remainder"
+      },
+      "vs_limp": {
+        "raise": "77+,A9s+,ATo+,KTs+,KQo,QJs,QTs,JTs",
+        "call": "22-66,A2s-A8s,A9o,K9s-K5s,KJo-KTo,Q9s-Q7s,QJo,J9s-J8s,T8s+,97s+,87s,86s,76s,65s,54s",
+        "check": "remainder"
+      },
+      "vs_3bet": {
+        "4bet": "QQ+,AKs,AKo",
+        "call": "JJ-77,AQs,AJs,ATs,AQo,KQs",
+        "fold": "remainder"
+      },
+      "vs_all_in": {
+        "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
+        "fold": "remainder"
+      }
+    }
+  }
+}

@@ -1,0 +1,88 @@
+{
+  "description": "Heads-up postflop: flop appears, bet, opponent folds",
+  "blinds": {"sb": 50, "bb": 100},
+  "frames": [
+    {
+      "frame_id": 0,
+      "description": "Preflop ending: bets active",
+      "state": {
+        "pot": 400,
+        "board_card_count": 0,
+        "hero_stack": 4700,
+        "hero_bet": 200,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 4800, "bet": 200},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {"game_event": null, "actions": []}
+    },
+    {
+      "frame_id": 1,
+      "description": "NEW_STREET: flop appears (3 board cards), bets collected",
+      "state": {
+        "pot": 400,
+        "board_card_count": 3,
+        "hero_stack": 4700,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 4800, "bet": 0},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {"game_event": "NEW_STREET", "actions": []}
+    },
+    {
+      "frame_id": 2,
+      "description": "Hero BETs 240. Stack 4700->4460, bet 0->240",
+      "state": {
+        "pot": 640,
+        "board_card_count": 3,
+        "hero_stack": 4460,
+        "hero_bet": 240,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 4800, "bet": 0},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": [{"seat": 1, "action": "BET", "amount": 240}]
+      }
+    },
+    {
+      "frame_id": 3,
+      "description": "Seat 2 FOLDs (stack -> None)",
+      "state": {
+        "pot": 640,
+        "board_card_count": 3,
+        "hero_stack": 4460,
+        "hero_bet": 240,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": null, "bet": 0},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": [{"seat": 2, "action": "FOLD", "amount": 0}]
+      }
+    }
+  ]
+}

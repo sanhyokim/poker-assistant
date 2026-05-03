@@ -1,0 +1,110 @@
+{
+  "description": "3-handed preflop: SB/BB blinds, hero call, SB raise, BB fold",
+  "blinds": {"sb": 50, "bb": 100},
+  "frames": [
+    {
+      "frame_id": 0,
+      "description": "Pre-hand state (waiting, pot from previous hand)",
+      "state": {
+        "pot": 800,
+        "board_card_count": 0,
+        "hero_stack": 5000,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 4500, "bet": 0},
+          "3": {"stack": 5500, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {"game_event": null, "actions": []}
+    },
+    {
+      "frame_id": 1,
+      "description": "NEW_HAND: pot drops to 150 (SB+BB), blinds posted",
+      "state": {
+        "pot": 150,
+        "board_card_count": 0,
+        "hero_stack": 5000,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 4450, "bet": 50},
+          "3": {"stack": 5400, "bet": 100},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {"game_event": "NEW_HAND", "actions": []}
+    },
+    {
+      "frame_id": 2,
+      "description": "Hero CALLs BB (100). Stack 5000->4900, bet 0->100",
+      "state": {
+        "pot": 250,
+        "board_card_count": 0,
+        "hero_stack": 4900,
+        "hero_bet": 100,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 4450, "bet": 50},
+          "3": {"stack": 5400, "bet": 100},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": [{"seat": 1, "action": "CALL", "amount": 100}]
+      }
+    },
+    {
+      "frame_id": 3,
+      "description": "Seat 2 RAISEs to 300. Stack 4450->4200, bet 50->300",
+      "state": {
+        "pot": 500,
+        "board_card_count": 0,
+        "hero_stack": 4900,
+        "hero_bet": 100,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 4200, "bet": 300},
+          "3": {"stack": 5400, "bet": 100},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": [{"seat": 2, "action": "RAISE", "amount": 300}]
+      }
+    },
+    {
+      "frame_id": 4,
+      "description": "Seat 3 FOLDs (stack -> None)",
+      "state": {
+        "pot": 500,
+        "board_card_count": 0,
+        "hero_stack": 4900,
+        "hero_bet": 100,
+        "hero_is_my_turn": true,
+        "players": {
+          "2": {"stack": 4200, "bet": 300},
+          "3": {"stack": null, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": [{"seat": 3, "action": "FOLD", "amount": 0}]
+      }
+    }
+  ]
+}

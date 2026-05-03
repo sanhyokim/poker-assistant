@@ -1,0 +1,243 @@
+{
+  "_meta": {
+    "description": "Ground truth data for CoinPoker screenshot tests - PoC v3/v4 verified",
+    "source": "Handover document v9.3, sections 25.4 and 25.8",
+    "note_cp03_cp04": "cp_03 and cp_04 filenames are swapped. cp_03 is actually NOT my turn, cp_04 IS my turn. See SPEC.md Appendix B.",
+    "note_cp07b": "cp_07_showdownb.png uses key 'cp_07b' to distinguish from cp_07_showdown.png"
+  },
+  "screenshots": {
+    "cp_01": {
+      "filename": "cp_01_preflop_my_turnb.png",
+      "is_my_turn": true,
+      "phase": "preflop",
+      "hero_cards": ["Td", "9c"],
+      "board_cards": [],
+      "board_card_count": 0,
+      "pot": 198,
+      "hero_stack": 3802,
+      "hero_bet": null,
+      "dealer_seat": 1,
+      "buttons": {"fold": true, "call_or_check": "call", "raise_or_bet": "raise"},
+      "players": {
+        "2": {"stack": 50292, "bet": 100},
+        "3": {"stack": null, "bet": null},
+        "4": {"stack": 19972, "bet": 50},
+        "5": {"stack": null, "bet": null},
+        "6": {"stack": null, "bet": null}
+      }
+    },
+    "cp_02": {
+      "filename": "cp_02_preflop_not_my_turn.png",
+      "is_my_turn": false,
+      "phase": "preflop",
+      "hero_cards": ["Qs", "Ts"],
+      "board_cards": [],
+      "board_card_count": 0,
+      "pot": 12378,
+      "hero_stack": 3686,
+      "hero_bet": 100,
+      "dealer_seat": 4,
+      "buttons": null,
+      "players": {
+        "2": {"stack": 45986, "bet": 50},
+        "3": {"stack": null, "bet": null},
+        "4": {"stack": 12154, "bet": 12180},
+        "5": {"stack": null, "bet": null},
+        "6": {"stack": null, "bet": null}
+      }
+    },
+    "cp_03": {
+      "filename": "cp_03_flop_my_turn.png",
+      "note": "SWAPPED: Despite filename, this is actually NOT my turn (pre-action display)",
+      "is_my_turn": false,
+      "phase": "flop",
+      "hero_cards": ["3s", "3c"],
+      "board_cards": ["8c", "7d", "8d"],
+      "board_card_count": 3,
+      "pot": 348,
+      "hero_stack": 3884,
+      "hero_bet": null,
+      "dealer_seat": 3,
+      "buttons": null,
+      "players": {
+        "2": {"stack": 14439, "bet": null},
+        "3": {"stack": 19890, "bet": null},
+        "4": {"stack": null, "bet": null},
+        "5": {"stack": null, "bet": null},
+        "6": {"stack": null, "bet": null}
+      }
+    },
+    "cp_04": {
+      "filename": "cp_04_flop_not_my_turn.png",
+      "note": "SWAPPED: Despite filename, this IS my turn (action buttons visible)",
+      "is_my_turn": true,
+      "phase": "flop",
+      "hero_cards": ["3s", "3c"],
+      "board_cards": ["8c", "7d", "8d"],
+      "board_card_count": 3,
+      "pot": 348,
+      "hero_stack": 3884,
+      "hero_bet": null,
+      "dealer_seat": 3,
+      "buttons": {"fold": true, "call_or_check": "check", "raise_or_bet": "bet"},
+      "players": {
+        "2": {"stack": 14439, "bet": null},
+        "3": {"stack": 19890, "bet": null},
+        "4": {"stack": null, "bet": null},
+        "5": {"stack": null, "bet": null},
+        "6": {"stack": null, "bet": null}
+      }
+    },
+    "cp_05": {
+      "filename": "cp_05_turn.png",
+      "is_my_turn": true,
+      "phase": "turn",
+      "hero_cards": ["3s", "3c"],
+      "board_cards": ["8c", "7d", "8d", "Ah"],
+      "board_card_count": 4,
+      "pot": 348,
+      "hero_stack": 3884,
+      "hero_bet": null,
+      "dealer_seat": 3,
+      "buttons": {"fold": true, "call_or_check": "check", "raise_or_bet": "bet"},
+      "players": {
+        "2": {"stack": 14439, "bet": null},
+        "3": {"stack": 19890, "bet": null},
+        "4": {"stack": null, "bet": null},
+        "5": {"stack": null, "bet": null},
+        "6": {"stack": null, "bet": null}
+      }
+    },
+    "cp_06": {
+      "filename": "cp_06_river.png",
+      "is_my_turn": false,
+      "phase": "river",
+      "hero_cards": ["3s", "3c"],
+      "board_cards": ["8c", "7d", "8d", "Ah", "Jh"],
+      "board_card_count": 5,
+      "pot": 348,
+      "hero_stack": 3884,
+      "hero_bet": null,
+      "dealer_seat": 3,
+      "buttons": null,
+      "players": {
+        "2": {"stack": 14439, "bet": null},
+        "3": {"stack": 19890, "bet": null},
+        "4": {"stack": null, "bet": null},
+        "5": {"stack": null, "bet": null},
+        "6": {"stack": null, "bet": null}
+      }
+    },
+    "cp_07": {
+      "filename": "cp_07_showdown.png",
+      "note": "Showdown screen - hero has folded, opponent cards visible",
+      "is_my_turn": false,
+      "phase": "hand_end",
+      "hero_cards_visible": false,
+      "board_cards": ["4s", "3d", "5d", "Js", "8c"],
+      "board_card_count": 5,
+      "pot": 33232,
+      "hero_stack": 7335,
+      "buttons": null,
+      "opponent_cards": {
+        "Domitheking": ["Jh", "4c"],
+        "safe42855451827": ["Jc", "3c"]
+      },
+      "players": {
+        "2": {"stack": 8038, "bet": null},
+        "3": {"stack": 10000, "bet": null},
+        "4": {"stack": 196928, "bet": null},
+        "5": {"stack": 0, "bet": null},
+        "6": {"stack": 9820, "bet": null}
+      }
+    },
+    "cp_07b": {
+      "filename": "cp_07_showdownb.png",
+      "note": "Showdown screen - 3 players, win percentages displayed (0%/0%/100%)",
+      "is_my_turn": false,
+      "phase": "hand_end",
+      "hero_cards_visible": false,
+      "board_cards": ["Kh", "8c", "2d", "4h", "Ks"],
+      "board_card_count": 5,
+      "pot": 165683,
+      "buttons": null,
+      "opponent_cards": {
+        "UREMPTYSEAT": ["9s", "8d"],
+        "Jawady": ["Ah", "Jh"],
+        "ChicagoBulls97": ["Ac", "Kd"]
+      }
+    },
+    "cp_08": {
+      "filename": "cp_08_allin.png",
+      "note": "Pre-flop all-in, 6 players, hero stack=0",
+      "is_my_turn": false,
+      "phase": "preflop",
+      "hero_cards": ["7s", "7h"],
+      "hero_cards_visible": true,
+      "board_cards": [],
+      "board_card_count": 0,
+      "pot": 7784,
+      "hero_stack": 0,
+      "hero_bet": 3752,
+      "buttons": null,
+      "players": {
+        "2": {"stack": 9702, "bet": 100},
+        "3": {"stack": 165491, "bet": 100},
+        "4": {"stack": 20122, "bet": null},
+        "5": {"stack": 360862, "bet": 3752},
+        "6": {"stack": 10000, "bet": null}
+      }
+    },
+    "cp_09": {
+      "filename": "cp_09_player_away.png",
+      "note": "Sit-out screen, 2 players away, different table (5/10 blinds)",
+      "is_my_turn": false,
+      "phase": "waiting",
+      "hero_cards_visible": false,
+      "board_card_count": 0,
+      "pot": null,
+      "buttons": null
+    },
+    "cp_10": {
+      "filename": "cp_10_full_table_6players.png",
+      "note": "Full 6-player table, hero has folded, TIME badge visible",
+      "is_my_turn": false,
+      "phase": "preflop",
+      "hero_cards_visible": false,
+      "board_card_count": 0,
+      "pot": 23180,
+      "buttons": null
+    },
+    "cp_11": {
+      "filename": "cp_11_timebank_countdown.png",
+      "note": "SB position, timebank countdown, hero's turn, 2-button display (no raise option)",
+      "is_my_turn": true,
+      "phase": "preflop",
+      "hero_cards": ["Kc", "7d"],
+      "board_cards": [],
+      "board_card_count": 0,
+      "pot": 25830,
+      "buttons": {"fold": true, "call_or_check": "call", "raise_or_bet": null}
+    },
+    "cp_12": {
+      "filename": "cp_12_folded_spectating.png",
+      "note": "Hero has folded, spectating. Same hand as cp_10.",
+      "is_my_turn": false,
+      "phase": "preflop",
+      "hero_cards_visible": false,
+      "board_card_count": 0,
+      "pot": 23180,
+      "buttons": null
+    },
+    "cp_13": {
+      "filename": "cp_13_between_hands.png",
+      "note": "Between hands, waiting state. All player stacks visible.",
+      "is_my_turn": false,
+      "phase": "waiting",
+      "hero_cards_visible": false,
+      "board_card_count": 0,
+      "pot": 96,
+      "buttons": null
+    }
+  }
+}

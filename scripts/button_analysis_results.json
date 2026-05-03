@@ -1,0 +1,431 @@
+{
+  "meta": {
+    "description": "Button and dealer recognition analysis",
+    "target_keys": [
+      "cp_01",
+      "cp_02",
+      "cp_03",
+      "cp_04",
+      "cp_05",
+      "cp_06",
+      "cp_07",
+      "cp_07b",
+      "cp_08",
+      "cp_09",
+      "cp_10",
+      "cp_11",
+      "cp_12",
+      "cp_13"
+    ]
+  },
+  "results": [
+    {
+      "key": "cp_01",
+      "filename": "cp_01_preflop_my_turnb.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": true,
+        "buttons": {
+          "fold": true,
+          "call_or_check": "call",
+          "raise_or_bet": "raise"
+        },
+        "dealer_seat": 1
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": true,
+          "expected": true,
+          "match": true
+        },
+        "buttons": {
+          "recognized": {
+            "fold": true,
+            "call_or_check": "call",
+            "raise_or_bet": "raise"
+          },
+          "expected": {
+            "fold": true,
+            "call_or_check": "call",
+            "raise_or_bet": "raise"
+          },
+          "match": true
+        },
+        "dealer_seat": {
+          "recognized": 1,
+          "expected": 1,
+          "match": true
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_02",
+      "filename": "cp_02_preflop_not_my_turn.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": 4
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": {
+          "recognized": 4,
+          "expected": 4,
+          "match": true
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_03",
+      "filename": "cp_03_flop_my_turn.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": 3
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": {
+          "recognized": 3,
+          "expected": 3,
+          "match": true
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_04",
+      "filename": "cp_04_flop_not_my_turn.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": true,
+        "buttons": {
+          "fold": true,
+          "call_or_check": "check",
+          "raise_or_bet": "bet"
+        },
+        "dealer_seat": 3
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": true,
+          "expected": true,
+          "match": true
+        },
+        "buttons": {
+          "recognized": {
+            "fold": true,
+            "call_or_check": "check",
+            "raise_or_bet": "bet"
+          },
+          "expected": {
+            "fold": true,
+            "call_or_check": "check",
+            "raise_or_bet": "bet"
+          },
+          "match": true
+        },
+        "dealer_seat": {
+          "recognized": 3,
+          "expected": 3,
+          "match": true
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_05",
+      "filename": "cp_05_turn.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": true,
+        "buttons": {
+          "fold": true,
+          "call_or_check": "check",
+          "raise_or_bet": "bet"
+        },
+        "dealer_seat": 3
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": true,
+          "expected": true,
+          "match": true
+        },
+        "buttons": {
+          "recognized": {
+            "fold": true,
+            "call_or_check": "check",
+            "raise_or_bet": "bet"
+          },
+          "expected": {
+            "fold": true,
+            "call_or_check": "check",
+            "raise_or_bet": "bet"
+          },
+          "match": true
+        },
+        "dealer_seat": {
+          "recognized": 3,
+          "expected": 3,
+          "match": true
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_06",
+      "filename": "cp_06_river.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": 3
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": {
+          "recognized": 3,
+          "expected": 3,
+          "match": true
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_07",
+      "filename": "cp_07_showdown.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": 2
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": null
+      },
+      "match": true
+    },
+    {
+      "key": "cp_07b",
+      "filename": "cp_07_showdownb.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": 4
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": null
+      },
+      "match": true
+    },
+    {
+      "key": "cp_08",
+      "filename": "cp_08_allin.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": 2
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": null
+      },
+      "match": true
+    },
+    {
+      "key": "cp_09",
+      "filename": "cp_09_player_away.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": null
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": null
+      },
+      "match": true
+    },
+    {
+      "key": "cp_10",
+      "filename": "cp_10_full_table_6players.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": 1
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": null
+      },
+      "match": true
+    },
+    {
+      "key": "cp_11",
+      "filename": "cp_11_timebank_countdown.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": true,
+        "buttons": {
+          "fold": true,
+          "call_or_check": "call",
+          "raise_or_bet": null
+        },
+        "dealer_seat": 3
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": true,
+          "expected": true,
+          "match": true
+        },
+        "buttons": {
+          "recognized": {
+            "fold": true,
+            "call_or_check": "call",
+            "raise_or_bet": null
+          },
+          "expected": {
+            "fold": true,
+            "call_or_check": "call",
+            "raise_or_bet": null
+          },
+          "match": true
+        },
+        "dealer_seat": null
+      },
+      "match": true
+    },
+    {
+      "key": "cp_12",
+      "filename": "cp_12_folded_spectating.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": 1
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": null
+      },
+      "match": true
+    },
+    {
+      "key": "cp_13",
+      "filename": "cp_13_between_hands.png",
+      "exists": true,
+      "recognized": {
+        "is_my_turn": false,
+        "buttons": null,
+        "dealer_seat": null
+      },
+      "comparisons": {
+        "is_my_turn": {
+          "recognized": false,
+          "expected": false,
+          "match": true
+        },
+        "buttons": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "dealer_seat": null
+      },
+      "match": true
+    }
+  ]
+}

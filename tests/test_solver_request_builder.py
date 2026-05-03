@@ -1,0 +1,215 @@
+"""Tests for building postflop solver requests from GameState."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from core.game_state import GameState, HeroState, PlayerState
+from strategy.solver_request_builder import SolverRequestBuilder
+
+
+TEST_CONFIG: dict[str, Any] = {
+    "solver": {
+        "max_iterations": 200,
+        "target_exploitability_pct": 0.5,
+        "timeout_ms": 7000,
+        "default_bet_sizes": "60%,a",
+        "default_raise_sizes": "2.5x",
+        "add_allin_threshold": 1.5,
+        "force_allin_threshold": 0.15,
+        "merging_threshold": 0.1,
+        "rake_rate": 0.0,
+        "rake_cap": 0.0,
+    },
+    "game": {
+        "blind_bb": 100,
+    },
+}
+
+
+def make_builder() -> SolverRequestBuilder:
+    """Create a SolverRequestBuilder for tests."""
+    return SolverRequestBuilder(TEST_CONFIG)
+
+
+def make_state(
+    phase: str = "flop",
+    board: list[str] | None = None,
+    hero_stack: int | None = 3000,
+    opponent_stacks: list[int | None] | None = None,
+) -> GameState:
+    """Create a GameState with configurable active opponents.
+
+    Args:
+        phase: Game phase.
+        board: Board cards.
+        hero_stack: Hero current stack.
+        opponent_stacks: Current stacks for active opponents from seat 2 upward.
+
+    Returns:
+        Configured GameState.
+    """
+    players = GameState.create_default_players()
+    active_opponent_stacks = [5000] if opponent_stacks is None else opponent_stacks
+    for index, stack in enumerate(active_opponent_stacks, start=2):
+        players[str(index)] = PlayerState(
+            stack=stack,
+            is_seated=True,
+            in_current_hand=True,
+        )
+
+    return GameState(
+        phase=phase,
+        hero=HeroState(stack=hero_stack),
+        board=board or ["8c", "7d", "8d"],
+        board_card_count=len(board or ["8c", "7d", "8d"]),
+        pot=1200,
+        players=players,
+        active_player_count=1 + len(active_opponent_stacks),
+    )
+
+
+def test_can_use_solver_heads_up_flop() -> None:
+    """Flop heads-up states can use the solver."""
+    assert make_builder().can_use_solver(make_state(phase="flop"))
+
+
+def test_can_use_solver_multiway() -> None:
+    """Multiway postflop states cannot use the solver."""
+    state = make_state(phase="flop", opponent_stacks=[5000, 4000])
+
+    assert not make_builder().can_use_solver(state)
+
+
+def test_can_use_solver_preflop() -> None:
+    """Preflop states cannot use the postflop solver."""
+    assert not make_builder().can_use_solver(make_state(phase="preflop"))
+
+
+def test_can_use_solver_heads_up_turn() -> None:
+    """Turn heads-up states can use the solver."""
+    state = make_state(phase="turn", board=["8c", "7d", "8d", "Ah"])
+
+    assert make_builder().can_use_solver(state)
+
+
+def test_can_use_solver_heads_up_river() -> None:
+    """River heads-up states can use the solver."""
+    state = make_state(phase="river", board=["8c", "7d", "8d", "Ah", "2s"])
+
+    assert make_builder().can_use_solver(state)
+
+
+def test_effective_stack_hero_shorter() -> None:
+    """Effective stack is hero stack when hero is shorter."""
+    state = make_state(hero_stack=3000, opponent_stacks=[5000])
+
+    assert make_builder().compute_effective_stack(state) == 3000
+
+
+def test_effective_stack_opponent_shorter() -> None:
+    """Effective stack is opponent stack when opponent is shorter."""
+    state = make_state(hero_stack=5000, opponent_stacks=[2000])
+
+    assert make_builder().compute_effective_stack(state) == 2000
+
+
+def test_effective_stack_multiway_returns_none() -> None:
+    """Effective stack is None for multiway states."""
+    state = make_state(hero_stack=5000, opponent_stacks=[2000, 3000])
+
+    assert make_builder().compute_effective_stack(state) is None
+
+
+def test_effective_stack_no_opponents() -> None:
+    """Effective stack is None when no opponent is active."""
+    state = make_state(hero_stack=5000, opponent_stacks=[])
+
+    assert make_builder().compute_effective_stack(state) is None
+
+
+def test_build_request_flop() -> None:
+    """Flop request contains every solver schema field."""
+    builder = make_builder()
+    state = make_state(
+        phase="flop",
+        board=["8c", "7d", "8d"],
+        hero_stack=3000,
+        opponent_stacks=[5000],
+    )
+
+    request = builder.build_request(state, "66+,A8s+,AJo+", "55+,KTs+", False)
+
+    assert request == {
+        "board": "8c7d8d",
+        "turn": None,
+        "river": None,
+        "range_oop": "66+,A8s+,AJo+",
+        "range_ip": "55+,KTs+",
+        "starting_pot": 1200,
+        "effective_stack": 3000,
+        "flop_bet_sizes_oop": "60%,a",
+        "flop_bet_sizes_ip": "60%,a",
+        "flop_raise_sizes_oop": "2.5x",
+        "flop_raise_sizes_ip": "2.5x",
+        "turn_bet_sizes_oop": "60%,a",
+        "turn_bet_sizes_ip": "60%,a",
+        "turn_raise_sizes_oop": "2.5x",
+        "turn_raise_sizes_ip": "2.5x",
+        "river_bet_sizes_oop": "60%,a",
+        "river_bet_sizes_ip": "60%,a",
+        "river_raise_sizes_oop": "2.5x",
+        "river_raise_sizes_ip": "2.5x",
+        "rake_rate": 0.0,
+        "rake_cap": 0.0,
+        "add_allin_threshold": 1.5,
+        "force_allin_threshold": 0.15,
+        "merging_threshold": 0.1,
+        "max_iterations": 200,
+        "target_exploitability_pct": 0.5,
+        "timeout_ms": 7000,
+        "bunching": None,
+    }
+
+
+def test_build_request_turn() -> None:
+    """Turn request includes the turn card and no river card."""
+    state = make_state(phase="turn", board=["8c", "7d", "8d", "Ah"])
+
+    request = make_builder().build_request(state, "AA", "KK", True)
+
+    assert request is not None
+    assert request["board"] == "8c7d8d"
+    assert request["turn"] == "Ah"
+    assert request["river"] is None
+
+
+def test_build_request_river() -> None:
+    """River request includes both turn and river cards."""
+    state = make_state(phase="river", board=["8c", "7d", "8d", "Ah", "2s"])
+
+    request = make_builder().build_request(state, "AA", "KK", True)
+
+    assert request is not None
+    assert request["board"] == "8c7d8d"
+    assert request["turn"] == "Ah"
+    assert request["river"] == "2s"
+
+
+def test_build_request_multiway_returns_none() -> None:
+    """build_request() returns None for multiway states."""
+    state = make_state(opponent_stacks=[5000, 3000])
+
+    assert make_builder().build_request(state, "AA", "KK", False) is None
+
+
+def test_build_request_preflop_returns_none() -> None:
+    """build_request() returns None for preflop states."""
+    state = make_state(phase="preflop")
+
+    assert make_builder().build_request(state, "AA", "KK", False) is None
+
+
+def test_board_to_flop_str() -> None:
+    """_board_to_flop_str() concatenates the first three board cards."""
+    assert SolverRequestBuilder._board_to_flop_str(["8c", "7d", "8d"]) == "8c7d8d"

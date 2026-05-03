@@ -1,0 +1,83 @@
+capture:
+  method: capture_card
+  device_index: 0
+  width: 1920
+  height: 1080
+  fps: 60
+  polling_interval_sec: 0.5
+  max_reconnect_attempts: 3
+  monitor_index: 1
+  file_path: ""
+
+profile:
+  path: profiles/coinpoker_6max.json
+
+game:
+  table_size: 6
+  blind_sb: 50
+  blind_bb: 100
+  table_id: "unknown"
+
+solver:
+  cli_path: solver/bin/postflop_cli.exe
+  max_iterations: 200
+  target_exploitability_pct: 0.5
+  timeout_ms: 7000
+  default_bet_sizes: "60%,a"
+  default_raise_sizes: "2.5x"
+  add_allin_threshold: 1.5
+  force_allin_threshold: 0.15
+  merging_threshold: 0.1
+  rake_rate: 0.0
+  rake_cap: 0.0
+
+db:
+  path: data/poker_assistant.db
+
+llm:
+  timeout_sec: 15
+  total_timeout_sec: 15
+  retry_count: 0
+
+hud:
+  enabled: true
+  font_size: 14
+  opacity: 0.85
+
+ocr:
+  languages: ["en"]
+  confidence_threshold: 0.4
+
+recognition:
+  diff_threshold_card: 500
+  diff_threshold_number: 300
+  diff_threshold_button: 200
+  fold_confirm_frames: 3
+  pot_spike_ratio: 2.0
+  pot_spike_confirm_frames: 2
+
+action_estimation:
+  new_hand_pot_ratio: 0.3
+  new_hand_min_pot_bb: 2
+  raise_threshold: 1.1
+  empty_region_std: 8
+
+logging:
+  level: INFO
+  max_bytes: 52428800
+  backup_count: 5
+
+replay:
+  retention_days: 30
+  base_dir: "hand_replays"
+
+preflop_chart:
+  path: preflop_charts/6max_gto.json
+
+preflop_delta:
+  enabled: true
+  sample_threshold_low: 30
+  sample_threshold_high: 100
+  shift_cap_low: 0.05
+  shift_cap_high: 0.10
+  timeout_ms: 1000

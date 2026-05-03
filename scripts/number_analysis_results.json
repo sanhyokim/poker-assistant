@@ -1,0 +1,818 @@
+{
+  "meta": {
+    "description": "Number recognition analysis for CoinPoker screenshots",
+    "target_keys": [
+      "cp_01",
+      "cp_02",
+      "cp_03",
+      "cp_04",
+      "cp_05",
+      "cp_06",
+      "cp_07",
+      "cp_07b",
+      "cp_08"
+    ]
+  },
+  "results": [
+    {
+      "key": "cp_01",
+      "filename": "cp_01_preflop_my_turnb.png",
+      "exists": true,
+      "recognized": {
+        "pot": 198,
+        "hero_stack": 3802,
+        "hero_bet": null,
+        "player_stacks": {
+          "2": 50292,
+          "3": null,
+          "4": 19972,
+          "5": null,
+          "6": null
+        },
+        "player_bets": {
+          "2": 100,
+          "3": null,
+          "4": 50,
+          "5": null,
+          "6": null
+        }
+      },
+      "comparisons": {
+        "pot": {
+          "recognized": 198,
+          "expected": 198,
+          "match": true
+        },
+        "hero_stack": {
+          "recognized": 3802,
+          "expected": 3802,
+          "match": true
+        },
+        "hero_bet": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "player_stacks": {
+          "2": {
+            "recognized": 50292,
+            "expected": 50292,
+            "match": true
+          },
+          "3": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "4": {
+            "recognized": 19972,
+            "expected": 19972,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        },
+        "player_bets": {
+          "2": {
+            "recognized": 100,
+            "expected": 100,
+            "match": true
+          },
+          "3": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "4": {
+            "recognized": 50,
+            "expected": 50,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_02",
+      "filename": "cp_02_preflop_not_my_turn.png",
+      "exists": true,
+      "recognized": {
+        "pot": 12378,
+        "hero_stack": 3686,
+        "hero_bet": 100,
+        "player_stacks": {
+          "2": 45986,
+          "3": null,
+          "4": 12154,
+          "5": null,
+          "6": null
+        },
+        "player_bets": {
+          "2": 50,
+          "3": null,
+          "4": 12180,
+          "5": null,
+          "6": null
+        }
+      },
+      "comparisons": {
+        "pot": {
+          "recognized": 12378,
+          "expected": 12378,
+          "match": true
+        },
+        "hero_stack": {
+          "recognized": 3686,
+          "expected": 3686,
+          "match": true
+        },
+        "hero_bet": {
+          "recognized": 100,
+          "expected": 100,
+          "match": true
+        },
+        "player_stacks": {
+          "2": {
+            "recognized": 45986,
+            "expected": 45986,
+            "match": true
+          },
+          "3": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "4": {
+            "recognized": 12154,
+            "expected": 12154,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        },
+        "player_bets": {
+          "2": {
+            "recognized": 50,
+            "expected": 50,
+            "match": true
+          },
+          "3": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "4": {
+            "recognized": 12180,
+            "expected": 12180,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_03",
+      "filename": "cp_03_flop_my_turn.png",
+      "exists": true,
+      "recognized": {
+        "pot": 348,
+        "hero_stack": 3884,
+        "hero_bet": null,
+        "player_stacks": {
+          "2": 14439,
+          "3": 19890,
+          "4": null,
+          "5": null,
+          "6": null
+        },
+        "player_bets": {
+          "2": null,
+          "3": null,
+          "4": null,
+          "5": null,
+          "6": null
+        }
+      },
+      "comparisons": {
+        "pot": {
+          "recognized": 348,
+          "expected": 348,
+          "match": true
+        },
+        "hero_stack": {
+          "recognized": 3884,
+          "expected": 3884,
+          "match": true
+        },
+        "hero_bet": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "player_stacks": {
+          "2": {
+            "recognized": 14439,
+            "expected": 14439,
+            "match": true
+          },
+          "3": {
+            "recognized": 19890,
+            "expected": 19890,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        },
+        "player_bets": {
+          "2": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "3": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_04",
+      "filename": "cp_04_flop_not_my_turn.png",
+      "exists": true,
+      "recognized": {
+        "pot": 348,
+        "hero_stack": 3884,
+        "hero_bet": null,
+        "player_stacks": {
+          "2": 14439,
+          "3": 19890,
+          "4": null,
+          "5": null,
+          "6": null
+        },
+        "player_bets": {
+          "2": null,
+          "3": null,
+          "4": null,
+          "5": null,
+          "6": null
+        }
+      },
+      "comparisons": {
+        "pot": {
+          "recognized": 348,
+          "expected": 348,
+          "match": true
+        },
+        "hero_stack": {
+          "recognized": 3884,
+          "expected": 3884,
+          "match": true
+        },
+        "hero_bet": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "player_stacks": {
+          "2": {
+            "recognized": 14439,
+            "expected": 14439,
+            "match": true
+          },
+          "3": {
+            "recognized": 19890,
+            "expected": 19890,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        },
+        "player_bets": {
+          "2": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "3": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_05",
+      "filename": "cp_05_turn.png",
+      "exists": true,
+      "recognized": {
+        "pot": 348,
+        "hero_stack": 3884,
+        "hero_bet": null,
+        "player_stacks": {
+          "2": 14439,
+          "3": 19890,
+          "4": null,
+          "5": null,
+          "6": null
+        },
+        "player_bets": {
+          "2": null,
+          "3": null,
+          "4": null,
+          "5": null,
+          "6": null
+        }
+      },
+      "comparisons": {
+        "pot": {
+          "recognized": 348,
+          "expected": 348,
+          "match": true
+        },
+        "hero_stack": {
+          "recognized": 3884,
+          "expected": 3884,
+          "match": true
+        },
+        "hero_bet": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "player_stacks": {
+          "2": {
+            "recognized": 14439,
+            "expected": 14439,
+            "match": true
+          },
+          "3": {
+            "recognized": 19890,
+            "expected": 19890,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        },
+        "player_bets": {
+          "2": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "3": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_06",
+      "filename": "cp_06_river.png",
+      "exists": true,
+      "recognized": {
+        "pot": 348,
+        "hero_stack": 3884,
+        "hero_bet": null,
+        "player_stacks": {
+          "2": 14439,
+          "3": 19890,
+          "4": null,
+          "5": null,
+          "6": null
+        },
+        "player_bets": {
+          "2": null,
+          "3": null,
+          "4": null,
+          "5": null,
+          "6": null
+        }
+      },
+      "comparisons": {
+        "pot": {
+          "recognized": 348,
+          "expected": 348,
+          "match": true
+        },
+        "hero_stack": {
+          "recognized": 3884,
+          "expected": 3884,
+          "match": true
+        },
+        "hero_bet": {
+          "recognized": null,
+          "expected": null,
+          "match": true
+        },
+        "player_stacks": {
+          "2": {
+            "recognized": 14439,
+            "expected": 14439,
+            "match": true
+          },
+          "3": {
+            "recognized": 19890,
+            "expected": 19890,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        },
+        "player_bets": {
+          "2": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "3": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_07",
+      "filename": "cp_07_showdown.png",
+      "exists": true,
+      "recognized": {
+        "pot": 33232,
+        "hero_stack": 7335,
+        "hero_bet": null,
+        "player_stacks": {
+          "2": 8038,
+          "3": 10000,
+          "4": 196928,
+          "5": 0,
+          "6": 9820
+        },
+        "player_bets": {
+          "2": null,
+          "3": null,
+          "4": null,
+          "5": null,
+          "6": null
+        }
+      },
+      "comparisons": {
+        "pot": {
+          "recognized": 33232,
+          "expected": 33232,
+          "match": true
+        },
+        "hero_stack": {
+          "recognized": 7335,
+          "expected": 7335,
+          "match": true
+        },
+        "hero_bet": null,
+        "player_stacks": {
+          "2": {
+            "recognized": 8038,
+            "expected": 8038,
+            "match": true
+          },
+          "3": {
+            "recognized": 10000,
+            "expected": 10000,
+            "match": true
+          },
+          "4": {
+            "recognized": 196928,
+            "expected": 196928,
+            "match": true
+          },
+          "5": {
+            "recognized": 0,
+            "expected": 0,
+            "match": true
+          },
+          "6": {
+            "recognized": 9820,
+            "expected": 9820,
+            "match": true
+          }
+        },
+        "player_bets": {
+          "2": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "3": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        }
+      },
+      "match": true
+    },
+    {
+      "key": "cp_07b",
+      "filename": "cp_07_showdownb.png",
+      "exists": true,
+      "recognized": {
+        "pot": 165683,
+        "hero_stack": 3884,
+        "hero_bet": null,
+        "player_stacks": {
+          "2": 9884,
+          "3": 0,
+          "4": 0,
+          "5": 374630,
+          "6": null
+        },
+        "player_bets": {
+          "2": null,
+          "3": null,
+          "4": null,
+          "5": null,
+          "6": null
+        }
+      },
+      "comparisons": {
+        "pot": {
+          "recognized": 165683,
+          "expected": 165683,
+          "match": true
+        },
+        "hero_stack": null,
+        "hero_bet": null,
+        "player_stacks": {},
+        "player_bets": {}
+      },
+      "match": true
+    },
+    {
+      "key": "cp_08",
+      "filename": "cp_08_allin.png",
+      "exists": true,
+      "recognized": {
+        "pot": 7784,
+        "hero_stack": 0,
+        "hero_bet": 3752,
+        "player_stacks": {
+          "2": 9702,
+          "3": 165491,
+          "4": 20122,
+          "5": 360862,
+          "6": 10000
+        },
+        "player_bets": {
+          "2": 100,
+          "3": 100,
+          "4": null,
+          "5": 3752,
+          "6": null
+        }
+      },
+      "comparisons": {
+        "pot": {
+          "recognized": 7784,
+          "expected": 7784,
+          "match": true
+        },
+        "hero_stack": {
+          "recognized": 0,
+          "expected": 0,
+          "match": true
+        },
+        "hero_bet": {
+          "recognized": 3752,
+          "expected": 3752,
+          "match": true
+        },
+        "player_stacks": {
+          "2": {
+            "recognized": 9702,
+            "expected": 9702,
+            "match": true
+          },
+          "3": {
+            "recognized": 165491,
+            "expected": 165491,
+            "match": true
+          },
+          "4": {
+            "recognized": 20122,
+            "expected": 20122,
+            "match": true
+          },
+          "5": {
+            "recognized": 360862,
+            "expected": 360862,
+            "match": true
+          },
+          "6": {
+            "recognized": 10000,
+            "expected": 10000,
+            "match": true
+          }
+        },
+        "player_bets": {
+          "2": {
+            "recognized": 100,
+            "expected": 100,
+            "match": true
+          },
+          "3": {
+            "recognized": 100,
+            "expected": 100,
+            "match": true
+          },
+          "4": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          },
+          "5": {
+            "recognized": 3752,
+            "expected": 3752,
+            "match": true
+          },
+          "6": {
+            "recognized": null,
+            "expected": null,
+            "match": true
+          }
+        }
+      },
+      "match": true
+    }
+  ]
+}

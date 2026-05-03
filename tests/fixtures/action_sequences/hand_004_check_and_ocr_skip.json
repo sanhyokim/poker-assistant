@@ -1,0 +1,164 @@
+{
+  "description": "CHECK detection and OCR failure skip (3-frame None confirmation)",
+  "blinds": {"sb": 50, "bb": 100},
+  "frames": [
+    {
+      "frame_id": 0,
+      "description": "Flop: hero's turn",
+      "state": {
+        "pot": 400,
+        "board_card_count": 3,
+        "hero_stack": 4700,
+        "hero_bet": 0,
+        "hero_is_my_turn": true,
+        "players": {
+          "2": {"stack": 4800, "bet": 0},
+          "3": {"stack": 5000, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": []
+      }
+    },
+    {
+      "frame_id": 1,
+      "description": "Hero CHECKs: is_my_turn True->False, no stack/bet change",
+      "state": {
+        "pot": 400,
+        "board_card_count": 3,
+        "hero_stack": 4700,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": 4800, "bet": 0},
+          "3": {"stack": 5000, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": [
+          {"seat": 1, "action": "CHECK", "amount": 0}
+        ]
+      }
+    },
+    {
+      "frame_id": 2,
+      "description": "Seat 2 OCR failure: stack -> None (1st frame, skipped)",
+      "state": {
+        "pot": 400,
+        "board_card_count": 3,
+        "hero_stack": 4700,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": null, "bet": 0},
+          "3": {"stack": 5000, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": []
+      }
+    },
+    {
+      "frame_id": 3,
+      "description": "Seat 2 OCR failure continues: still None (2nd frame)",
+      "state": {
+        "pot": 400,
+        "board_card_count": 3,
+        "hero_stack": 4700,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": null, "bet": 0},
+          "3": {"stack": 5000, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": []
+      }
+    },
+    {
+      "frame_id": 4,
+      "description": "Seat 2 3rd consecutive None -> FOLD confirmed",
+      "state": {
+        "pot": 400,
+        "board_card_count": 3,
+        "hero_stack": 4700,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": null, "bet": 0},
+          "3": {"stack": 5000, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": [
+          {"seat": 2, "action": "FOLD", "amount": 0}
+        ]
+      }
+    },
+    {
+      "frame_id": 5,
+      "description": "Pot spike: pot 400 -> 1000 (>200%), filtered",
+      "state": {
+        "pot": 1000,
+        "board_card_count": 3,
+        "hero_stack": 4700,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": null, "bet": 0},
+          "3": {"stack": 5000, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": []
+      }
+    },
+    {
+      "frame_id": 6,
+      "description": "Same pot after filtered spike; no new diff",
+      "state": {
+        "pot": 1000,
+        "board_card_count": 3,
+        "hero_stack": 4700,
+        "hero_bet": 0,
+        "hero_is_my_turn": false,
+        "players": {
+          "2": {"stack": null, "bet": 0},
+          "3": {"stack": 5000, "bet": 0},
+          "4": {"stack": null, "bet": 0},
+          "5": {"stack": null, "bet": 0},
+          "6": {"stack": null, "bet": 0}
+        }
+      },
+      "expected": {
+        "game_event": null,
+        "actions": []
+      }
+    }
+  ]
+}
