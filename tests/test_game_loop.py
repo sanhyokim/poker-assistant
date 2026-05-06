@@ -13,7 +13,7 @@ import pytest
 
 from capture.file_capture import FileCapture
 from core.game_loop import GameLoop
-from core.game_state import ActionRecord, create_empty_game_state
+from core.game_state import ActionRecord, PlayerState, create_empty_game_state
 from core.hand_manager import HandManager
 from strategy.recommendation_engine import Recommendation
 
@@ -252,6 +252,124 @@ def test_populate_players_waiting_counts_zero(
     assert game_state.active_player_count == 0
     assert game_state.players["2"].is_seated is True
     assert game_state.players["2"].in_current_hand is False
+
+
+def _state_with_player(seat: str, stack: int = 5000, bet: int = 0) -> Any:
+    """Create a GameState with one configured opponent player."""
+    game_state = create_empty_game_state()
+    game_state.players[seat] = PlayerState(
+        stack=stack,
+        bet=bet,
+        is_seated=True,
+        in_current_hand=True,
+    )
+    return game_state
+
+
+def test_seat_card_fold_detection_after_confirm_frames(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seat card disappearance for N frames generates a FOLD action."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._prev_state = _state_with_player("3")
+    game_state = _state_with_player("3")
+
+    for _ in range(loop._fold_confirm_frames - 1):
+        loop._process_seat_card_detection(game_state, {3: False})
+
+    assert game_state.actions_since_last_frame == []
+
+    loop._process_seat_card_detection(game_state, {3: False})
+
+    assert game_state.actions_since_last_frame[-1] == ActionRecord(
+        seat=3,
+        action="FOLD",
+        amount=0,
+        confidence="high",
+    )
+    loop._hand_manager._add_actions(game_state.actions_since_last_frame)
+    assert 3 not in loop._hand_manager.get_players_in_hand()
+
+
+def test_seat_card_reappearance_resets_streak(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Card reappearance after early misses resets the no-card streak."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._prev_state = _state_with_player("3")
+    game_state = _state_with_player("3")
+
+    loop._process_seat_card_detection(game_state, {3: False})
+    loop._process_seat_card_detection(game_state, {3: True})
+    loop._process_seat_card_detection(game_state, {3: False})
+
+    assert game_state.actions_since_last_frame == []
+    assert loop._seat_card_no_card_streak[3] == 1
+
+
+def test_seat_card_with_recent_action_skips_fold(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seats with recent bet or stack changes are not marked as folded."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._prev_state = _state_with_player("3", stack=5000, bet=0)
+    game_state = _state_with_player("3", stack=4900, bet=100)
+
+    for _ in range(loop._fold_confirm_frames):
+        loop._process_seat_card_detection(game_state, {3: False})
+
+    assert game_state.actions_since_last_frame == []
+    assert 3 not in loop._seat_card_no_card_streak
+
+
+def test_seat_card_detector_runs_during_active_phase(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SeatCardDetector is called from process_one_frame during active phases."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    detector = MagicMock()
+    detector.detect_all.return_value = {2: True, 3: True, 4: True, 5: True, 6: True}
+    loop._seat_card_detector = detector
+
+    loop.process_one_frame()
+
+    detector.detect_all.assert_called_once()
+
+
+def test_hero_card_missing_with_state_change_no_hand_end(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hero card disappearance with stack change does not end the hand."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    manager = loop._hand_manager
+    manager._phase = "flop"
+    manager._seen_hero_cards_this_hand = True
+    manager._hero_card_missing_count = 4
+    manager._turn_start_state = create_empty_game_state()
+    manager._turn_start_state.hero.cards = ["Ah", "Kd"]
+    manager._turn_start_state.hero.stack = 5000
+    manager._turn_start_state.hero.bet = 0
+    game_state = create_empty_game_state()
+    game_state.hero.cards = None
+    game_state.hero.stack = 4900
+    game_state.hero.bet = 100
+
+    assert manager._check_hand_end_conditions(game_state) is False
+    assert manager._hero_card_missing_count == 0
 
 
 def _make_seated_state(dealer_seat: int) -> Any:

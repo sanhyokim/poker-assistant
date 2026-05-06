@@ -513,7 +513,13 @@ class HandManager:
             self._seen_hero_cards_this_hand = True
             self._hero_card_missing_count = 0
         elif self._seen_hero_cards_this_hand:
-            self._hero_card_missing_count += 1
+            if self._hero_state_unchanged(game_state):
+                self._hero_card_missing_count += 1
+            else:
+                logger.debug(
+                    "Hero card missing but state changed, not counting toward hand end"
+                )
+                self._hero_card_missing_count = 0
         else:
             self._hero_card_missing_count = 0
 
@@ -546,6 +552,24 @@ class HandManager:
             self._last_pot_at_showdown = None
 
         return False
+
+    def _hero_state_unchanged(self, game_state: GameState) -> bool:
+        """Return whether hero stack and bet match the turn-start snapshot.
+
+        Args:
+            game_state: Current GameState.
+
+        Returns:
+            True if no reference state exists, or if hero stack and bet are
+            unchanged from the current turn start.
+        """
+        if self._turn_start_state is None:
+            return True
+        start_stack = self._turn_start_state.hero.stack or 0
+        start_bet = self._turn_start_state.hero.bet or 0
+        curr_stack = game_state.hero.stack or 0
+        curr_bet = game_state.hero.bet or 0
+        return curr_stack == start_stack and curr_bet == start_bet
 
     def _check_waiting_transition(self, game_state: GameState) -> bool:
         """Return whether hand_end should move back to waiting."""
