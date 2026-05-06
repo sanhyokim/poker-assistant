@@ -53,6 +53,7 @@ recognition:
   diff_threshold_number: 300
   diff_threshold_button: 200
   fold_confirm_frames: 3
+  card_gray_mean_min: 80.0
   pot_spike_ratio: 2.0
   pot_spike_confirm_frames: 2
 
