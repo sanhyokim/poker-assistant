@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+import pytest
+
 from strategy.preflop_chart import PreflopChart
 
 
@@ -412,3 +414,179 @@ def test_get_scenario_vs_3bet() -> None:
     ]
 
     assert PreflopChart.get_scenario("CO", history) == "vs_3bet"
+
+
+class TestResolveAllInScenario:
+    """Test _resolve_all_in_scenario with various stack depths."""
+
+    def test_short_stack_at_boundary(self) -> None:
+        """20BB exactly should resolve to vs_all_in_short."""
+        result = PreflopChart._resolve_all_in_scenario(20.0)
+
+        assert result == "vs_all_in_short"
+
+    def test_short_stack_below(self) -> None:
+        """10BB should resolve to vs_all_in_short."""
+        result = PreflopChart._resolve_all_in_scenario(10.0)
+
+        assert result == "vs_all_in_short"
+
+    def test_medium_stack_at_lower_boundary(self) -> None:
+        """21BB should resolve to vs_all_in_medium."""
+        result = PreflopChart._resolve_all_in_scenario(21.0)
+
+        assert result == "vs_all_in_medium"
+
+    def test_medium_stack_at_upper_boundary(self) -> None:
+        """50BB exactly should resolve to vs_all_in_medium."""
+        result = PreflopChart._resolve_all_in_scenario(50.0)
+
+        assert result == "vs_all_in_medium"
+
+    def test_deep_stack(self) -> None:
+        """51BB should resolve to vs_all_in_deep."""
+        result = PreflopChart._resolve_all_in_scenario(51.0)
+
+        assert result == "vs_all_in_deep"
+
+    def test_very_deep_stack(self) -> None:
+        """200BB should resolve to vs_all_in_deep."""
+        result = PreflopChart._resolve_all_in_scenario(200.0)
+
+        assert result == "vs_all_in_deep"
+
+    def test_none_returns_vs_all_in(self) -> None:
+        """None effective stack should return vs_all_in as the fallback."""
+        result = PreflopChart._resolve_all_in_scenario(None)
+
+        assert result == "vs_all_in"
+
+    def test_custom_thresholds(self) -> None:
+        """Custom thresholds should be respected."""
+        result = PreflopChart._resolve_all_in_scenario(15.0, 10.0, 30.0)
+        result2 = PreflopChart._resolve_all_in_scenario(5.0, 10.0, 30.0)
+
+        assert result == "vs_all_in_medium"
+        assert result2 == "vs_all_in_short"
+
+
+class TestAllInStackRouting:
+    """Test get_recommendation routes to correct stack-depth scenario."""
+
+    @pytest.fixture
+    def chart(self) -> PreflopChart:
+        """Return a preflop chart fixture."""
+        return PreflopChart("preflop_charts/6max_gto.json")
+
+    def test_short_stack_wider_call_range(self, chart: PreflopChart) -> None:
+        """Short stack 15BB: 55 should call from the short all-in range."""
+        result = chart.get_recommendation(
+            "UTG",
+            "5h5d",
+            "vs_all_in",
+            current_max_bet=1500,
+            blind_bb=100,
+            effective_stack_bb=15.0,
+        )
+
+        assert result["action"] == "call"
+
+    def test_deep_stack_narrow_call_range(self, chart: PreflopChart) -> None:
+        """Deep stack 80BB: 55 should fold outside the deep all-in range."""
+        result = chart.get_recommendation(
+            "UTG",
+            "5h5d",
+            "vs_all_in",
+            current_max_bet=8000,
+            blind_bb=100,
+            effective_stack_bb=80.0,
+        )
+
+        assert result["action"] == "fold"
+
+    def test_medium_stack_boundary(self, chart: PreflopChart) -> None:
+        """Medium stack 35BB: ATs should call from the medium all-in range."""
+        result = chart.get_recommendation(
+            "UTG",
+            "AsTs",
+            "vs_all_in",
+            current_max_bet=3500,
+            blind_bb=100,
+            effective_stack_bb=35.0,
+        )
+
+        assert result["action"] == "call"
+
+    def test_none_stack_uses_legacy_range(self, chart: PreflopChart) -> None:
+        """None stack: 55 should fold outside the legacy all-in range."""
+        result = chart.get_recommendation(
+            "UTG",
+            "5h5d",
+            "vs_all_in",
+            current_max_bet=5000,
+            blind_bb=100,
+            effective_stack_bb=None,
+        )
+
+        assert result["action"] == "fold"
+
+    def test_premium_hand_calls_at_all_depths(self, chart: PreflopChart) -> None:
+        """AA should call at any stack depth."""
+        for stack_bb in [10.0, 35.0, 80.0, None]:
+            result = chart.get_recommendation(
+                "BTN",
+                "AhAd",
+                "vs_all_in",
+                current_max_bet=5000,
+                blind_bb=100,
+                effective_stack_bb=stack_bb,
+            )
+
+            assert result["action"] == "call", f"AA should call at {stack_bb}BB"
+
+
+class TestAllInFallbackScenarios:
+    """Test fallback chain for stack-specific all-in scenarios."""
+
+    def test_short_falls_back_to_vs_all_in(self) -> None:
+        """vs_all_in_short falls back to legacy vs_all_in."""
+        assert PreflopChart._get_fallback_scenarios("vs_all_in_short") == [
+            "vs_all_in",
+        ]
+
+    def test_medium_falls_back_to_vs_all_in(self) -> None:
+        """vs_all_in_medium falls back to legacy vs_all_in."""
+        assert PreflopChart._get_fallback_scenarios("vs_all_in_medium") == [
+            "vs_all_in",
+        ]
+
+    def test_deep_falls_back_to_vs_all_in(self) -> None:
+        """vs_all_in_deep falls back to legacy vs_all_in."""
+        assert PreflopChart._get_fallback_scenarios("vs_all_in_deep") == [
+            "vs_all_in",
+        ]
+
+
+class TestAllInConfigThresholds:
+    """Test PreflopChart reads config thresholds."""
+
+    def test_default_thresholds_without_config(self) -> None:
+        """Without config, default thresholds 20/50 are used."""
+        chart = PreflopChart("preflop_charts/6max_gto.json")
+
+        assert chart._all_in_threshold_short == 20.0
+        assert chart._all_in_threshold_medium == 50.0
+
+    def test_custom_thresholds_from_config(self) -> None:
+        """Config thresholds should override defaults."""
+        config = {
+            "preflop_chart": {
+                "path": "preflop_charts/6max_gto.json",
+                "all_in_stack_threshold_short": 15,
+                "all_in_stack_threshold_medium": 40,
+            },
+        }
+        chart = PreflopChart("preflop_charts/6max_gto.json", config=config)
+
+        assert chart._all_in_threshold_short == 15.0
+        assert chart._all_in_threshold_medium == 40.0

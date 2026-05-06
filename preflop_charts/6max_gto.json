@@ -23,6 +23,18 @@
       "vs_all_in": {
         "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
         "fold": "remainder"
+      },
+      "vs_all_in_short": {
+        "call": "22+,A2s+,A9o+,K9s+,KTo+,QTs+,JTs",
+        "fold": "remainder"
+      },
+      "vs_all_in_medium": {
+        "call": "55+,ATs+,AJo+,KQs",
+        "fold": "remainder"
+      },
+      "vs_all_in_deep": {
+        "call": "99+,AQs+,AKo",
+        "fold": "remainder"
       }
     },
     "MP": {
@@ -47,6 +59,18 @@
       },
       "vs_all_in": {
         "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
+        "fold": "remainder"
+      },
+      "vs_all_in_short": {
+        "call": "22+,A2s+,A9o+,K9s+,KTo+,QTs+,JTs",
+        "fold": "remainder"
+      },
+      "vs_all_in_medium": {
+        "call": "55+,ATs+,AJo+,KQs",
+        "fold": "remainder"
+      },
+      "vs_all_in_deep": {
+        "call": "99+,AQs+,AKo",
         "fold": "remainder"
       }
     },
@@ -73,6 +97,18 @@
       "vs_all_in": {
         "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
         "fold": "remainder"
+      },
+      "vs_all_in_short": {
+        "call": "22+,A2s+,A9o+,K9s+,KTo+,QTs+,JTs",
+        "fold": "remainder"
+      },
+      "vs_all_in_medium": {
+        "call": "55+,ATs+,AJo+,KQs",
+        "fold": "remainder"
+      },
+      "vs_all_in_deep": {
+        "call": "99+,AQs+,AKo",
+        "fold": "remainder"
       }
     },
     "BTN": {
@@ -97,6 +133,18 @@
       },
       "vs_all_in": {
         "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
+        "fold": "remainder"
+      },
+      "vs_all_in_short": {
+        "call": "22+,A2s+,A9o+,K9s+,KTo+,QTs+,JTs",
+        "fold": "remainder"
+      },
+      "vs_all_in_medium": {
+        "call": "55+,ATs+,AJo+,KQs",
+        "fold": "remainder"
+      },
+      "vs_all_in_deep": {
+        "call": "99+,AQs+,AKo",
         "fold": "remainder"
       }
     },
@@ -138,6 +186,18 @@
       "vs_all_in": {
         "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
         "fold": "remainder"
+      },
+      "vs_all_in_short": {
+        "call": "22+,A2s+,A9o+,K9s+,KTo+,QTs+,JTs",
+        "fold": "remainder"
+      },
+      "vs_all_in_medium": {
+        "call": "55+,ATs+,AJo+,KQs",
+        "fold": "remainder"
+      },
+      "vs_all_in_deep": {
+        "call": "99+,AQs+,AKo",
+        "fold": "remainder"
       }
     },
     "BB": {
@@ -178,6 +238,18 @@
       },
       "vs_all_in": {
         "call": "AA,KK,QQ,JJ,TT,AKs,AKo",
+        "fold": "remainder"
+      },
+      "vs_all_in_short": {
+        "call": "22+,A2s+,A9o+,K9s+,KTo+,QTs+,JTs",
+        "fold": "remainder"
+      },
+      "vs_all_in_medium": {
+        "call": "55+,ATs+,AJo+,KQs",
+        "fold": "remainder"
+      },
+      "vs_all_in_deep": {
+        "call": "99+,AQs+,AKo",
         "fold": "remainder"
       }
     }

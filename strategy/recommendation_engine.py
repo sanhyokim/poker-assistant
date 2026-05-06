@@ -199,6 +199,7 @@ class RecommendationEngine:
             scenario,
             current_max_bet=self._current_max_bet(game_state),
             blind_bb=int(self.config.get("game", {}).get("blind_bb", 100)),
+            effective_stack_bb=self._effective_stack_bb_for_all_in(game_state),
         )
         chart_action = str(chart_result.get("action", "fold")).lower()
         original_chart_action = chart_action
@@ -922,6 +923,32 @@ class RecommendationEngine:
         if blind_bb <= 0 or hero_stack <= 0:
             return 100.0
         return hero_stack / blind_bb
+
+    def _effective_stack_bb_for_all_in(self, game_state: GameState) -> float:
+        """Return effective stack in BB for all-in scenario evaluation.
+
+        For all-in scenarios, uses ``min(hero_stack, max_opponent_bet)`` as
+        the effective stack because the all-in player's stack is already in
+        their visible bet. For non-all-in scenarios, this naturally falls back
+        to the hero stack in BB when no opponent bet is visible.
+
+        Args:
+            game_state: Current game state.
+
+        Returns:
+            Effective stack in BB units. Defaults to 100.0 when unavailable.
+        """
+        blind_bb = float(self.config.get("game", {}).get("blind_bb", 100) or 100)
+        if blind_bb <= 0:
+            return 100.0
+
+        hero_stack = float(getattr(game_state.hero, "stack", 0) or 0)
+        max_opponent_bet = float(self._max_opponent_bet(game_state))
+        if hero_stack <= 0:
+            return max_opponent_bet / blind_bb if max_opponent_bet > 0 else 100.0
+        if max_opponent_bet <= 0:
+            return hero_stack / blind_bb
+        return min(hero_stack, max_opponent_bet) / blind_bb
 
     def _generic_preflop_hand(self, hero_cards: list[str]) -> str:
         """Return generic preflop hand notation when chart helper is available."""

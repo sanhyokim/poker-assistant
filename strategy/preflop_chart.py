@@ -22,7 +22,11 @@ Recommendation = dict[str, Any]
 class PreflopChart:
     """プリフロップGTOチャートの読み込みと参照。"""
 
-    def __init__(self, chart_path: str = "preflop_charts/6max_gto.json") -> None:
+    def __init__(
+        self,
+        chart_path: str = "preflop_charts/6max_gto.json",
+        config: dict[str, Any] | None = None,
+    ) -> None:
         """JSONファイルからチャートデータを読み込む。
 
         Args:
@@ -32,6 +36,13 @@ class PreflopChart:
             FileNotFoundError: ファイルが存在しない場合。
             json.JSONDecodeError: JSONパースに失敗した場合。
         """
+        preflop_config = (config or {}).get("preflop_chart", {})
+        self._all_in_threshold_short = float(
+            preflop_config.get("all_in_stack_threshold_short", 20.0),
+        )
+        self._all_in_threshold_medium = float(
+            preflop_config.get("all_in_stack_threshold_medium", 50.0),
+        )
         with Path(chart_path).open("r", encoding="utf-8") as file:
             self.chart: dict[str, Any] = json.load(file)
 
@@ -42,6 +53,7 @@ class PreflopChart:
         scenario: str,
         current_max_bet: int = 0,
         blind_bb: int = 100,
+        effective_stack_bb: float | None = None,
     ) -> Recommendation:
         """Return a chart recommendation for position, hand, and scenario.
 
@@ -51,6 +63,7 @@ class PreflopChart:
             scenario: Chart scenario such as RFI or vs_BTN_raise.
             current_max_bet: Current maximum visible preflop bet.
             blind_bb: Big blind amount.
+            effective_stack_bb: Effective stack in big blinds for all-in spots.
 
         Returns:
             Recommendation dictionary with action, confidence, source, and range.
@@ -58,6 +71,13 @@ class PreflopChart:
         position_chart = self.chart.get("6max", {}).get(hero_position)
         if not isinstance(position_chart, dict):
             return self._fallback()
+
+        if scenario == "vs_all_in":
+            scenario = self._resolve_all_in_scenario(
+                effective_stack_bb,
+                self._all_in_threshold_short,
+                self._all_in_threshold_medium,
+            )
 
         scenario_chart = position_chart.get(scenario)
         if not isinstance(scenario_chart, dict):
@@ -228,11 +248,38 @@ class PreflopChart:
         Returns:
             List of fallback scenario names to try in order.
         """
+        if scenario in {"vs_all_in_short", "vs_all_in_medium", "vs_all_in_deep"}:
+            return ["vs_all_in"]
         if scenario.startswith("vs_") and scenario.endswith("_raise"):
             return ["vs_raise", "vs_3bet"]
         if scenario == "vs_raise":
             return ["vs_3bet"]
         return []
+
+    @staticmethod
+    def _resolve_all_in_scenario(
+        effective_stack_bb: float | None,
+        threshold_short: float = 20.0,
+        threshold_medium: float = 50.0,
+    ) -> str:
+        """Resolve vs_all_in to a stack-depth-specific scenario.
+
+        Args:
+            effective_stack_bb: Effective stack in BB units. None means unknown.
+            threshold_short: BB threshold for short stack, inclusive.
+            threshold_medium: BB threshold for medium stack, inclusive.
+
+        Returns:
+            Stack-depth-specific all-in scenario, or vs_all_in when stack depth
+            is unknown.
+        """
+        if effective_stack_bb is None:
+            return "vs_all_in"
+        if effective_stack_bb <= threshold_short:
+            return "vs_all_in_short"
+        if effective_stack_bb <= threshold_medium:
+            return "vs_all_in_medium"
+        return "vs_all_in_deep"
 
     @staticmethod
     def _normalize_hand(hand: str) -> str:

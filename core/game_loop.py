@@ -18,12 +18,13 @@ from recognition.button_recognizer import ButtonRecognizer
 from recognition.card_recognizer import CardRecognizer
 from recognition.dealer_recognizer import DealerRecognizer
 from recognition.diff_detector import DiffDetector
+from recognition.fold_badge_detector import FoldBadgeDetector
 from recognition.name_recognizer import NameRecognizer
 from recognition.number_recognizer import NumberRecognizer
-from recognition.seat_card_detector import SeatCardDetector
 from strategy.recommendation_engine import Recommendation, RecommendationEngine
 
 logger = logging.getLogger(__name__)
+
 
 class GameLoop:
     """Synchronous game polling loop for Phase 10a.
@@ -62,11 +63,7 @@ class GameLoop:
         self._name_recognizer = NameRecognizer(profile, config)
         self._diff_detector = DiffDetector(config)
         self._action_estimator = ActionEstimator(config)
-        self._seat_card_detector = SeatCardDetector(profile, config)
-        self._seat_card_no_card_streak: dict[int, int] = {}
-        self._fold_confirm_frames = int(
-            config.get("recognition", {}).get("fold_confirm_frames", 3)
-        )
+        self._fold_badge_detector = FoldBadgeDetector(profile, config)
 
         self._running = False
         self._prev_state: GameState | None = None
@@ -187,9 +184,16 @@ class GameLoop:
             game_state.game_event = None
             game_state.actions_since_last_frame = []
 
+        if self._hand_manager.hand_just_started:
+            self._fold_badge_detector.reset()
+            logger.debug(
+                "Fold badge latches cleared on hand start (hand_id=%s)",
+                self._hand_manager.hand_id,
+            )
+
         if self._hand_manager.phase in {"preflop", "flop", "turn", "river"}:
-            seat_cards = self._seat_card_detector.detect_all(frame)
-            self._process_seat_card_detection(game_state, seat_cards)
+            fold_results = self._fold_badge_detector.detect_all(frame)
+            self._process_fold_badge_detection(game_state, fold_results)
 
         self._manage_hero_card_cache(game_state)
         self._prev_state = game_state
@@ -213,8 +217,7 @@ class GameLoop:
         self._last_strategy_phase = None
         self._diff_detector.reset()
         self._action_estimator.reset()
-        self._seat_card_no_card_streak.clear()
-        self._seat_card_detector.reset()
+        self._fold_badge_detector.reset()
         logger.info("Game loop reset")
 
     def _init_strategy_modules(self) -> None:
@@ -232,7 +235,7 @@ class GameLoop:
                 "path",
                 "preflop_charts/6max_gto.json",
             )
-            preflop_chart = PreflopChart(chart_path)
+            preflop_chart = PreflopChart(chart_path, config=self._config)
         except Exception:
             logger.warning(
                 "PreflopChart initialization failed, preflop will use fallback",
@@ -765,60 +768,25 @@ class GameLoop:
             return {}
         return stats if isinstance(stats, dict) else {}
 
-    def _process_seat_card_detection(
+    def _process_fold_badge_detection(
         self,
         game_state: GameState,
-        seat_cards: dict[int, bool],
+        fold_results: dict[int, bool],
     ) -> None:
-        """Generate confirmed FOLD actions from opponent card disappearance.
+        """Generate FOLD actions from latched fold badge detection.
 
         Args:
             game_state: Current frame state after action estimation.
-            seat_cards: Mapping of seat number to card-present boolean.
+            fold_results: Mapping of seat number to fold-badge status.
         """
         players_in_hand = self._hand_manager.get_players_in_hand()
         for seat in range(2, 7):
             if seat not in players_in_hand:
-                self._seat_card_no_card_streak.pop(seat, None)
+                continue
+            if not fold_results.get(seat, False):
                 continue
 
-            has_card = seat_cards.get(seat, True)
-            if has_card:
-                if seat in self._seat_card_no_card_streak:
-                    logger.debug(
-                        "Seat %d card reappeared, resetting no-card streak",
-                        seat,
-                    )
-                self._seat_card_no_card_streak.pop(seat, None)
-                continue
-
-            seat_key = str(seat)
-            if self._seat_had_recent_action(game_state, seat_key):
-                logger.debug(
-                    "Seat %d card not visible but has recent action, "
-                    "skipping fold detection",
-                    seat,
-                )
-                self._seat_card_no_card_streak.pop(seat, None)
-                continue
-
-            streak = self._seat_card_no_card_streak.get(seat, 0) + 1
-            self._seat_card_no_card_streak[seat] = streak
-            if streak < self._fold_confirm_frames:
-                logger.debug(
-                    "Seat %d card not visible, streak=%d/%d",
-                    seat,
-                    streak,
-                    self._fold_confirm_frames,
-                )
-                continue
-
-            logger.info(
-                "FOLD detected via card absence for seat %d (%d consecutive frames)",
-                seat,
-                streak,
-            )
-            self._seat_card_no_card_streak.pop(seat, None)
+            logger.info("FOLD detected via badge for seat %d", seat)
             game_state.actions_since_last_frame.append(
                 ActionRecord(
                     seat=seat,
@@ -827,29 +795,6 @@ class GameLoop:
                     confidence="high",
                 )
             )
-
-    def _seat_had_recent_action(self, game_state: GameState, seat_key: str) -> bool:
-        """Return whether a seat had a stack or bet change in this frame.
-
-        Args:
-            game_state: Current frame state.
-            seat_key: Seat number as a string.
-
-        Returns:
-            True if stack decreased or bet increased from the previous frame.
-        """
-        if self._prev_state is None:
-            return False
-        prev_player = self._prev_state.players.get(seat_key)
-        curr_player = game_state.players.get(seat_key)
-        if prev_player is None or curr_player is None:
-            return False
-
-        prev_stack = prev_player.stack or 0
-        curr_stack = curr_player.stack or 0
-        prev_bet = prev_player.bet or 0
-        curr_bet = curr_player.bet or 0
-        return curr_stack < prev_stack or curr_bet > prev_bet
 
     def _sync_game_state_with_hand_manager(self, game_state: GameState) -> None:
         """Copy HandManager phase, hand ID, and active count into GameState."""
@@ -1021,16 +966,32 @@ class GameLoop:
             and self._player_names_captured_for_hand == current_hand_id
         ):
             player_names = dict(self._cached_player_names)
+        elif current_hand_id is not None:
+            players_in_hand = self._hand_manager.get_players_in_hand()
+            raw_names = self._name_recognizer.recognize_player_names(frame)
+            player_names: dict[str, str | None] = {}
+            for seat in range(2, 7):
+                seat_key = str(seat)
+                if seat in players_in_hand:
+                    ocr_name = raw_names.get(seat_key)
+                    if ocr_name is not None:
+                        player_names[seat_key] = ocr_name
+                    else:
+                        player_names[seat_key] = self._cached_player_names.get(seat_key)
+                else:
+                    player_names[seat_key] = None
+            self._cached_player_names = dict(player_names)
+            self._player_names_captured_for_hand = current_hand_id
+            logger.info(
+                "Player names locked for hand %d: %s",
+                current_hand_id,
+                {key: value for key, value in player_names.items() if value is not None},
+            )
         else:
             player_names = self._name_recognizer.recognize_player_names(frame)
-            if current_hand_id is not None:
-                self._cached_player_names = dict(player_names)
-                self._player_names_captured_for_hand = current_hand_id
-                logger.debug(
-                    "Player names captured for hand %d: %s",
-                    current_hand_id,
-                    {key: value for key, value in player_names.items() if value is not None},
-                )
+            for seat_key, name in player_names.items():
+                if name is not None:
+                    self._cached_player_names[seat_key] = name
         self._populate_players(game_state, number_results, player_names)
         self._populate_position(game_state)
 

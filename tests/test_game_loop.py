@@ -266,23 +266,18 @@ def _state_with_player(seat: str, stack: int = 5000, bet: int = 0) -> Any:
     return game_state
 
 
-def test_seat_card_fold_detection_after_confirm_frames(
+def test_fold_badge_detection_appends_fold_action(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Seat card disappearance for N frames generates a FOLD action."""
+    """Fold badge detection generates a FOLD action."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "flop"
     loop._hand_manager._players_in_hand = {"1": True, "3": True}
     loop._prev_state = _state_with_player("3")
     game_state = _state_with_player("3")
 
-    for _ in range(loop._fold_confirm_frames - 1):
-        loop._process_seat_card_detection(game_state, {3: False})
-
-    assert game_state.actions_since_last_frame == []
-
-    loop._process_seat_card_detection(game_state, {3: False})
+    loop._process_fold_badge_detection(game_state, {3: True})
 
     assert game_state.actions_since_last_frame[-1] == ActionRecord(
         seat=3,
@@ -294,58 +289,74 @@ def test_seat_card_fold_detection_after_confirm_frames(
     assert 3 not in loop._hand_manager.get_players_in_hand()
 
 
-def test_seat_card_reappearance_resets_streak(
+def test_fold_badge_detection_ignores_nonparticipants(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Card reappearance after early misses resets the no-card streak."""
+    """Fold badges for seats outside the hand do not generate actions."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "3": False}
+    loop._prev_state = _state_with_player("3")
+    game_state = _state_with_player("3")
+
+    loop._process_fold_badge_detection(game_state, {3: True})
+
+    assert game_state.actions_since_last_frame == []
+
+
+def test_fold_badge_detection_ignores_false_results(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seats without fold badges do not generate actions."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "flop"
     loop._hand_manager._players_in_hand = {"1": True, "3": True}
     loop._prev_state = _state_with_player("3")
     game_state = _state_with_player("3")
 
-    loop._process_seat_card_detection(game_state, {3: False})
-    loop._process_seat_card_detection(game_state, {3: True})
-    loop._process_seat_card_detection(game_state, {3: False})
+    loop._process_fold_badge_detection(game_state, {3: False})
 
     assert game_state.actions_since_last_frame == []
-    assert loop._seat_card_no_card_streak[3] == 1
 
 
-def test_seat_card_with_recent_action_skips_fold(
+def test_fold_badge_detector_runs_during_active_phase(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Seats with recent bet or stack changes are not marked as folded."""
-    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
-    loop._hand_manager._phase = "flop"
-    loop._hand_manager._players_in_hand = {"1": True, "3": True}
-    loop._prev_state = _state_with_player("3", stack=5000, bet=0)
-    game_state = _state_with_player("3", stack=4900, bet=100)
-
-    for _ in range(loop._fold_confirm_frames):
-        loop._process_seat_card_detection(game_state, {3: False})
-
-    assert game_state.actions_since_last_frame == []
-    assert 3 not in loop._seat_card_no_card_streak
-
-
-def test_seat_card_detector_runs_during_active_phase(
-    workspace_tmp: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """SeatCardDetector is called from process_one_frame during active phases."""
+    """FoldBadgeDetector is called from process_one_frame during active phases."""
     image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
     loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
     loop._hand_manager._phase = "preflop"
     loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
     detector = MagicMock()
-    detector.detect_all.return_value = {2: True, 3: True, 4: True, 5: True, 6: True}
-    loop._seat_card_detector = detector
+    detector.detect_all.return_value = {2: False, 3: False, 4: False, 5: False, 6: False}
+    loop._fold_badge_detector = detector
 
     loop.process_one_frame()
 
+    detector.detect_all.assert_called_once()
+
+
+def test_fold_badge_latches_cleared_on_hand_start(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hand-start frames clear fold badge latches."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 42
+    loop._hand_manager._hand_just_started = True
+    loop._hand_manager._hand_start_monotonic = time.monotonic()
+    detector = MagicMock()
+    detector.detect_all.return_value = {2: False, 3: False, 4: False, 5: False, 6: False}
+    loop._fold_badge_detector = detector
+
+    loop.process_one_frame()
+
+    detector.reset.assert_called_once()
     detector.detect_all.assert_called_once()
 
 
@@ -547,6 +558,7 @@ def test_player_names_cached_during_hand(
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "preflop"
     loop._hand_manager._hand_id = 7
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": False}
     loop._name_recognizer.recognize_player_names = MagicMock(
         return_value={"2": "Alice", "3": "Bob", "4": None, "5": None, "6": None}
     )
@@ -558,6 +570,7 @@ def test_player_names_cached_during_hand(
     assert loop._name_recognizer.recognize_player_names.call_count == 1
     assert first_state.players["2"].name == "Alice"
     assert second_state.players["2"].name == "Alice"
+    assert first_state.players["3"].name is None
 
 
 def test_player_names_recaptured_on_new_hand_id(
@@ -567,6 +580,7 @@ def test_player_names_recaptured_on_new_hand_id(
     """A new hand_id triggers a fresh player-name OCR capture."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "preflop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
     loop._name_recognizer.recognize_player_names = MagicMock(
         side_effect=[
             {"2": "Alice", "3": None, "4": None, "5": None, "6": None},
@@ -583,6 +597,27 @@ def test_player_names_recaptured_on_new_hand_id(
     assert loop._name_recognizer.recognize_player_names.call_count == 2
     assert first_state.players["2"].name == "Alice"
     assert second_state.players["2"].name == "Carol"
+
+
+def test_player_name_ocr_failure_uses_previous_cache(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OCR failures for players in hand reuse the previous cached name."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 9
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": False}
+    loop._cached_player_names = {"2": "PreviousAlice", "3": "PreviousBob"}
+    loop._name_recognizer.recognize_player_names = MagicMock(
+        return_value={"2": None, "3": "NewBob", "4": None, "5": None, "6": None}
+    )
+    frame = np.zeros((20, 20, 3), dtype=np.uint8)
+
+    game_state = loop._build_game_state(frame, time.time())
+
+    assert game_state.players["2"].name == "PreviousAlice"
+    assert game_state.players["3"].name is None
 
 
 def test_waiting_hero_card_failure_log_is_suppressed(

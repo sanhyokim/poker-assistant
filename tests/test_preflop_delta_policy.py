@@ -15,10 +15,10 @@ def default_config() -> dict:
     return {
         "preflop_delta": {
             "enabled": True,
-            "sample_threshold_low": 30,
-            "sample_threshold_high": 100,
-            "shift_cap_low": 0.05,
-            "shift_cap_high": 0.10,
+            "sample_threshold_low": 50,
+            "sample_threshold_high": 200,
+            "shift_cap_low": 0.03,
+            "shift_cap_high": 0.08,
             "timeout_ms": 1000,
         }
     }
@@ -94,15 +94,15 @@ class TestShiftCap:
 
     def test_low_sample(self, policy: PreflopDeltaPolicy) -> None:
         """Low samples use the low cap."""
-        assert policy.get_shift_cap({"total_hands": 50}) == 0.05
+        assert policy.get_shift_cap({"total_hands": 50}) == 0.03
 
     def test_high_sample(self, policy: PreflopDeltaPolicy) -> None:
         """High samples use the high cap."""
-        assert policy.get_shift_cap({"total_hands": 150}) == 0.10
+        assert policy.get_shift_cap({"total_hands": 250}) == 0.08
 
     def test_boundary(self, policy: PreflopDeltaPolicy) -> None:
         """The high threshold boundary uses the high cap."""
-        assert policy.get_shift_cap({"total_hands": 100}) == 0.10
+        assert policy.get_shift_cap({"total_hands": 200}) == 0.08
 
 
 class TestValidateDelta:
@@ -235,9 +235,9 @@ class TestApplyIntegration:
             {"total_hands": 50, "player_name": "PrivateName"},
         )
 
-        assert result["raise"] == pytest.approx(0.55)
-        assert result["call"] == pytest.approx(0.28)
-        assert result["fold"] == pytest.approx(0.17)
+        assert result["raise"] == pytest.approx(0.53)
+        assert result["call"] == pytest.approx(0.29)
+        assert result["fold"] == pytest.approx(0.18)
 
     def test_timeout_returns_chart(self, default_config: dict) -> None:
         """A slow delta response is discarded."""

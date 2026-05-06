@@ -91,17 +91,17 @@ def _edge_mask_with_density(density: float) -> np.ndarray:
     return edges
 
 
-def test_dark_background_no_card(
+def test_dark_card_with_edges_detects_card(
     detector: SeatCardDetector,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dark background with enough edges still reports no card."""
+    """Dark card-like regions with enough edges report card present."""
     monkeypatch.setattr(
         "recognition.seat_card_detector.cv2.Canny",
-        lambda *_args: _edge_mask_with_density(0.15),
+        lambda *_args: _edge_mask_with_density(0.19),
     )
 
-    assert detector._has_card(_crop_with_gray_mean(30), 2) is False
+    assert detector._has_card(_crop_with_gray_mean(32), 2) is True
 
 
 def test_bright_card_back(
@@ -134,13 +134,26 @@ def test_borderline_gray_mean(
     detector: SeatCardDetector,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Gray mean exactly at the threshold is accepted when density passes."""
+    """Gray mean no longer affects card detection when density passes."""
     monkeypatch.setattr(
         "recognition.seat_card_detector.cv2.Canny",
         lambda *_args: _edge_mask_with_density(0.10),
     )
 
-    assert detector._has_card(_crop_with_gray_mean(80), 2) is True
+    assert detector._has_card(_crop_with_gray_mean(10), 2) is True
+
+
+def test_dark_empty_background_no_card(
+    detector: SeatCardDetector,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dark empty backgrounds with too few edges report no card."""
+    monkeypatch.setattr(
+        "recognition.seat_card_detector.cv2.Canny",
+        lambda *_args: _edge_mask_with_density(0.01),
+    )
+
+    assert detector._has_card(_crop_with_gray_mean(10), 2) is False
 
 
 def test_reset_clears_state(detector: SeatCardDetector) -> None:
