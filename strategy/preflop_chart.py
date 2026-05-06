@@ -61,7 +61,12 @@ class PreflopChart:
 
         scenario_chart = position_chart.get(scenario)
         if not isinstance(scenario_chart, dict):
-            return self._fallback()
+            for fallback_scenario in self._get_fallback_scenarios(scenario):
+                scenario_chart = position_chart.get(fallback_scenario)
+                if isinstance(scenario_chart, dict):
+                    break
+            if not isinstance(scenario_chart, dict):
+                return self._fallback()
 
         generic_hand = self._normalize_hand(hand)
         for action in ACTION_PRIORITY:
@@ -212,6 +217,22 @@ class PreflopChart:
             except (TypeError, ValueError):
                 pass
         return str(action.get("position", "")) == hero_position
+
+    @staticmethod
+    def _get_fallback_scenarios(scenario: str) -> list[str]:
+        """Return ordered fallback scenario names when primary is missing.
+
+        Args:
+            scenario: Primary scenario name that was not found.
+
+        Returns:
+            List of fallback scenario names to try in order.
+        """
+        if scenario.startswith("vs_") and scenario.endswith("_raise"):
+            return ["vs_raise", "vs_3bet"]
+        if scenario == "vs_raise":
+            return ["vs_3bet"]
+        return []
 
     @staticmethod
     def _normalize_hand(hand: str) -> str:

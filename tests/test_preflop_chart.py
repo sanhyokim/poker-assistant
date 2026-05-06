@@ -223,6 +223,93 @@ def test_recommendation_sb_vs_btn_raise_3bet() -> None:
     assert recommendation["action"] == "3bet"
 
 
+def test_recommendation_btn_vs_raise_aks() -> None:
+    """BTN AKs facing a raise recommends 3bet (not fallback)."""
+    recommendation = PreflopChart().get_recommendation(
+        "BTN",
+        "AsKs",
+        "vs_raise",
+        current_max_bet=200,
+    )
+
+    assert recommendation["action"] == "3bet"
+    assert recommendation["source"] == "preflop_chart"
+
+
+def test_recommendation_btn_vs_raise_ato() -> None:
+    """BTN ATo facing a raise recommends call."""
+    recommendation = PreflopChart().get_recommendation(
+        "BTN",
+        "AhTc",
+        "vs_raise",
+        current_max_bet=200,
+    )
+
+    assert recommendation["action"] == "call"
+    assert recommendation["source"] == "preflop_chart"
+
+
+def test_recommendation_co_vs_raise_fold_weak() -> None:
+    """CO 72o facing a raise recommends fold."""
+    recommendation = PreflopChart().get_recommendation(
+        "CO",
+        "7h2c",
+        "vs_raise",
+        current_max_bet=200,
+    )
+
+    assert recommendation["action"] == "fold"
+
+
+def test_recommendation_utg_vs_raise_aks() -> None:
+    """UTG AKs facing a raise recommends 4bet."""
+    recommendation = PreflopChart().get_recommendation(
+        "UTG",
+        "AsKs",
+        "vs_raise",
+        current_max_bet=300,
+    )
+
+    assert recommendation["action"] == "4bet"
+
+
+def test_recommendation_mp_vs_raise_jj() -> None:
+    """MP JJ facing a raise recommends call."""
+    recommendation = PreflopChart().get_recommendation(
+        "MP",
+        "JsJc",
+        "vs_raise",
+        current_max_bet=200,
+    )
+
+    assert recommendation["action"] == "call"
+
+
+def test_scenario_fallback_to_vs_raise() -> None:
+    """Unknown position-specific raise scenario falls back to vs_raise."""
+    recommendation = PreflopChart().get_recommendation("BTN", "AsKs", "vs_UTG_raise")
+
+    assert recommendation["source"] == "preflop_chart"
+    assert recommendation["action"] in {"3bet", "4bet", "call"}
+
+
+def test_scenario_fallback_chain_to_vs_3bet() -> None:
+    """Fallback chain can recover from an unsupported position-specific raise."""
+    recommendation = PreflopChart().get_recommendation("UTG", "AsAc", "vs_MP_raise")
+
+    assert recommendation["source"] == "preflop_chart"
+    assert recommendation["action"] in {"4bet", "call"}
+
+
+def test_load_chart_vs_raise_exists() -> None:
+    """All non-blind positions have vs_raise in the chart."""
+    chart = PreflopChart()
+    data = chart.chart["6max"]
+
+    for position in ["UTG", "MP", "CO", "BTN"]:
+        assert "vs_raise" in data[position], f"{position} missing vs_raise"
+
+
 def test_recommendation_unknown_scenario() -> None:
     """Unknown scenarios fall back to low-confidence fold."""
     recommendation = PreflopChart().get_recommendation("UTG", "AsAc", "unknown")
