@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import queue
 import subprocess
 import time
 from typing import Any
@@ -120,6 +121,57 @@ def test_solve_invalid_json_returns_error() -> None:
         "success": False,
         "error": "Invalid JSON response from solver",
     }
+
+
+def test_read_json_response_single_line() -> None:
+    """A single-line JSON response is returned unchanged."""
+    fake_process = FakeProcess('{"success": true, "value": 1}\n')
+    result_queue: queue.Queue[str | BaseException] = queue.Queue()
+    bridge = PostflopSolverBridge("fake_solver.exe")
+
+    bridge._read_json_response(fake_process, result_queue)
+
+    result = result_queue.get_nowait()
+    assert result == '{"success": true, "value": 1}\n'
+
+
+def test_read_json_response_multiline() -> None:
+    """A JSON response split across lines is accumulated before returning."""
+    stdout = '{"success": true,\n"value": [1,\n2, 3]}\n'
+    fake_process = FakeProcess(stdout)
+    result_queue: queue.Queue[str | BaseException] = queue.Queue()
+    bridge = PostflopSolverBridge("fake_solver.exe")
+
+    bridge._read_json_response(fake_process, result_queue)
+
+    result = result_queue.get_nowait()
+    assert result == stdout
+
+
+def test_read_json_response_eof_with_partial() -> None:
+    """EOF after partial content returns the partial buffer."""
+    stdout = '{"success": true'
+    fake_process = FakeProcess(stdout)
+    result_queue: queue.Queue[str | BaseException] = queue.Queue()
+    bridge = PostflopSolverBridge("fake_solver.exe")
+
+    bridge._read_json_response(fake_process, result_queue)
+
+    result = result_queue.get_nowait()
+    assert result == stdout
+
+
+def test_read_json_response_eof_empty() -> None:
+    """Immediate EOF returns a RuntimeError."""
+    fake_process = FakeProcess("")
+    result_queue: queue.Queue[str | BaseException] = queue.Queue()
+    bridge = PostflopSolverBridge("fake_solver.exe")
+
+    bridge._read_json_response(fake_process, result_queue)
+
+    result = result_queue.get_nowait()
+    assert isinstance(result, RuntimeError)
+    assert str(result) == "Solver process closed stdout"
 
 
 def test_stop_terminates_process() -> None:

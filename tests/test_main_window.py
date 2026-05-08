@@ -39,6 +39,10 @@ def test_main_window_constructs_with_tabs(qapp: QApplication) -> None:
         "Settings",
         "Statistics",
     ]
+    assert hasattr(window, "_summary_labels")
+    assert "Table" in window._summary_labels
+    assert hasattr(window, "_player_table")
+    assert window._player_table.rowCount() == 5
 
 
 def test_start_stop_button_emits_signals(qapp: QApplication) -> None:
@@ -101,6 +105,97 @@ def test_update_game_state_displays_json(qapp: QApplication) -> None:
     assert '"phase": "flop"' in text
     assert '"pot": 300' in text
     assert '"cards": [' in text
+
+
+def test_update_game_state_updates_summary_panel(qapp: QApplication) -> None:
+    """update_game_state updates the operation summary labels."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.phase = "flop"
+    game_state.table_visible = True
+    game_state.hand_id = 12
+    game_state.frame_number = 99
+    game_state.pot = 750
+    game_state.board = ["Ah", "Kd", "2c"]
+    game_state.active_player_count = 3
+    game_state.hero.cards = ["Qs", "Qh"]
+    game_state.hero.stack = 4200
+    game_state.hero.bet = 100
+    game_state.hero.in_current_hand = True
+    game_state.hero.has_folded = False
+    game_state.hero.is_my_turn = True
+
+    window.update_game_state(game_state)
+
+    assert window._summary_labels["Table"].text() == "VISIBLE"
+    assert window._summary_labels["Phase"].text() == "flop"
+    assert window._summary_labels["Hand ID"].text() == "12"
+    assert window._summary_labels["Frame"].text() == "99"
+    assert window._summary_labels["Pot"].text() == "750"
+    assert window._summary_labels["Board"].text() == "Ah Kd 2c"
+    assert window._summary_labels["Active"].text() == "3"
+    assert window._summary_labels["Hero"].text() == "Qs Qh / stack=4200 / bet=100"
+    assert window._summary_labels["Hero In Hand"].text() == "YES"
+    assert window._summary_labels["Hero Folded"].text() == "NO"
+    assert window._summary_labels["Turn"].text() == "YES"
+
+
+def test_update_game_state_updates_player_table(qapp: QApplication) -> None:
+    """update_game_state updates seat rows in the operation player table."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.table_visible = True
+    game_state.players["2"].name = "Alice"
+    game_state.players["2"].stack = 5000
+    game_state.players["2"].bet = 100
+    game_state.players["2"].is_seated = True
+    game_state.players["2"].cards_visible = True
+    game_state.players["2"].in_current_hand = True
+    game_state.players["3"].name = "Bob"
+    game_state.players["3"].stack = 4800
+    game_state.players["3"].is_seated = True
+    game_state.players["3"].cards_visible = False
+    game_state.players["3"].in_current_hand = False
+
+    window.update_game_state(game_state)
+
+    assert window._player_table.item(0, 0).text() == "2"
+    assert window._player_table.item(0, 1).text() == "Alice"
+    assert window._player_table.item(0, 2).text() == "5000"
+    assert window._player_table.item(0, 3).text() == "100"
+    assert window._player_table.item(0, 4).text() == "YES"
+    assert window._player_table.item(0, 5).text() == "YES"
+    assert window._player_table.item(0, 6).text() == "YES"
+    assert window._player_table.item(0, 7).text() == "ACTIVE"
+    assert window._player_table.item(1, 1).text() == "Bob"
+    assert window._player_table.item(1, 7).text() == "WAITING"
+
+
+def test_update_game_state_table_closed_summary_and_players(
+    qapp: QApplication,
+) -> None:
+    """Closed table state is visible in summary and clears player rows."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.table_visible = False
+    game_state.players["2"].name = "Alice"
+    game_state.players["2"].stack = 5000
+    game_state.players["2"].is_seated = True
+    game_state.players["2"].cards_visible = True
+    game_state.players["2"].in_current_hand = True
+
+    window.update_game_state(game_state)
+
+    assert window._summary_labels["Table"].text() == "CLOSED"
+    assert window._player_table.item(0, 1).text() == "-"
+    assert window._player_table.item(0, 2).text() == "-"
+    assert window._player_table.item(0, 4).text() == "NO"
+    assert window._player_table.item(0, 5).text() == "NO"
+    assert window._player_table.item(0, 6).text() == "NO"
+    assert window._player_table.item(0, 7).text() == "TABLE CLOSED"
 
 
 def test_append_log_and_filter(qapp: QApplication) -> None:

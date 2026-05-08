@@ -21,8 +21,8 @@ game:
 solver:
   cli_path: solver/bin/postflop_cli.exe
   max_iterations: 200
-  target_exploitability_pct: 0.5
-  timeout_ms: 7000
+  target_exploitability_pct: 0.6
+  timeout_ms: 10000
   default_bet_sizes: "60%,a"
   default_raise_sizes: "2.5x"
   add_allin_threshold: 1.5
@@ -58,6 +58,7 @@ recognition:
   fold_badge_threshold: 0.8
   pot_spike_ratio: 2.0
   pot_spike_confirm_frames: 2
+  new_hand_confirm_frames: 2
 
 action_estimation:
   new_hand_pot_ratio: 0.3

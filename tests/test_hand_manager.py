@@ -55,6 +55,7 @@ def make_state(
     game_event: str | None = None,
     actions: list[ActionRecord] | None = None,
     players: dict[str, tuple[int | None, int]] | None = None,
+    player_cards_visible: set[str] | None = None,
 ) -> GameState:
     """Create a GameState for HandManager tests.
 
@@ -69,6 +70,7 @@ def make_state(
         game_event: Game event.
         actions: Actions since last frame.
         players: Seat to (stack, bet) mapping.
+        player_cards_visible: Seats whose opponent cards are visible.
 
     Returns:
         Configured GameState.
@@ -86,12 +88,14 @@ def make_state(
     state.actions_since_last_frame = list(actions or [])
 
     values = players or {"2": (5000, 0), "3": (5000, 0)}
+    visible_seats = player_cards_visible or set()
     for seat_key in ["2", "3", "4", "5", "6"]:
         stack, bet = values.get(seat_key, (None, 0))
         state.players[seat_key] = PlayerState(
             stack=stack,
             bet=bet,
             is_seated=stack is not None,
+            cards_visible=seat_key in visible_seats,
             in_current_hand=stack is not None,
         )
 
@@ -150,6 +154,30 @@ def make_manager(tmp_path: Path, db_path: str | None = ":memory:") -> HandManage
 def start_hand(manager: HandManager) -> None:
     """Move a manager from waiting to preflop."""
     manager.process_frame(make_state(hero_cards=["Ah", "Kd"]))
+
+
+def finish_hand_by_pot_decrease(
+    manager: HandManager,
+    board: list[str] | None = None,
+    players: dict[str, tuple[int | None, int]] | None = None,
+) -> None:
+    """Move an active hand to hand_end with a payout-like pot decrease."""
+    manager.process_frame(
+        make_state(
+            hero_cards=["Ah", "Kd"],
+            board=board,
+            pot=1200,
+            players=players,
+        )
+    )
+    manager.process_frame(
+        make_state(
+            hero_cards=["Ah", "Kd"],
+            board=board,
+            pot=0,
+            players=players,
+        )
+    )
 
 
 def stat_action(seat: int, action: str, street: str, amount: int = 0) -> dict:
@@ -230,7 +258,7 @@ class TestPhaseTransitions:
             make_state(
                 hero_cards=["Ah", "Kd"],
                 board=["2c", "7d", "Ts", "Jc", "4h"],
-                actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
+                pot=0,
             )
         )
         assert manager.phase == "hand_end"
@@ -378,8 +406,8 @@ class TestHandEndConditions:
 
         assert manager.phase == "hand_end"
 
-    def test_hero_fold_ends_hand(self, manager: HandManager) -> None:
-        """A seat 1 FOLD action ends the hand."""
+    def test_hero_fold_keeps_table_hand_active(self, manager: HandManager) -> None:
+        """A seat 1 FOLD action marks hero folded without ending the table hand."""
         start_hand(manager)
         manager.process_frame(
             make_state(
@@ -387,6 +415,39 @@ class TestHandEndConditions:
                 actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
             )
         )
+
+        assert manager.phase == "preflop"
+        assert manager.hero_folded is True
+        assert 1 not in manager.get_players_in_hand()
+
+    def test_hero_folded_missing_cards_do_not_end_hand(self, manager: HandManager) -> None:
+        """Hero card disappearance after hero fold is not a table hand-end signal."""
+        start_hand(manager)
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
+            )
+        )
+
+        for _ in range(5):
+            manager.process_frame(make_state(hero_cards=None))
+
+        assert manager.phase == "preflop"
+        assert manager._hero_card_missing_count == 0
+
+    def test_hero_folded_pot_decrease_ends_hand(self, manager: HandManager) -> None:
+        """A pot decrease still ends the table hand after hero folded."""
+        start_hand(manager)
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                pot=1200,
+                actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
+            )
+        )
+
+        manager.process_frame(make_state(hero_cards=None, pot=0))
 
         assert manager.phase == "hand_end"
 
@@ -413,6 +474,223 @@ class TestHandEndConditions:
 
         assert manager.phase == "hand_end"
 
+    def test_pot_decrease_ends_hand(self, manager: HandManager) -> None:
+        """A pot decrease during an active hand ends the hand."""
+        start_hand(manager)
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=1200))
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
+
+        assert manager.phase == "hand_end"
+
+    def test_pot_same_zero_does_not_end_hand(self, manager: HandManager) -> None:
+        """Repeated zero pot values do not trigger pot-decrease hand end."""
+        start_hand(manager)
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
+
+        assert manager.phase == "preflop"
+
+    def test_pot_increase_does_not_end_hand(self, manager: HandManager) -> None:
+        """Pot increases during an active hand do not end the hand."""
+        start_hand(manager)
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=100))
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=300))
+
+        assert manager.phase == "preflop"
+
+    def test_first_tracked_pot_does_not_end_hand(self, manager: HandManager) -> None:
+        """The first active frame with no previous pot does not end the hand."""
+        start_hand(manager)
+        assert manager._prev_frame_pot is None
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
+
+        assert manager.phase == "preflop"
+        assert manager._prev_frame_pot == 0
+
+
+class TestPlayersInHandStartModel:
+    """Tests for participants captured when a new hand starts."""
+
+    def test_stack_only_player_is_not_in_hand(self, manager: HandManager) -> None:
+        """A visible stack alone does not make a seat a hand participant."""
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0)},
+            )
+        )
+
+        assert manager.get_players_in_hand() == {1}
+
+    def test_cards_visible_player_is_in_hand(self, manager: HandManager) -> None:
+        """A visible seat-card region makes a seat a hand participant."""
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0)},
+                player_cards_visible={"2"},
+            )
+        )
+
+        assert manager.get_players_in_hand() == {1, 2}
+
+    def test_player_with_bet_is_in_hand(self, manager: HandManager) -> None:
+        """A seat with a live bet is a hand participant."""
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (4900, 100)},
+            )
+        )
+
+        assert manager.get_players_in_hand() == {1, 2}
+
+    @pytest.mark.parametrize("action", ["BET", "CALL", "RAISE", "ALL_IN"])
+    def test_action_participant_is_in_hand(
+        self,
+        manager: HandManager,
+        action: str,
+    ) -> None:
+        """A non-passive action on the hand-start frame confirms participation."""
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                actions=[ActionRecord(seat=4, action=action, amount=100)],
+                players={"4": (5000, 0)},
+            )
+        )
+
+        assert 4 in manager.get_players_in_hand()
+
+
+class TestPlayersInHandRecovery:
+    """Tests for delayed participant recovery from card or bet visibility."""
+
+    def test_late_stack_only_does_not_recover_player(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """A stack becoming visible alone does not recover a hand participant."""
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "4": (None, 0)},
+                player_cards_visible={"2"},
+            )
+        )
+        assert 4 not in manager.get_players_in_hand()
+
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "4": (5000, 0)},
+                player_cards_visible={"2"},
+            )
+        )
+
+        assert 4 not in manager.get_players_in_hand()
+
+    def test_late_cards_visible_recovery_marks_player_in_hand(
+        self,
+        manager: HandManager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A missed seat recovers when cards become visible later."""
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "3": (5000, 0), "4": (None, 0)},
+                player_cards_visible={"2", "3"},
+            )
+        )
+        assert 4 not in manager.get_players_in_hand()
+
+        with caplog.at_level(logging.INFO):
+            manager.process_frame(
+                make_state(
+                    hero_cards=["Ah", "Kd"],
+                    players={"2": (5000, 0), "3": (5000, 0), "4": (5000, 0)},
+                    player_cards_visible={"2", "3", "4"},
+                )
+            )
+
+        assert 4 in manager.get_players_in_hand()
+        assert "Player late-recovered: seat=4 cards_visible=True bet=0" in caplog.text
+
+    def test_late_bet_recovery_marks_player_in_hand(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """A missed seat recovers when a live bet appears later."""
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "4": (None, 0)},
+                player_cards_visible={"2"},
+            )
+        )
+
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "4": (4900, 100)},
+                player_cards_visible={"2"},
+            )
+        )
+
+        assert 4 in manager.get_players_in_hand()
+
+    def test_folded_player_is_not_late_recovered(self, manager: HandManager) -> None:
+        """A seat explicitly folded does not recover just because stack is visible."""
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "3": (5000, 0), "4": (5000, 0)},
+                player_cards_visible={"2", "3", "4"},
+            )
+        )
+        assert 4 in manager.get_players_in_hand()
+
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                actions=[ActionRecord(seat=4, action="FOLD", amount=0)],
+                players={"2": (5000, 0), "3": (5000, 0), "4": (5000, 0)},
+                player_cards_visible={"2", "3", "4"},
+            )
+        )
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "3": (5000, 0), "4": (4900, 100)},
+                player_cards_visible={"2", "3", "4"},
+            )
+        )
+
+        assert 4 not in manager.get_players_in_hand()
+        assert "4" in manager._folded_seats
+
+    def test_folded_seats_cleared_on_reset(self, manager: HandManager) -> None:
+        """Hand reset clears folded-seat recovery guards."""
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"]))
+        manager._players_in_hand["4"] = True
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                actions=[ActionRecord(seat=4, action="FOLD", amount=0)],
+                players={"2": (5000, 0), "3": (5000, 0), "4": (5000, 0)},
+            )
+        )
+        assert manager._folded_seats == {"4"}
+
+        manager.reset()
+
+        assert manager._folded_seats == set()
+
 
 class TestWaitingTransition:
     """Tests for hand_end to waiting transitions."""
@@ -423,12 +701,7 @@ class TestWaitingTransition:
     ) -> None:
         """NEW_HAND event moves hand_end to waiting."""
         start_hand(manager)
-        manager.process_frame(
-            make_state(
-                hero_cards=["Ah", "Kd"],
-                actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-            )
-        )
+        finish_hand_by_pot_decrease(manager)
 
         manager.process_frame(make_state(game_event="NEW_HAND"))
 
@@ -445,12 +718,7 @@ class TestWaitingTransition:
         monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: current_time)
 
         start_hand(manager)
-        manager.process_frame(
-            make_state(
-                hero_cards=["Ah", "Kd"],
-                actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-            )
-        )
+        finish_hand_by_pot_decrease(manager)
         assert manager.phase == "hand_end"
 
         current_time = 111.0
@@ -911,12 +1179,7 @@ class TestPersistence:
                 game_event="NEW_STREET",
             )
         )
-        manager.process_frame(
-            make_state(
-                hero_cards=["Ah", "Kd"],
-                actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-            )
-        )
+        finish_hand_by_pot_decrease(manager, board=["2c", "7d", "Ts"])
         manager.close()
 
         with sqlite3.connect(db_path) as conn:
@@ -939,12 +1202,7 @@ class TestPersistence:
         action_state = make_state(hero_cards=["Ah", "Kd"], actions=[action])
         action_state.players["2"].name = "Alice"
         manager.process_frame(action_state)
-        end_state = make_state(
-            hero_cards=["Ah", "Kd"],
-            actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-        )
-        end_state.players["2"].name = "Alice"
-        manager.process_frame(end_state)
+        finish_hand_by_pot_decrease(manager)
 
         stats = manager.get_opponent_stats("Alice")
         manager.close()
@@ -987,12 +1245,7 @@ class TestPersistence:
         )
         raise_state.players["2"].name = "Alice"
         manager.process_frame(raise_state)
-        end_state = make_state(
-            hero_cards=["Ah", "Kd"],
-            actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-        )
-        end_state.players["2"].name = "Alice"
-        manager.process_frame(end_state)
+        finish_hand_by_pot_decrease(manager)
 
         stats = manager.get_opponent_stats("Alice")
         manager.close()
@@ -1067,16 +1320,12 @@ class TestPersistence:
         db_path = tmp_path / "hands.db"
         manager = make_manager(tmp_path, db_path=str(db_path))
         start_hand(manager)
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=1200))
         manager.close()
         manager._db_conn = None
 
         with caplog.at_level(logging.INFO):
-            manager.process_frame(
-                make_state(
-                    hero_cards=["Ah", "Kd"],
-                    actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-                )
-            )
+            manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
 
         assert "Database reconnected" in caplog.text
         assert "DB connection not available" not in caplog.text
@@ -1089,12 +1338,7 @@ class TestPersistence:
         """hand_end writes hand_NNNNNN.json under dated replay directory."""
         manager = make_manager(tmp_path)
         start_hand(manager)
-        manager.process_frame(
-            make_state(
-                hero_cards=["Ah", "Kd"],
-                actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-            )
-        )
+        finish_hand_by_pot_decrease(manager)
 
         replay_files = list((tmp_path / "replays").glob("* /hand_000001.json"))
         if not replay_files:
@@ -1106,12 +1350,7 @@ class TestPersistence:
         """Replay JSON contains meta, streets, and result schema keys."""
         manager = make_manager(tmp_path)
         start_hand(manager)
-        manager.process_frame(
-            make_state(
-                hero_cards=["Ah", "Kd"],
-                actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-            )
-        )
+        finish_hand_by_pot_decrease(manager)
         replay_path = next((tmp_path / "replays").glob("*/hand_000001.json"))
         replay = json.loads(replay_path.read_text(encoding="utf-8"))
 
@@ -1151,6 +1390,7 @@ class TestPersistence:
                 actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
             )
         )
+        finish_hand_by_pot_decrease(manager, board=["2c", "7d", "Ts"])
         replay_path = next((tmp_path / "replays").glob("*/hand_000001.json"))
         replay = json.loads(replay_path.read_text(encoding="utf-8"))
 
@@ -1197,14 +1437,10 @@ class TestPersistence:
         manager = make_manager(tmp_path)
         manager._replay_dir = str(blocked_path)
         start_hand(manager)
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=1200))
 
         with caplog.at_level(logging.ERROR):
-            manager.process_frame(
-                make_state(
-                    hero_cards=["Ah", "Kd"],
-                    actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-                )
-            )
+            manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
 
         assert "Failed to save replay" in caplog.text
 
@@ -1324,6 +1560,7 @@ class TestPersistence:
                 actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
             )
         )
+        finish_hand_by_pot_decrease(manager, board=["2c", "7d", "Ts", "Jc", "4h"])
         manager.process_frame(make_state(game_event="NEW_HAND"))
         manager.close()
 
@@ -1344,12 +1581,7 @@ class TestHandIdAndReset:
         start_hand(manager)
         assert manager.hand_id == 1
 
-        manager.process_frame(
-            make_state(
-                hero_cards=["Ah", "Kd"],
-                actions=[ActionRecord(seat=1, action="FOLD", amount=0)],
-            )
-        )
+        finish_hand_by_pot_decrease(manager)
         manager.process_frame(make_state(game_event="NEW_HAND"))
         start_hand(manager)
 

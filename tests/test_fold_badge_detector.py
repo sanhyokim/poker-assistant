@@ -18,10 +18,11 @@ PROFILE_PATH = Path("profiles/coinpoker_6max.json")
 TEMPLATE_PATH = Path("recognition/templates/fold_badge_ja.png")
 
 FOLD_BADGE_GROUND_TRUTH = {
-    "auto_0045.png": {2: False, 3: True, 4: False, 5: True, 6: True},
-    "auto_0146.png": {2: True, 3: False, 4: False, 5: False, 6: True},
-    "auto_0017.png": {2: False, 3: True, 4: False, 5: False, 6: False},
+    "auto_0045.png": {1: False, 2: False, 3: True, 4: False, 5: True, 6: True},
+    "auto_0146.png": {1: False, 2: True, 3: False, 4: False, 5: False, 6: True},
+    "auto_0017.png": {1: False, 2: False, 3: True, 4: False, 5: False, 6: False},
     "cp_12_folded_spectating.png": {
+        1: True,
         2: False,
         3: False,
         4: True,
@@ -111,4 +112,4 @@ def test_missing_template_returns_false(
 
     result = detector.detect_all(_load_frame("auto_0045.png"))
 
-    assert result == {2: False, 3: False, 4: False, 5: False, 6: False}
+    assert result == {1: False, 2: False, 3: False, 4: False, 5: False, 6: False}

@@ -113,6 +113,7 @@ def _make_loop(
         "replay": {"base_dir": str(workspace_tmp / "replays")},
     }
     manager = HandManager(config, db_path=":memory:")
+    manager._players_in_hand = {"1": True, "2": True}
     return GameLoop(
         NoneCapture(),
         config,

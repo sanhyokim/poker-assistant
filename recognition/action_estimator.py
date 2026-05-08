@@ -13,6 +13,7 @@ class EstimateResult(TypedDict):
 
     game_event: str | None
     actions: list[ActionRecord]
+    filtered_pot: int | None
 
 
 class ActionEstimator:
@@ -40,10 +41,14 @@ class ActionEstimator:
         self._pot_spike_confirm_frames = int(
             recognition_config.get("pot_spike_confirm_frames", 2)
         )
+        self._new_hand_confirm_frames = int(
+            recognition_config.get("new_hand_confirm_frames", 2)
+        )
 
         self._none_streak: dict[str, int] = {}
         self._pot_spike_streak = 0
         self._pot_spike_value = 0
+        self._new_hand_streak = 0
 
         logger.info(
             "ActionEstimator initialized: new_hand_pot_ratio=%.2f, "
@@ -67,24 +72,41 @@ class ActionEstimator:
 
         if not diff.any_change:
             actions = self._confirm_static_none_streaks(curr_state)
-            return {"game_event": None, "actions": actions}
+            return {"game_event": None, "actions": actions, "filtered_pot": None}
 
+        original_pot_curr = diff.pot_curr
         diff = self._filter_pot_spike(diff)
+        filtered_pot: int | None = None
+        if diff.pot_curr != original_pot_curr:
+            filtered_pot = diff.pot_curr
 
         if not diff.any_change:
-            return {"game_event": None, "actions": []}
+            return {"game_event": None, "actions": [], "filtered_pot": filtered_pot}
 
         if self._check_new_hand(diff):
-            return {"game_event": "NEW_HAND", "actions": []}
+            return {"game_event": "NEW_HAND", "actions": [], "filtered_pot": None}
+        if diff.pot_curr != original_pot_curr:
+            filtered_pot = diff.pot_curr
+
+        if not diff.any_change:
+            return {"game_event": None, "actions": [], "filtered_pot": filtered_pot}
 
         if self._check_new_street(diff):
-            return {"game_event": "NEW_STREET", "actions": []}
+            return {
+                "game_event": "NEW_STREET",
+                "actions": [],
+                "filtered_pot": filtered_pot,
+            }
 
         if self._check_bets_collected(diff):
-            return {"game_event": "BETS_COLLECTED", "actions": []}
+            return {
+                "game_event": "BETS_COLLECTED",
+                "actions": [],
+                "filtered_pot": filtered_pot,
+            }
 
         actions = self._analyze_seat_actions(prev_state, curr_state, diff)
-        return {"game_event": None, "actions": actions}
+        return {"game_event": None, "actions": actions, "filtered_pot": filtered_pot}
 
     def _filter_pot_spike(self, diff: StateDiff) -> StateDiff:
         """Filter one-frame pot spikes before event/action analysis.
@@ -204,23 +226,44 @@ class ActionEstimator:
             True when pot drops below the configured new-hand ratio.
         """
         if not diff.pot_changed:
+            self._new_hand_streak = 0
             return False
 
         new_hand_threshold = max(self.blind_bb * self.new_hand_min_pot_bb, 20)
-        is_new_hand = (
+        is_new_hand_candidate = (
             diff.pot_curr < diff.pot_prev * self.new_hand_pot_ratio
             and diff.pot_prev > new_hand_threshold
         )
 
-        if is_new_hand:
+        if is_new_hand_candidate:
+            self._new_hand_streak += 1
+            if self._new_hand_streak < self._new_hand_confirm_frames:
+                logger.info(
+                    "NEW_HAND candidate (streak=%d/%d): pot %d -> %d "
+                    "(threshold=%d), waiting for confirmation",
+                    self._new_hand_streak,
+                    self._new_hand_confirm_frames,
+                    diff.pot_prev,
+                    diff.pot_curr,
+                    new_hand_threshold,
+                )
+                diff.pot_curr = diff.pot_prev
+                diff.pot_changed = False
+                diff.any_change = self._has_non_pot_change(diff)
+                return False
+
             logger.info(
-                "NEW_HAND detected: pot %d -> %d (threshold=%d)",
+                "NEW_HAND confirmed (streak=%d): pot %d -> %d (threshold=%d)",
+                self._new_hand_streak,
                 diff.pot_prev,
                 diff.pot_curr,
                 new_hand_threshold,
             )
+            self._new_hand_streak = 0
+            return True
 
-        return is_new_hand
+        self._new_hand_streak = 0
+        return False
 
     def _check_new_street(self, diff: StateDiff) -> bool:
         """Return whether board card count increased.
@@ -577,4 +620,5 @@ class ActionEstimator:
         self._none_streak.clear()
         self._pot_spike_streak = 0
         self._pot_spike_value = 0
+        self._new_hand_streak = 0
         logger.info("ActionEstimator: internal state reset")

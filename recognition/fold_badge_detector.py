@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 class FoldBadgeDetector(BaseRecognizer):
-    """Detect opponent fold badges using template matching.
+    """Detect fold badges using template matching.
 
     Once a seat is detected as folded, it remains folded until ``reset`` is
     called at a hand boundary.
@@ -28,6 +28,7 @@ class FoldBadgeDetector(BaseRecognizer):
     """
 
     SEAT_KEYS = {
+        1: "action_badge_1",
         2: "action_badge_2",
         3: "action_badge_3",
         4: "action_badge_4",
@@ -50,7 +51,7 @@ class FoldBadgeDetector(BaseRecognizer):
         self._folded_seats: set[int] = set()
 
     def detect_all(self, frame: np.ndarray) -> dict[int, bool]:
-        """Detect fold badges for all opponent seats.
+        """Detect fold badges for all configured seats.
 
         Args:
             frame: BGR frame image.

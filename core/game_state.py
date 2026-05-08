@@ -13,6 +13,7 @@ class PlayerState:
         stack: Stack amount. Empty seats use None.
         bet: Current-street bet amount. No bet uses 0.
         is_seated: Whether the player is seated.
+        cards_visible: Whether opponent hole cards are visible this frame.
         in_current_hand: Whether the player joined the current hand.
     """
 
@@ -20,6 +21,7 @@ class PlayerState:
     stack: int | None = None
     bet: int = 0
     is_seated: bool = False
+    cards_visible: bool = False
     in_current_hand: bool = False
 
 
@@ -31,17 +33,23 @@ class HeroState:
         seat: Hero seat number. Always 1.
         position: Position name, or None when dealer is unknown.
         cards: Hero hole cards, or None before recognition.
+        cards_visible: Whether hero hole cards are visible this frame.
         stack: Hero stack amount.
         bet: Current-street hero bet amount.
         is_my_turn: Whether hero is currently to act.
+        in_current_hand: Whether hero is still in the current hand.
+        has_folded: Whether hero has folded in the current hand.
     """
 
     seat: int = 1
     position: str | None = None
     cards: list[str] | None = None
+    cards_visible: bool = False
     stack: int | None = None
     bet: int = 0
     is_my_turn: bool = False
+    in_current_hand: bool = False
+    has_folded: bool = False
 
 
 @dataclass
@@ -87,6 +95,7 @@ class GameState:
         frame_number: Frame sequence number.
         phase: Game phase.
         hand_id: Current hand ID, or None while waiting.
+        table_visible: Whether this frame appears to be a valid poker table.
         hero: Hero state.
         board: Board card list.
         board_card_count: Number of visible board cards.
@@ -104,6 +113,7 @@ class GameState:
     frame_number: int = 0
     phase: str = "waiting"
     hand_id: int | None = None
+    table_visible: bool = False
 
     hero: HeroState = field(default_factory=HeroState)
     board: list[str] = field(default_factory=list)

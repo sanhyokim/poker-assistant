@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHeaderView,
     QHBoxLayout,
@@ -69,6 +70,16 @@ _STATS_EXPORT_FIELDS = [
     "last_seen",
     "freshness_note",
 ]
+_OPERATION_PLAYER_COLUMNS = [
+    "Seat",
+    "Name",
+    "Stack",
+    "Bet",
+    "Seated",
+    "Cards",
+    "In Hand",
+    "Status",
+]
 
 
 class _SortableTableWidgetItem(QTableWidgetItem):
@@ -103,7 +114,7 @@ class MainWindow(QMainWindow):
         )
 
         self.setWindowTitle("Poker Assistant")
-        self.resize(900, 650)
+        self.resize(1100, 760)
 
         self._tabs = QTabWidget()
         self.setCentralWidget(self._tabs)
@@ -136,6 +147,8 @@ class MainWindow(QMainWindow):
             game_state: Current game state to display.
         """
         try:
+            self._update_summary_panel(game_state)
+            self._update_player_table(game_state)
             state_dict = asdict(game_state)
             json_text = json.dumps(state_dict, indent=2, ensure_ascii=False)
         except Exception:
@@ -310,9 +323,74 @@ class MainWindow(QMainWindow):
         control_bar.addStretch(1)
         control_bar.addWidget(self._phase_label)
 
+        summary_group = QGroupBox("Current State")
+        summary_group.setStyleSheet(
+            "QGroupBox { color: #d4d4d4; font-weight: bold; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 8px; }"
+        )
+        summary_layout = QGridLayout()
+        self._summary_labels: dict[str, QLabel] = {}
+        summary_keys = [
+            "Table",
+            "Phase",
+            "Hand ID",
+            "Frame",
+            "Pot",
+            "Board",
+            "Active",
+            "Hero",
+            "Hero In Hand",
+            "Hero Folded",
+            "Turn",
+        ]
+        value_font = QFont("Consolas", 11)
+        value_font.setBold(True)
+        for index, key in enumerate(summary_keys):
+            row = index // 5
+            column = (index % 5) * 2
+            key_label = QLabel(f"{key}:")
+            key_label.setStyleSheet("color: #9cdcfe;")
+            value_label = QLabel("-")
+            value_label.setFont(value_font)
+            value_label.setMinimumWidth(120)
+            value_label.setStyleSheet(
+                "background-color: #252526; color: #d4d4d4; "
+                "padding: 4px 6px; border: 1px solid #3c3c3c;"
+            )
+            summary_layout.addWidget(key_label, row, column)
+            summary_layout.addWidget(value_label, row, column + 1)
+            self._summary_labels[key] = value_label
+        summary_group.setLayout(summary_layout)
+
+        self._player_table = QTableWidget()
+        self._player_table.setColumnCount(len(_OPERATION_PLAYER_COLUMNS))
+        self._player_table.setHorizontalHeaderLabels(_OPERATION_PLAYER_COLUMNS)
+        self._player_table.setRowCount(5)
+        self._player_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self._player_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self._player_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self._player_table.verticalHeader().setVisible(False)
+        self._player_table.setAlternatingRowColors(True)
+        self._player_table.setMinimumHeight(155)
+        self._player_table.setMaximumHeight(210)
+        self._player_table.setStyleSheet(
+            "QTableWidget { background-color: #1e1e1e; color: #d4d4d4; "
+            "gridline-color: #3c3c3c; alternate-background-color: #252526; }"
+            "QHeaderView::section { background-color: #2d2d30; color: #ffffff; "
+            "padding: 4px; border: 1px solid #3c3c3c; }"
+        )
+        player_header = self._player_table.horizontalHeader()
+        player_header.setStretchLastSection(True)
+        player_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+
         self._state_display = QTextEdit()
         self._state_display.setReadOnly(True)
-        self._state_display.setFont(QFont("Consolas", 10))
+        self._state_display.setFont(QFont("Consolas", 11))
+        self._state_display.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self._state_display.setStyleSheet(
             "background-color: #1e1e1e; color: #d4d4d4;"
         )
@@ -320,6 +398,7 @@ class MainWindow(QMainWindow):
         self._log_display = QTextEdit()
         self._log_display.setReadOnly(True)
         self._log_display.setFont(QFont("Consolas", 9))
+        self._log_display.setLineWrapMode(QTextEdit.LineWrapMode.NoWrap)
         self._log_display.setStyleSheet(
             "background-color: #1e1e1e; color: #d4d4d4;"
         )
@@ -328,7 +407,7 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.addWidget(self._state_display)
         splitter.addWidget(self._log_display)
-        splitter.setSizes([390, 260])
+        splitter.setSizes([260, 220])
 
         status_bar = QHBoxLayout()
         self._status_label = QLabel("Stopped")
@@ -341,10 +420,180 @@ class MainWindow(QMainWindow):
         status_bar.addWidget(self._log_filter_combo)
 
         main_layout.addLayout(control_bar)
+        main_layout.addWidget(summary_group)
+        main_layout.addWidget(self._player_table)
         main_layout.addWidget(splitter)
         main_layout.addLayout(status_bar)
         tab.setLayout(main_layout)
         return tab
+
+    def _update_summary_panel(self, game_state: GameState) -> None:
+        """Update the compact operation summary labels."""
+        board_text = " ".join(game_state.board) if game_state.board else "-"
+        hero_cards = game_state.hero.cards or []
+        hero_cards_text = " ".join(str(card) for card in hero_cards) or "-"
+        if hero_cards_text != "-":
+            hero_text = (
+                f"{hero_cards_text} / stack={self._display_value(game_state.hero.stack)} "
+                f"/ bet={game_state.hero.bet}"
+            )
+        else:
+            hero_text = "-"
+
+        self._set_summary_value("Phase", game_state.phase, self._phase_color(game_state.phase))
+        table_text = "VISIBLE" if game_state.table_visible else "CLOSED"
+        table_color = "#33cc66" if game_state.table_visible else "#cc6666"
+        self._set_summary_value("Table", table_text, table_color)
+        self._set_summary_value("Hand ID", self._display_value(game_state.hand_id))
+        self._set_summary_value("Frame", str(game_state.frame_number))
+        self._set_summary_value("Pot", str(game_state.pot))
+        self._set_summary_value("Board", board_text)
+        self._set_summary_value("Active", str(game_state.active_player_count))
+        self._set_summary_value("Hero", hero_text)
+        self._set_summary_value(
+            "Hero In Hand",
+            self._yes_no(game_state.hero.in_current_hand),
+            "#33cc66" if game_state.hero.in_current_hand else "#888888",
+        )
+        self._set_summary_value(
+            "Hero Folded",
+            self._yes_no(game_state.hero.has_folded),
+            "#ff6666" if game_state.hero.has_folded else "#33cc66",
+        )
+        self._set_summary_value(
+            "Turn",
+            self._yes_no(game_state.hero.is_my_turn),
+            "#ffcc00" if game_state.hero.is_my_turn else "#888888",
+        )
+
+    def _update_player_table(self, game_state: GameState) -> None:
+        """Update seat 2-6 player rows for quick recognition debugging."""
+        self._player_table.setRowCount(5)
+        for row, seat in enumerate(range(2, 7)):
+            seat_key = str(seat)
+            player = game_state.players.get(seat_key)
+            if not game_state.table_visible:
+                name = "-"
+                stack = "-"
+                bet = "0"
+                is_seated = False
+                cards_visible = False
+                in_hand = False
+                status = "TABLE CLOSED"
+            else:
+                name = player.name if player is not None and player.name else "-"
+                stack = self._display_value(player.stack if player is not None else None)
+                bet = str(player.bet if player is not None else 0)
+                is_seated = bool(player is not None and player.is_seated)
+                cards_visible = bool(player is not None and player.cards_visible)
+                in_hand = bool(player is not None and player.in_current_hand)
+                status = self._player_status(is_seated, cards_visible, in_hand)
+            status_foreground, status_background = self._status_colors(status)
+
+            values = [
+                str(seat),
+                name,
+                stack,
+                bet,
+                self._yes_no(is_seated),
+                self._yes_no(cards_visible),
+                self._yes_no(in_hand),
+                status,
+            ]
+            for column, value in enumerate(values):
+                foreground = QColor("#d4d4d4")
+                background = QColor("#1e1e1e")
+                if column == 4:
+                    foreground = QColor("#33cc66" if is_seated else "#888888")
+                elif column == 5:
+                    foreground = QColor("#33cc66" if cards_visible else "#888888")
+                elif column == 6:
+                    foreground = QColor("#33cc66" if in_hand else "#888888")
+                elif column == 7:
+                    foreground = status_foreground
+                    background = status_background
+                self._player_table.setItem(
+                    row,
+                    column,
+                    self._make_operation_table_item(value, foreground, background),
+                )
+
+    def _set_summary_value(
+        self,
+        key: str,
+        value: str,
+        color: str | None = None,
+    ) -> None:
+        """Set one operation summary value label."""
+        label = self._summary_labels.get(key)
+        if label is None:
+            return
+        text_color = color or "#d4d4d4"
+        label.setText(value)
+        label.setStyleSheet(
+            "background-color: #252526; "
+            f"color: {text_color}; "
+            "padding: 4px 6px; border: 1px solid #3c3c3c;"
+        )
+
+    def _make_operation_table_item(
+        self,
+        text: str,
+        foreground: QColor,
+        background: QColor,
+    ) -> QTableWidgetItem:
+        """Create a non-editable operation table item."""
+        item = QTableWidgetItem(text)
+        item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        item.setForeground(foreground)
+        item.setBackground(background)
+        return item
+
+    def _player_status(
+        self,
+        is_seated: bool,
+        cards_visible: bool,
+        in_current_hand: bool,
+    ) -> str:
+        """Return compact player status text for the operation table."""
+        if in_current_hand:
+            return "ACTIVE"
+        if not is_seated:
+            return "EMPTY"
+        if not cards_visible:
+            return "WAITING"
+        return "OUT"
+
+    def _status_colors(self, status: str) -> tuple[QColor, QColor]:
+        """Return foreground/background colors for a player status."""
+        colors = {
+            "ACTIVE": ("#ffffff", "#1f6f3a"),
+            "WAITING": ("#1e1e1e", "#b59f3b"),
+            "OUT": ("#d4d4d4", "#4d4d4d"),
+            "EMPTY": ("#888888", "#2d2d30"),
+            "TABLE CLOSED": ("#ff9999", "#3a1f1f"),
+        }
+        foreground, background = colors.get(status, ("#d4d4d4", "#1e1e1e"))
+        return QColor(foreground), QColor(background)
+
+    def _phase_color(self, phase: str) -> str:
+        """Return display color for a phase value."""
+        return {
+            "waiting": "#888888",
+            "preflop": "#ffcc00",
+            "flop": "#33cc33",
+            "turn": "#3399ff",
+            "river": "#ff6633",
+            "hand_end": "#cc33cc",
+        }.get(phase, "#d4d4d4")
+
+    def _yes_no(self, value: bool) -> str:
+        """Return YES/NO text for boolean display."""
+        return "YES" if value else "NO"
+
+    def _display_value(self, value: Any) -> str:
+        """Return a compact display string for optional values."""
+        return "-" if value is None else str(value)
 
     def _create_settings_tab(self) -> QWidget:
         """Create the scrollable Settings tab."""

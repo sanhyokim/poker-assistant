@@ -6,6 +6,7 @@ from core.game_state import (
     ActionRecord,
     ButtonState,
     GameState,
+    HeroState,
     PlayerState,
     compute_state_diff,
     create_empty_game_state,
@@ -21,10 +22,14 @@ class TestGameStateCreation:
 
         assert game_state.phase == "waiting"
         assert game_state.hand_id is None
+        assert game_state.table_visible is False
         assert game_state.hero.seat == 1
         assert game_state.hero.position is None
         assert game_state.hero.cards is None
+        assert game_state.hero.cards_visible is False
         assert game_state.hero.is_my_turn is False
+        assert game_state.hero.in_current_hand is False
+        assert game_state.hero.has_folded is False
         assert game_state.board == []
         assert game_state.board_card_count == 0
         assert game_state.pot == 0
@@ -46,6 +51,7 @@ class TestGameStateCreation:
             assert player.stack is None
             assert player.bet == 0
             assert player.is_seated is False
+            assert player.cards_visible is False
             assert player.in_current_hand is False
 
     def test_hero_not_in_players(self) -> None:
@@ -66,6 +72,7 @@ class TestGameStateToDict:
         assert isinstance(data, dict)
         assert data["phase"] == "waiting"
         assert data["hand_id"] is None
+        assert data["table_visible"] is False
         assert data["pot"] == 0
 
     def test_to_dict_json_serializable(self) -> None:
@@ -91,6 +98,7 @@ class TestGameStateToDict:
         game_state.players["2"].name = "mrkrebs"
         game_state.players["2"].stack = 14439
         game_state.players["2"].is_seated = True
+        game_state.players["2"].cards_visible = True
         game_state.players["2"].in_current_hand = True
 
         player_2 = game_state.to_dict()["players"]["2"]
@@ -98,6 +106,7 @@ class TestGameStateToDict:
         assert player_2["name"] == "mrkrebs"
         assert player_2["stack"] == 14439
         assert player_2["is_seated"] is True
+        assert player_2["cards_visible"] is True
         assert player_2["in_current_hand"] is True
 
     def test_to_dict_with_buttons(self) -> None:
@@ -186,10 +195,12 @@ class TestPlayerState:
             name="test",
             stack=1000,
             is_seated=True,
+            cards_visible=True,
             in_current_hand=True,
         )
 
         assert player.is_seated is True
+        assert player.cards_visible is True
         assert player.in_current_hand is True
 
     def test_empty_seat(self) -> None:
@@ -198,7 +209,20 @@ class TestPlayerState:
 
         assert player.stack is None
         assert player.is_seated is False
+        assert player.cards_visible is False
         assert player.in_current_hand is False
+
+
+class TestHeroState:
+    """Tests for HeroState."""
+
+    def test_default_hand_state_flags(self) -> None:
+        """Hero hand-state flags default to false."""
+        hero = HeroState()
+
+        assert hero.cards_visible is False
+        assert hero.in_current_hand is False
+        assert hero.has_folded is False
 
 
 class TestComputeStateDiff:

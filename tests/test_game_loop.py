@@ -175,6 +175,7 @@ def make_loop(
         "replay": {"base_dir": str(workspace_tmp / "replays")},
     }
     manager = HandManager(config, db_path=":memory:")
+    manager._players_in_hand = {"1": True, "2": True}
     return GameLoop(capture, config, {}, manager, enable_strategy=False)
 
 
@@ -208,6 +209,83 @@ def test_process_one_frame_returns_game_state(
     assert game_state.board_card_count == 0
     assert game_state.pot == 150
     assert game_state.dealer_seat == 1
+
+
+def test_new_hand_suppressed_when_hero_cards_visible(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Active-hand NEW_HAND events are suppressed while hero cards are visible."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    previous = create_empty_game_state()
+    previous.pot = 1000
+    loop._prev_state = previous
+    loop._hand_manager._phase = "flop"
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    loop._action_estimator = MagicMock()
+    loop._action_estimator.estimate.return_value = {
+        "game_event": "NEW_HAND",
+        "actions": [],
+        "filtered_pot": None,
+    }
+    loop._card_recognizer = MagicMock()
+    loop._card_recognizer.recognize_board_cards.return_value = []
+    loop._card_recognizer.count_board_cards.return_value = 0
+    loop._card_recognizer.recognize_hero_cards.return_value = ["Ah", "Kd"]
+    loop._fold_badge_detector = MagicMock()
+    loop._fold_badge_detector.detect_all.return_value = {
+        2: False,
+        3: False,
+        4: False,
+        5: False,
+        6: False,
+    }
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        game_state = loop.process_one_frame()
+
+    assert game_state is not None
+    assert game_state.game_event is None
+    assert "NEW_HAND suppressed: hero cards still visible" in caplog.text
+
+
+def test_new_hand_allowed_when_hero_cards_missing(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Active-hand NEW_HAND events pass through when hero cards are missing."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    previous = create_empty_game_state()
+    previous.pot = 1000
+    loop._prev_state = previous
+    loop._hand_manager._phase = "flop"
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    loop._action_estimator = MagicMock()
+    loop._action_estimator.estimate.return_value = {
+        "game_event": "NEW_HAND",
+        "actions": [],
+        "filtered_pot": None,
+    }
+    loop._card_recognizer = MagicMock()
+    loop._card_recognizer.recognize_board_cards.return_value = []
+    loop._card_recognizer.count_board_cards.return_value = 0
+    loop._card_recognizer.recognize_hero_cards.return_value = [None, None]
+    loop._fold_badge_detector = MagicMock()
+    loop._fold_badge_detector.detect_all.return_value = {
+        2: False,
+        3: False,
+        4: False,
+        5: False,
+        6: False,
+    }
+
+    game_state = loop.process_one_frame()
+
+    assert game_state is not None
+    assert game_state.game_event == "NEW_HAND"
 
 
 def test_populate_players_uses_hand_manager_participants(
@@ -289,6 +367,53 @@ def test_fold_badge_detection_appends_fold_action(
     assert 3 not in loop._hand_manager.get_players_in_hand()
 
 
+def test_fold_badge_detection_appends_hero_fold_and_clears_cache(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hero fold badge generates a FOLD action and clears cached hero cards."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    game_state = _state_with_player("3")
+
+    loop._process_fold_badge_detection(game_state, {1: True, 3: True})
+
+    assert game_state.actions_since_last_frame == [
+        ActionRecord(
+            seat=1,
+            action="FOLD",
+            amount=0,
+            confidence="high",
+        ),
+        ActionRecord(
+            seat=3,
+            action="FOLD",
+            amount=0,
+            confidence="high",
+        ),
+    ]
+    assert loop._cached_hero_cards is None
+
+
+def test_fold_badge_detection_ignores_hero_outside_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hero fold badges outside active hand participation do not generate actions."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": False, "3": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    game_state = _state_with_player("3")
+
+    loop._process_fold_badge_detection(game_state, {1: True})
+
+    assert game_state.actions_since_last_frame == []
+    assert loop._cached_hero_cards == ["Ah", "Kd"]
+
+
 def test_fold_badge_detection_ignores_nonparticipants(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -321,6 +446,90 @@ def test_fold_badge_detection_ignores_false_results(
     assert game_state.actions_since_last_frame == []
 
 
+def test_seat_card_detection_appends_fold_after_confirm_frames(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seat-card absence generates one FOLD after the confirm threshold."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    game_state = _state_with_player("2")
+
+    loop._process_seat_card_detection(game_state, {2: False})
+    loop._process_seat_card_detection(game_state, {2: False})
+    loop._process_seat_card_detection(game_state, {2: False})
+    loop._process_seat_card_detection(game_state, {2: False})
+
+    assert game_state.actions_since_last_frame == [
+        ActionRecord(
+            seat=2,
+            action="FOLD",
+            amount=0,
+            confidence="high",
+        )
+    ]
+    assert 2 in loop._seat_card_fold_latched
+
+
+def test_seat_card_detection_waits_for_confirm_frames(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One or two no-card frames do not generate a FOLD action."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    game_state = _state_with_player("2")
+
+    loop._process_seat_card_detection(game_state, {2: False})
+    loop._process_seat_card_detection(game_state, {2: False})
+
+    assert game_state.actions_since_last_frame == []
+    assert loop._seat_no_card_streak[2] == 2
+
+
+def test_seat_card_detection_visible_card_resets_streak(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A visible card resets the no-card streak before FOLD confirmation."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    game_state = _state_with_player("2")
+
+    loop._process_seat_card_detection(game_state, {2: False})
+    loop._process_seat_card_detection(game_state, {2: True})
+    loop._process_seat_card_detection(game_state, {2: False})
+    loop._process_seat_card_detection(game_state, {2: False})
+
+    assert game_state.actions_since_last_frame == []
+    assert loop._seat_no_card_streak[2] == 2
+
+
+def test_seat_card_detection_latches_existing_frame_fold(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seat-card detection does not duplicate a FOLD already in the frame."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    game_state = _state_with_player("2")
+    game_state.actions_since_last_frame.append(
+        ActionRecord(seat=2, action="FOLD", amount=0, confidence="high")
+    )
+    loop._seat_no_card_streak[2] = 2
+
+    loop._process_seat_card_detection(game_state, {2: False})
+
+    assert game_state.actions_since_last_frame == [
+        ActionRecord(seat=2, action="FOLD", amount=0, confidence="high")
+    ]
+    assert 2 in loop._seat_card_fold_latched
+
+
 def test_fold_badge_detector_runs_during_active_phase(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -343,7 +552,7 @@ def test_fold_badge_latches_cleared_on_hand_start(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Hand-start frames clear fold badge latches."""
+    """Hand-start frames clear fold badge and seat-card state."""
     image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
     loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
     loop._hand_manager._phase = "preflop"
@@ -353,11 +562,234 @@ def test_fold_badge_latches_cleared_on_hand_start(
     detector = MagicMock()
     detector.detect_all.return_value = {2: False, 3: False, 4: False, 5: False, 6: False}
     loop._fold_badge_detector = detector
+    seat_detector = MagicMock()
+    seat_detector.detect_all.return_value = {2: True, 3: True, 4: True, 5: True, 6: True}
+    loop._seat_card_detector = seat_detector
+    loop._seat_no_card_streak[2] = 2
+    loop._seat_card_fold_latched.add(2)
 
     loop.process_one_frame()
 
     detector.reset.assert_called_once()
     detector.detect_all.assert_called_once()
+    seat_detector.reset.assert_called_once()
+    assert loop._seat_no_card_streak == {}
+    assert loop._seat_card_fold_latched == set()
+
+
+def test_seat_card_detector_skipped_during_hand_start_grace(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SeatCardDetector observation runs, but fold generation is skipped in grace."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    loop._hand_manager._hand_start_monotonic = time.monotonic()
+    loop._hand_start_grace_sec = 10.0
+    loop._fold_badge_detector = MagicMock()
+    loop._fold_badge_detector.detect_all.return_value = {2: False}
+    loop._seat_card_detector = MagicMock()
+    loop._seat_card_detector.detect_all.return_value = {2: False}
+
+    loop.process_one_frame()
+
+    loop._seat_card_detector.detect_all.assert_called_once()
+    assert loop._seat_no_card_streak == {}
+
+
+def test_apply_seat_card_visibility_sets_player_cards_visible(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seat-card observations update PlayerState.cards_visible for seated seats."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    state.players["2"].is_seated = True
+    state.players["3"].is_seated = False
+
+    loop._apply_seat_card_visibility(state, {2: True, 3: True})
+
+    assert state.players["2"].cards_visible is True
+    assert state.players["3"].cards_visible is False
+
+
+def test_table_visibility_fresh_dealer_makes_visible(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A freshly detected dealer button marks the table as visible."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+
+    loop._update_table_visibility(state, fresh_dealer_detected=True)
+
+    assert state.table_visible is True
+
+
+def test_table_visibility_hero_cards_make_visible(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visible hero cards mark the table as visible."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    state.hero.cards_visible = True
+
+    loop._update_table_visibility(state, fresh_dealer_detected=False)
+
+    assert state.table_visible is True
+
+
+def test_table_visibility_board_cards_make_visible(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visible board cards mark the table as visible."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    state.board_card_count = 3
+
+    loop._update_table_visibility(state, fresh_dealer_detected=False)
+
+    assert state.table_visible is True
+
+
+def test_table_visibility_single_seated_player_is_not_enough(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One stale seated OCR result does not mark the table as visible."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    state.players["2"].is_seated = True
+
+    loop._update_table_visibility(state, fresh_dealer_detected=False)
+
+    assert state.table_visible is False
+
+
+def test_table_visibility_pot_alone_is_not_enough(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A pot OCR value alone does not mark the table as visible."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    state.pot = 500
+
+    loop._update_table_visibility(state, fresh_dealer_detected=False)
+
+    assert state.table_visible is False
+
+
+def test_table_visibility_inactive_confirm_frames_clear_visible_state(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The table is hidden after enough consecutive inactive frames."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    visible_state = create_empty_game_state()
+    loop._update_table_visibility(visible_state, fresh_dealer_detected=True)
+    assert visible_state.table_visible is True
+
+    for _ in range(loop._table_inactive_confirm_frames):
+        inactive_state = create_empty_game_state()
+        loop._update_table_visibility(inactive_state, fresh_dealer_detected=False)
+
+    assert inactive_state.table_visible is False
+
+
+def test_clear_players_for_inactive_table_clears_stale_state(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Inactive tables clear stale player and hero display state."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    state.active_player_count = 3
+    state.dealer_seat = 2
+    state.hero.position = "BTN"
+    state.hero.cards = ["Ah", "Kd"]
+    state.hero.cards_visible = True
+    state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+    state.players["2"] = PlayerState(
+        name="Alice",
+        stack=5000,
+        bet=100,
+        is_seated=True,
+        cards_visible=True,
+        in_current_hand=True,
+    )
+
+    loop._clear_players_for_inactive_table(state)
+
+    assert state.active_player_count == 0
+    assert state.dealer_seat is None
+    assert state.hero.position is None
+    assert state.hero.cards is None
+    assert state.hero.cards_visible is False
+    assert state.hero.is_my_turn is False
+    assert state.hero.in_current_hand is False
+    assert state.players["2"].is_seated is False
+    assert state.players["2"].stack is None
+
+
+def test_populate_position_skips_inactive_table(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Position calculation is skipped when table_visible is false."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = _make_seated_state(dealer_seat=1)
+    state.table_visible = False
+    calculate_mock = MagicMock()
+    monkeypatch.setattr("core.game_loop.calculate_positions", calculate_mock)
+
+    loop._populate_position(state)
+
+    calculate_mock.assert_not_called()
+    assert state.hero.position is None
+
+
+def test_populate_position_skips_waiting_phase(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Position calculation is skipped during waiting phase."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = _make_seated_state(dealer_seat=1)
+    state.phase = "waiting"
+    calculate_mock = MagicMock()
+    monkeypatch.setattr("core.game_loop.calculate_positions", calculate_mock)
+
+    loop._populate_position(state)
+
+    calculate_mock.assert_not_called()
+    assert state.hero.position is None
+
+
+def test_active_count_excludes_hero_when_not_in_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Active count does not include hero after hero has folded."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": False, "2": True, "3": True}
+    loop._hand_manager._hero_folded = True
+    state = create_empty_game_state()
+    state.phase = "flop"
+    state.table_visible = True
+    state.active_player_count = 3
+
+    loop._sync_game_state_with_hand_manager(state)
+
+    assert state.active_player_count == 2
+    assert state.hero.in_current_hand is False
+    assert state.hero.has_folded is True
 
 
 def test_hero_card_missing_with_state_change_no_hand_end(
@@ -386,6 +818,8 @@ def test_hero_card_missing_with_state_change_no_hand_end(
 def _make_seated_state(dealer_seat: int) -> Any:
     """Create a GameState with all seats occupied for position tests."""
     game_state = create_empty_game_state()
+    game_state.phase = "preflop"
+    game_state.table_visible = True
     game_state.dealer_seat = dealer_seat
     for player in game_state.players.values():
         player.is_seated = True
@@ -761,6 +1195,7 @@ def test_game_state_phase_synced_after_hand_manager(
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     state = create_empty_game_state()
     state.phase = "waiting"
+    state.table_visible = True
     state.hero.cards = ["Ah", "Kd"]
     state.dealer_seat = 1
     state.players["2"].stack = 4900
@@ -790,6 +1225,7 @@ def test_active_player_count_synced_after_fold(
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     state = create_empty_game_state()
     state.phase = "flop"
+    state.table_visible = True
     state.active_player_count = 5
     loop._hand_manager._phase = "flop"
     loop._hand_manager._players_in_hand = {
@@ -852,6 +1288,27 @@ def test_recommendation_generated_on_next_frame(
     loop._recommendation_engine.generate.assert_called_once()
     assert loop.current_recommendation is not None
     assert loop.current_recommendation.action == "RAISE"
+
+
+def test_strategy_skipped_after_hero_fold(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recommendation generation stops once hero is no longer in the hand."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._recommendation_engine = MagicMock()
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": False, "2": True}
+    loop._previous_recommendation = Recommendation(action="BET", amount=100)
+    state = create_empty_game_state()
+    state.phase = "flop"
+    state.hero.is_my_turn = True
+
+    loop._handle_strategy(state)
+
+    loop._recommendation_engine.generate.assert_not_called()
+    assert loop.current_recommendation is None
+    assert loop._last_strategy_is_my_turn is False
 
 
 def test_preflop_sync_notifies_hud_computing(

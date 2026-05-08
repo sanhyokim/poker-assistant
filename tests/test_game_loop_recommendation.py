@@ -12,6 +12,7 @@ from strategy.recommendation_engine import Recommendation
 
 def _make_loop(hand_manager: Any, recommendation_engine: Any = None) -> GameLoop:
     """Create a minimally initialized GameLoop for strategy tests."""
+    hand_manager.get_players_in_hand.return_value = {1, 2}
     loop = GameLoop.__new__(GameLoop)
     loop._recommendation_engine = recommendation_engine
     loop._hand_manager = hand_manager

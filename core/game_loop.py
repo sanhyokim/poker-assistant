@@ -21,6 +21,7 @@ from recognition.diff_detector import DiffDetector
 from recognition.fold_badge_detector import FoldBadgeDetector
 from recognition.name_recognizer import NameRecognizer
 from recognition.number_recognizer import NumberRecognizer
+from recognition.seat_card_detector import SeatCardDetector
 from strategy.recommendation_engine import Recommendation, RecommendationEngine
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,25 @@ class GameLoop:
         self._diff_detector = DiffDetector(config)
         self._action_estimator = ActionEstimator(config)
         self._fold_badge_detector = FoldBadgeDetector(profile, config)
+        self._seat_card_detector = SeatCardDetector(profile, config)
+        recognition_config = config.get("recognition", {})
+        self._seat_no_card_streak: dict[int, int] = {}
+        self._seat_card_fold_latched: set[int] = set()
+        self._seat_card_fold_confirm_frames = int(
+            recognition_config.get("fold_confirm_frames", 3)
+        )
+        self._hand_start_grace_sec = float(
+            recognition_config.get("hand_start_grace_sec", 1.5)
+        )
+        self._table_visible = False
+        self._table_inactive_streak = 0
+        self._table_active_streak = 0
+        self._table_inactive_confirm_frames = int(
+            recognition_config.get("table_inactive_confirm_frames", 3)
+        )
+        self._table_active_confirm_frames = int(
+            recognition_config.get("table_active_confirm_frames", 1)
+        )
 
         self._running = False
         self._prev_state: GameState | None = None
@@ -167,6 +187,8 @@ class GameLoop:
 
         self._frame_number += 1
         game_state = self._build_game_state(frame, time.time())
+        seat_card_results = self._seat_card_detector.detect_all(frame)
+        self._apply_seat_card_visibility(game_state, seat_card_results)
 
         if self._prev_state is not None:
             estimation = self._action_estimator.estimate(
@@ -174,26 +196,85 @@ class GameLoop:
                 game_state,
             )
             game_state.game_event = estimation.get("game_event")
+            if game_state.game_event == "NEW_HAND":
+                if self._hand_manager.phase not in {"preflop", "flop", "turn", "river"}:
+                    logger.info(
+                        "NEW_HAND filter skipped: phase=%s (not active)",
+                        self._hand_manager.phase,
+                    )
+                elif (
+                    self._cached_hero_cards is None
+                    or len(self._cached_hero_cards) != 2
+                ):
+                    logger.info(
+                        "NEW_HAND filter skipped: cached_hero_cards=%s",
+                        self._cached_hero_cards,
+                    )
+                else:
+                    hero_cards_now = self._card_recognizer.recognize_hero_cards(
+                        frame,
+                        log_info=False,
+                    )
+                    cards_missing = self._hero_cards_missing(hero_cards_now)
+                    logger.info(
+                        "NEW_HAND filter check: hero_cards_now=%s, missing=%s, "
+                        "cached=%s, phase=%s, pot %d -> %d",
+                        hero_cards_now,
+                        cards_missing,
+                        self._cached_hero_cards,
+                        self._hand_manager.phase,
+                        self._prev_state.pot,
+                        game_state.pot,
+                    )
+                    if not cards_missing:
+                        logger.info(
+                            "NEW_HAND suppressed: hero cards still visible (%s), "
+                            "phase=%s, pot %d -> %d",
+                            hero_cards_now,
+                            self._hand_manager.phase,
+                            self._prev_state.pot,
+                            game_state.pot,
+                        )
+                        game_state.game_event = None
             game_state.actions_since_last_frame = [
                 self._dict_to_action_record(action)
                 if isinstance(action, dict)
                 else action
                 for action in estimation.get("actions", [])
             ]
+            filtered_pot = estimation.get("filtered_pot")
+            if filtered_pot is not None:
+                logger.debug(
+                    "Applying filtered pot: %d -> %d (spike held)",
+                    game_state.pot,
+                    filtered_pot,
+                )
+                game_state.pot = filtered_pot
         else:
             game_state.game_event = None
             game_state.actions_since_last_frame = []
 
         if self._hand_manager.hand_just_started:
             self._fold_badge_detector.reset()
+            self._seat_card_detector.reset()
+            self._seat_no_card_streak.clear()
+            self._seat_card_fold_latched.clear()
             logger.debug(
-                "Fold badge latches cleared on hand start (hand_id=%s)",
+                "Fold badge and seat-card states cleared on hand start (hand_id=%s)",
                 self._hand_manager.hand_id,
             )
 
         if self._hand_manager.phase in {"preflop", "flop", "turn", "river"}:
             fold_results = self._fold_badge_detector.detect_all(frame)
             self._process_fold_badge_detection(game_state, fold_results)
+            if self._is_seat_card_detection_allowed():
+                self._process_seat_card_detection(game_state, seat_card_results)
+            else:
+                logger.debug(
+                    "SeatCardDetector skipped during hand-start grace period "
+                    "(hand_id=%s)",
+                    self._hand_manager.hand_id,
+                )
 
         self._manage_hero_card_cache(game_state)
         self._prev_state = game_state
@@ -218,6 +299,12 @@ class GameLoop:
         self._diff_detector.reset()
         self._action_estimator.reset()
         self._fold_badge_detector.reset()
+        self._seat_card_detector.reset()
+        self._seat_no_card_streak.clear()
+        self._seat_card_fold_latched.clear()
+        self._table_visible = False
+        self._table_inactive_streak = 0
+        self._table_active_streak = 0
         logger.info("Game loop reset")
 
     def _init_strategy_modules(self) -> None:
@@ -342,6 +429,20 @@ class GameLoop:
             logger.debug("Skipping preflop recommendation on hand-start frame")
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = game_state.hero.is_my_turn
+            self._save_human_action_to_hand_manager(game_state)
+            return
+
+        players_in_hand = self._hand_manager.get_players_in_hand()
+        if 1 not in players_in_hand:
+            if (
+                self._previous_recommendation is not None
+                or self._last_recommendation_log is not None
+            ):
+                logger.info("Strategy skipped: hero is no longer in current hand")
+            self._last_recommendation_log = None
+            self._previous_recommendation = None
+            self._last_strategy_is_my_turn = False
+            self._notify_hud(None)
             self._save_human_action_to_hand_manager(game_state)
             return
 
@@ -775,11 +876,27 @@ class GameLoop:
     ) -> None:
         """Generate FOLD actions from latched fold badge detection.
 
+        Hero folds clear the hero-card cache immediately, then HandManager
+        consumes the generated FOLD action while table-hand observation continues.
+
         Args:
             game_state: Current frame state after action estimation.
             fold_results: Mapping of seat number to fold-badge status.
         """
         players_in_hand = self._hand_manager.get_players_in_hand()
+
+        if 1 in players_in_hand and fold_results.get(1, False):
+            logger.info("Hero FOLD detected via badge for seat 1")
+            game_state.actions_since_last_frame.append(
+                ActionRecord(
+                    seat=1,
+                    action="FOLD",
+                    amount=0,
+                    confidence="high",
+                )
+            )
+            self._clear_hero_card_cache("hero fold badge detected")
+
         for seat in range(2, 7):
             if seat not in players_in_hand:
                 continue
@@ -796,6 +913,95 @@ class GameLoop:
                 )
             )
 
+    def _apply_seat_card_visibility(
+        self,
+        game_state: GameState,
+        seat_card_results: dict[int, bool],
+    ) -> None:
+        """Apply SeatCardDetector results to PlayerState.cards_visible."""
+        for seat in range(2, 7):
+            seat_key = str(seat)
+            player = game_state.players.get(seat_key)
+            if player is None:
+                continue
+            player.cards_visible = bool(
+                player.is_seated and seat_card_results.get(seat, False)
+            )
+
+    def _is_seat_card_detection_allowed(self) -> bool:
+        """Return whether opponent card detection may run for the current frame."""
+        hand_start = getattr(self._hand_manager, "_hand_start_monotonic", None)
+        if hand_start is None:
+            return True
+        elapsed = time.monotonic() - hand_start
+        return elapsed >= self._hand_start_grace_sec
+
+    def _process_seat_card_detection(
+        self,
+        game_state: GameState,
+        seat_card_results: dict[int, bool],
+    ) -> None:
+        """Generate FOLD actions from consecutive no-card detection."""
+        players_in_hand = self._hand_manager.get_players_in_hand()
+
+        for seat in range(2, 7):
+            if seat not in players_in_hand:
+                self._seat_no_card_streak[seat] = 0
+                continue
+
+            if seat in self._seat_card_fold_latched:
+                continue
+
+            has_card = seat_card_results.get(seat, True)
+            if has_card:
+                if self._seat_no_card_streak.get(seat, 0) > 0:
+                    logger.debug(
+                        "Seat %d card visible again, clearing no-card streak",
+                        seat,
+                    )
+                self._seat_no_card_streak[seat] = 0
+                continue
+
+            streak = self._seat_no_card_streak.get(seat, 0) + 1
+            self._seat_no_card_streak[seat] = streak
+            logger.debug(
+                "Seat %d no-card streak: %d/%d",
+                seat,
+                streak,
+                self._seat_card_fold_confirm_frames,
+            )
+            if streak < self._seat_card_fold_confirm_frames:
+                continue
+
+            already_folded_this_frame = any(
+                action.seat == seat and action.action.upper() == "FOLD"
+                for action in game_state.actions_since_last_frame
+            )
+            if already_folded_this_frame:
+                self._seat_card_fold_latched.add(seat)
+                continue
+
+            player = game_state.players[str(seat)]
+            logger.info(
+                "FOLD detected via seat-card absence for seat %d "
+                "(streak=%d, cards_visible=%s, is_seated=%s, stack=%s, bet=%d)",
+                seat,
+                streak,
+                player.cards_visible,
+                player.is_seated,
+                player.stack,
+                player.bet,
+            )
+            game_state.actions_since_last_frame.append(
+                ActionRecord(
+                    seat=seat,
+                    action="FOLD",
+                    amount=0,
+                    confidence="high",
+                )
+            )
+            self._seat_card_fold_latched.add(seat)
+
     def _sync_game_state_with_hand_manager(self, game_state: GameState) -> None:
         """Copy HandManager phase, hand ID, and active count into GameState."""
         old_phase = game_state.phase
@@ -811,10 +1017,21 @@ class GameLoop:
                 game_state.hand_id,
             )
         players_in_hand = self._hand_manager.get_players_in_hand()
-        hero_in_hand = 1 in players_in_hand or self._hand_manager.phase not in {
-            "waiting",
-            "hand_end",
-        }
+        hero_in_hand = 1 in players_in_hand
+        game_state.hero.in_current_hand = hero_in_hand
+        game_state.hero.has_folded = bool(
+            getattr(self._hand_manager, "hero_folded", False)
+        )
+        if not game_state.table_visible:
+            if game_state.active_player_count != 0:
+                logger.info(
+                    "active_player_count synced: %d -> 0 (table not visible)",
+                    game_state.active_player_count,
+                )
+            game_state.active_player_count = 0
+            game_state.hero.in_current_hand = False
+            return
+
         active_count = 1 if hero_in_hand else 0
         active_count += sum(1 for seat in range(2, 7) if seat in players_in_hand)
         if active_count != game_state.active_player_count:
@@ -829,6 +1046,14 @@ class GameLoop:
     def _update_hand_position_lock(self, game_state: GameState) -> None:
         """Lock positions once at hand start and reuse them during the hand."""
         phase = self._hand_manager.phase
+        if not game_state.table_visible:
+            if self._hand_positions is not None or self._hand_dealer_seat is not None:
+                logger.debug("Clearing locked hand positions: table not visible")
+            self._hand_positions = None
+            self._hand_dealer_seat = None
+            game_state.hero.position = None
+            return
+
         if phase in {"waiting", "hand_end"}:
             if self._hand_positions is not None or self._hand_dealer_seat is not None:
                 logger.debug("Clearing locked hand positions: phase=%s", phase)
@@ -856,11 +1081,17 @@ class GameLoop:
 
     @staticmethod
     def _active_seats_for_position(game_state: GameState) -> list[int]:
-        """Return seated seat numbers for position assignment."""
+        """Return seat numbers eligible for position assignment."""
         active_seats = [1]
         for seat_key, player in game_state.players.items():
-            if player.is_seated:
+            if player.in_current_hand:
                 active_seats.append(int(seat_key))
+
+        if len(active_seats) <= 1:
+            for seat_key, player in game_state.players.items():
+                if player.is_seated:
+                    active_seats.append(int(seat_key))
+
         return sorted(set(active_seats))
 
     def _apply_locked_positions(self, game_state: GameState) -> None:
@@ -896,6 +1127,9 @@ class GameLoop:
                 log_info=False,
             )
             game_state.hero.cards = self._format_hero_cards(hero_cards)
+            game_state.hero.cards_visible = not self._hero_cards_missing(
+                game_state.hero.cards
+            )
             if game_state.phase == "waiting":
                 if self._waiting_for_card_clear:
                     if self._hero_cards_missing(hero_cards):
@@ -907,6 +1141,7 @@ class GameLoop:
                             hero_cards,
                         )
                     game_state.hero.cards = None
+                    game_state.hero.cards_visible = False
                 elif self._hero_cards_missing(hero_cards):
                     current_log_key = str(hero_cards)
                     if current_log_key != self._last_waiting_log:
@@ -927,6 +1162,9 @@ class GameLoop:
                         hero_cards,
                     )
                     self._last_waiting_log = None
+        game_state.hero.cards_visible = not self._hero_cards_missing(
+            game_state.hero.cards
+        )
 
         game_state.board = self._format_board_cards(
             self._card_recognizer.recognize_board_cards(frame)
@@ -943,6 +1181,7 @@ class GameLoop:
             game_state.buttons = self._build_button_state(frame)
 
         dealer_seat = self._dealer_recognizer.detect_dealer_seat(frame)
+        fresh_dealer_detected = dealer_seat is not None
         if dealer_seat is not None:
             self._cached_dealer_seat = dealer_seat
             game_state.dealer_seat = dealer_seat
@@ -993,6 +1232,9 @@ class GameLoop:
                 if name is not None:
                     self._cached_player_names[seat_key] = name
         self._populate_players(game_state, number_results, player_names)
+        self._update_table_visibility(game_state, fresh_dealer_detected)
+        if not game_state.table_visible:
+            self._clear_players_for_inactive_table(game_state)
         self._populate_position(game_state)
 
         game_state.hero.seat = 1
@@ -1037,18 +1279,21 @@ class GameLoop:
             stack = player_stacks.get(seat_key)
             bet = player_bets.get(seat_key)
             is_seated = stack is not None
+            existing_player = game_state.players.get(seat_key, PlayerState())
             game_state.players[seat_key] = PlayerState(
                 name=player_names.get(seat_key),
                 stack=stack,
                 bet=int(bet or 0),
                 is_seated=is_seated,
+                cards_visible=existing_player.cards_visible,
                 in_current_hand=seat in players_in_hand,
             )
 
-        hero_in_hand = 1 in players_in_hand or self._hand_manager.phase not in {
-            "waiting",
-            "hand_end",
-        }
+        hero_in_hand = 1 in players_in_hand
+        game_state.hero.in_current_hand = hero_in_hand
+        game_state.hero.has_folded = bool(
+            getattr(self._hand_manager, "hero_folded", False)
+        )
         active_count = 1 if hero_in_hand else 0
         active_count += sum(1 for seat in range(2, 7) if seat in players_in_hand)
         game_state.active_player_count = active_count
@@ -1058,7 +1303,76 @@ class GameLoop:
             sorted(players_in_hand),
         )
 
+    def _update_table_visibility(
+        self,
+        game_state: GameState,
+        fresh_dealer_detected: bool,
+    ) -> None:
+        """Update table visibility state using current-frame recognition signals."""
+        seated_count = sum(
+            1 for player in game_state.players.values() if player.is_seated
+        )
+        strong_signal = (
+            game_state.hero.cards_visible
+            or game_state.board_card_count > 0
+            or fresh_dealer_detected
+            or game_state.hero.is_my_turn
+        )
+        weak_signal = game_state.pot > 0 and seated_count >= 2
+        detected = strong_signal or weak_signal
+
+        if detected:
+            self._table_active_streak += 1
+            self._table_inactive_streak = 0
+        else:
+            self._table_inactive_streak += 1
+            self._table_active_streak = 0
+
+        previous = self._table_visible
+        if self._table_active_streak >= self._table_active_confirm_frames:
+            self._table_visible = True
+        elif self._table_inactive_streak >= self._table_inactive_confirm_frames:
+            self._table_visible = False
+
+        game_state.table_visible = self._table_visible
+        if previous != self._table_visible:
+            logger.info(
+                "Table visibility changed: %s -> %s "
+                "(strong=%s, weak=%s, seated=%d, board=%d, pot=%d, "
+                "fresh_dealer=%s)",
+                previous,
+                self._table_visible,
+                strong_signal,
+                weak_signal,
+                seated_count,
+                game_state.board_card_count,
+                game_state.pot,
+                fresh_dealer_detected,
+            )
+
+    def _clear_players_for_inactive_table(self, game_state: GameState) -> None:
+        """Clear stale player OCR values when the table is not visible."""
+        for seat in range(2, 7):
+            game_state.players[str(seat)] = PlayerState()
+
+        game_state.active_player_count = 0
+        game_state.dealer_seat = None
+        game_state.hero.position = None
+        game_state.hero.cards = None
+        game_state.hero.cards_visible = False
+        game_state.hero.is_my_turn = False
+        game_state.hero.in_current_hand = False
+        logger.debug("Inactive table: cleared stale player and hero visibility state")
+
     def _populate_position(self, game_state: GameState) -> None:
+        if not game_state.table_visible:
+            game_state.hero.position = None
+            return
+
+        if game_state.phase in {"waiting", "hand_end"}:
+            game_state.hero.position = None
+            return
+
         if self._hand_positions is not None:
             self._apply_locked_positions(game_state)
             return

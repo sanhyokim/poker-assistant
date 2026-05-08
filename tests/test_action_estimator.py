@@ -173,17 +173,26 @@ class TestGameEvents:
 
         result = estimator.estimate(previous, current)
 
-        assert result == {"game_event": None, "actions": []}
+        assert result == {
+            "game_event": None,
+            "actions": [],
+            "filtered_pot": None,
+        }
 
     def test_new_hand_detected(self, estimator: ActionEstimator) -> None:
-        """A large pot decrease after a sufficiently large pot is NEW_HAND."""
+        """Two large pot decreases after a sufficiently large pot are NEW_HAND."""
         previous = make_state(pot=1000)
         current = make_state(pot=100)
 
         result = estimator.estimate(previous, current)
+        if result["filtered_pot"] is not None:
+            current.pot = result["filtered_pot"]
+        confirmed = estimator.estimate(current, make_state(pot=100))
 
-        assert result["game_event"] == "NEW_HAND"
-        assert result["actions"] == []
+        assert result["game_event"] is None
+        assert result["filtered_pot"] == 1000
+        assert confirmed["game_event"] == "NEW_HAND"
+        assert confirmed["actions"] == []
 
     def test_new_hand_requires_dynamic_threshold(
         self,
@@ -196,6 +205,94 @@ class TestGameEvents:
         result = estimator.estimate(previous, current)
 
         assert result["game_event"] is None
+
+
+class TestNewHandConfirmation:
+    """Tests for consecutive NEW_HAND confirmation."""
+
+    @pytest.fixture
+    def estimator(self) -> ActionEstimator:
+        """Return an estimator with NEW_HAND confirmation enabled."""
+        return ActionEstimator(
+            {
+                "action_estimation": {
+                    "new_hand_pot_ratio": 0.3,
+                    "new_hand_min_pot_bb": 2,
+                },
+                "game": {"blind_bb": 100},
+                "recognition": {"new_hand_confirm_frames": 2},
+            }
+        )
+
+    def test_new_hand_requires_two_consecutive_frames(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """One candidate frame is held; the second confirms NEW_HAND."""
+        previous = make_state(pot=1000)
+        candidate = make_state(pot=100)
+
+        first = estimator.estimate(previous, candidate)
+        if first["filtered_pot"] is not None:
+            candidate.pot = first["filtered_pot"]
+        second = estimator.estimate(candidate, make_state(pot=100))
+
+        assert first["game_event"] is None
+        assert first["filtered_pot"] == 1000
+        assert second["game_event"] == "NEW_HAND"
+        assert second["filtered_pot"] is None
+
+    def test_new_hand_single_frame_no_trigger(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """A single pot drop followed by recovery does not trigger NEW_HAND."""
+        previous = make_state(pot=1000)
+        candidate = make_state(pot=100)
+
+        first = estimator.estimate(previous, candidate)
+        if first["filtered_pot"] is not None:
+            candidate.pot = first["filtered_pot"]
+        recovered = estimator.estimate(candidate, make_state(pot=900))
+
+        assert first["game_event"] is None
+        assert first["filtered_pot"] == 1000
+        assert recovered["game_event"] is None
+        assert recovered["filtered_pot"] is None
+
+    def test_new_hand_streak_reset_on_normal_pot(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """A normal pot frame resets the candidate streak."""
+        previous = make_state(pot=1000)
+        candidate = make_state(pot=100)
+
+        first = estimator.estimate(previous, candidate)
+        if first["filtered_pot"] is not None:
+            candidate.pot = first["filtered_pot"]
+        recovered = estimator.estimate(candidate, make_state(pot=900))
+        second_candidate = make_state(pot=100)
+        second_first = estimator.estimate(make_state(pot=1000), second_candidate)
+
+        assert recovered["game_event"] is None
+        assert estimator._new_hand_streak == 1
+        assert second_first["game_event"] is None
+        assert second_first["filtered_pot"] == 1000
+
+    def test_new_hand_candidate_holds_pot_value(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """NEW_HAND candidates return filtered_pot to protect prev_state."""
+        previous = make_state(pot=1200)
+        candidate = make_state(pot=0)
+
+        result = estimator.estimate(previous, candidate)
+
+        assert result["game_event"] is None
+        assert result["actions"] == []
+        assert result["filtered_pot"] == 1200
 
     def test_new_street_detected(self, estimator: ActionEstimator) -> None:
         """Board card count increase is NEW_STREET."""
@@ -374,7 +471,10 @@ class TestSequenceHand001:
                     "raise_threshold": 1.1,
                 },
                 "game": {"blind_bb": 100, "blind_sb": 50},
-                "recognition": {"fold_confirm_frames": 1},
+                "recognition": {
+                    "fold_confirm_frames": 1,
+                    "new_hand_confirm_frames": 1,
+                },
             }
         )
 
@@ -406,7 +506,10 @@ class TestSequenceHand002:
                     "raise_threshold": 1.1,
                 },
                 "game": {"blind_bb": 100, "blind_sb": 50},
-                "recognition": {"fold_confirm_frames": 1},
+                "recognition": {
+                    "fold_confirm_frames": 1,
+                    "new_hand_confirm_frames": 1,
+                },
             }
         )
 
@@ -438,6 +541,7 @@ class TestSequenceHand003:
                     "raise_threshold": 1.1,
                 },
                 "game": {"blind_bb": 100, "blind_sb": 50},
+                "recognition": {"new_hand_confirm_frames": 1},
             }
         )
 
@@ -473,6 +577,7 @@ class TestSequenceHand004:
                     "fold_confirm_frames": 3,
                     "pot_spike_ratio": 2.0,
                     "pot_spike_confirm_frames": 2,
+                    "new_hand_confirm_frames": 1,
                 },
             }
         )
@@ -723,3 +828,79 @@ class TestPotSpikeFilter:
 
         assert result["game_event"] is None
         assert result["actions"] == []
+        assert result["filtered_pot"] == 400
+
+    def test_pot_spike_held_returns_filtered_pot(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Held pot spikes return the pre-spike pot as filtered_pot."""
+        previous = create_empty_game_state()
+        previous.pot = 400
+
+        current = create_empty_game_state()
+        current.pot = 2000
+
+        result = estimator.estimate(previous, current)
+
+        assert result["game_event"] is None
+        assert result["actions"] == []
+        assert result["filtered_pot"] == 400
+
+    def test_pot_spike_no_false_new_hand(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """A held spike followed by a normal pot does not trigger NEW_HAND."""
+        previous = create_empty_game_state()
+        previous.pot = 400
+
+        spike_frame = create_empty_game_state()
+        spike_frame.pot = 2000
+        spike_result = estimator.estimate(previous, spike_frame)
+        if spike_result["filtered_pot"] is not None:
+            spike_frame.pot = spike_result["filtered_pot"]
+
+        normal_frame = create_empty_game_state()
+        normal_frame.pot = 500
+        normal_result = estimator.estimate(spike_frame, normal_frame)
+
+        assert spike_result["filtered_pot"] == 400
+        assert normal_result["game_event"] != "NEW_HAND"
+        assert normal_result["filtered_pot"] is None
+
+    def test_pot_spike_confirmed_returns_none_filtered_pot(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Confirmed repeated pot spikes do not request pot replacement."""
+        previous = create_empty_game_state()
+        previous.pot = 400
+
+        first_spike = create_empty_game_state()
+        first_spike.pot = 2000
+        first_result = estimator.estimate(previous, first_spike)
+
+        second_spike = create_empty_game_state()
+        second_spike.pot = 2000
+        if first_result["filtered_pot"] is not None:
+            first_spike.pot = first_result["filtered_pot"]
+        second_result = estimator.estimate(first_spike, second_spike)
+
+        assert first_result["filtered_pot"] == 400
+        assert second_result["filtered_pot"] is None
+
+    def test_no_spike_returns_none_filtered_pot(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Regular pot changes do not request pot replacement."""
+        previous = create_empty_game_state()
+        previous.pot = 400
+
+        current = create_empty_game_state()
+        current.pot = 500
+
+        result = estimator.estimate(previous, current)
+
+        assert result["filtered_pot"] is None

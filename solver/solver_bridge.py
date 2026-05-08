@@ -78,12 +78,12 @@ class PostflopSolverBridge:
         pid = self.process.pid if self.process is not None else "unknown"
         self._logger.info("Solver CLI started (PID: %s)", pid)
 
-    def solve(self, request: JsonDict, timeout: float = 7.0) -> JsonDict:
+    def solve(self, request: JsonDict, timeout: float = 12.0) -> JsonDict:
         """Send one solve request and return the solver response dictionary.
 
         Args:
             request: JSON-serializable request payload for the Rust CLI.
-            timeout: Maximum seconds to wait for one stdout response line.
+            timeout: Maximum seconds to wait for one stdout JSON response.
 
         Returns:
             Solver response dictionary, or a failure dictionary on errors.
@@ -110,7 +110,7 @@ class PostflopSolverBridge:
         started_at = time.monotonic()
         result_queue: queue.Queue[str | BaseException] = queue.Queue(maxsize=1)
         reader_thread = threading.Thread(
-            target=self._read_stdout_line,
+            target=self._read_json_response,
             args=(process, result_queue),
             daemon=True,
         )
@@ -202,23 +202,37 @@ class PostflopSolverBridge:
             if message:
                 self._logger.error("Solver CLI stderr: %s", message)
 
-    def _read_stdout_line(
+    def _read_json_response(
         self,
         process: subprocess.Popen[str],
         result_queue: queue.Queue[str | BaseException],
     ) -> None:
-        """Read one stdout response line and place it into a queue."""
+        """Read stdout until a complete JSON response is assembled."""
         if process.stdout is None:
             result_queue.put(RuntimeError("stdout pipe is unavailable"))
             return
 
+        buffer = ""
         try:
-            line = process.stdout.readline()
+            while True:
+                line = process.stdout.readline()
+                if not line:
+                    if buffer:
+                        result_queue.put(buffer)
+                    else:
+                        result_queue.put(RuntimeError("Solver process closed stdout"))
+                    return
+
+                buffer += line
+                try:
+                    json.loads(buffer)
+                except json.JSONDecodeError:
+                    continue
+
+                result_queue.put(buffer)
+                return
         except BaseException as error:
             result_queue.put(error)
-            return
-
-        result_queue.put(line)
 
     def _kill_process(self) -> None:
         """Kill the current solver process if it is still alive."""
