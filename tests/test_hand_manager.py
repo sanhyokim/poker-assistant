@@ -451,8 +451,8 @@ class TestHandEndConditions:
 
         assert manager.phase == "hand_end"
 
-    def test_showdown_stable_pot_ends_hand(self, manager: HandManager) -> None:
-        """A five-card board with stable pot for 10 frames ends the hand."""
+    def test_river_stable_pot_does_not_end_hand(self, manager: HandManager) -> None:
+        """A five-card board with stable pot does not end the hand by itself."""
         start_hand(manager)
         for board in [
             ["2c", "7d", "Ts"],
@@ -472,7 +472,7 @@ class TestHandEndConditions:
                 )
             )
 
-        assert manager.phase == "hand_end"
+        assert manager.phase == "river"
 
     def test_pot_decrease_ends_hand(self, manager: HandManager) -> None:
         """A pot decrease during an active hand ends the hand."""
@@ -594,12 +594,12 @@ class TestPlayersInHandRecovery:
 
         assert 4 not in manager.get_players_in_hand()
 
-    def test_late_cards_visible_recovery_marks_player_in_hand(
+    def test_late_cards_visible_does_not_recover_player_in_hand(
         self,
         manager: HandManager,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A missed seat recovers when cards become visible later."""
+        """A missed seat does not recover when cards become visible later."""
         manager.process_frame(
             make_state(
                 hero_cards=["Ah", "Kd"],
@@ -609,7 +609,7 @@ class TestPlayersInHandRecovery:
         )
         assert 4 not in manager.get_players_in_hand()
 
-        with caplog.at_level(logging.INFO):
+        with caplog.at_level(logging.DEBUG):
             manager.process_frame(
                 make_state(
                     hero_cards=["Ah", "Kd"],
@@ -618,14 +618,14 @@ class TestPlayersInHandRecovery:
                 )
             )
 
-        assert 4 in manager.get_players_in_hand()
-        assert "Player late-recovered: seat=4 cards_visible=True bet=0" in caplog.text
+        assert 4 not in manager.get_players_in_hand()
+        assert "Player recovery skipped: seat=4 cards_visible=True bet=0" in caplog.text
 
-    def test_late_bet_recovery_marks_player_in_hand(
+    def test_late_bet_does_not_recover_player_in_hand(
         self,
         manager: HandManager,
     ) -> None:
-        """A missed seat recovers when a live bet appears later."""
+        """A missed seat does not recover when a live bet appears later."""
         manager.process_frame(
             make_state(
                 hero_cards=["Ah", "Kd"],
@@ -642,7 +642,7 @@ class TestPlayersInHandRecovery:
             )
         )
 
-        assert 4 in manager.get_players_in_hand()
+        assert 4 not in manager.get_players_in_hand()
 
     def test_folded_player_is_not_late_recovered(self, manager: HandManager) -> None:
         """A seat explicitly folded does not recover just because stack is visible."""

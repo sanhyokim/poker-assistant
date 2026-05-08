@@ -446,11 +446,11 @@ def test_fold_badge_detection_ignores_false_results(
     assert game_state.actions_since_last_frame == []
 
 
-def test_seat_card_detection_appends_fold_after_confirm_frames(
+def test_seat_card_detection_does_not_append_fold_after_confirm_frames(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Seat-card absence generates one FOLD after the confirm threshold."""
+    """Seat-card absence no longer generates FOLD actions by itself."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "flop"
     loop._hand_manager._players_in_hand = {"1": True, "2": True}
@@ -461,15 +461,11 @@ def test_seat_card_detection_appends_fold_after_confirm_frames(
     loop._process_seat_card_detection(game_state, {2: False})
     loop._process_seat_card_detection(game_state, {2: False})
 
-    assert game_state.actions_since_last_frame == [
-        ActionRecord(
-            seat=2,
-            action="FOLD",
-            amount=0,
-            confidence="high",
-        )
-    ]
-    assert 2 in loop._seat_card_fold_latched
+    assert not any(
+        action.seat == 2 and action.action.upper() == "FOLD"
+        for action in game_state.actions_since_last_frame
+    )
+    assert 2 not in loop._seat_card_fold_latched
 
 
 def test_seat_card_detection_waits_for_confirm_frames(
@@ -508,11 +504,11 @@ def test_seat_card_detection_visible_card_resets_streak(
     assert loop._seat_no_card_streak[2] == 2
 
 
-def test_seat_card_detection_latches_existing_frame_fold(
+def test_seat_card_detection_does_not_latch_existing_frame_fold(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Seat-card detection does not duplicate a FOLD already in the frame."""
+    """Seat-card detection does not interact with FOLD actions in the frame."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "flop"
     loop._hand_manager._players_in_hand = {"1": True, "2": True}
@@ -527,7 +523,7 @@ def test_seat_card_detection_latches_existing_frame_fold(
     assert game_state.actions_since_last_frame == [
         ActionRecord(seat=2, action="FOLD", amount=0, confidence="high")
     ]
-    assert 2 in loop._seat_card_fold_latched
+    assert 2 not in loop._seat_card_fold_latched
 
 
 def test_fold_badge_detector_runs_during_active_phase(

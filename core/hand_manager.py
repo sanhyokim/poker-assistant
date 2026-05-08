@@ -568,23 +568,8 @@ class HandManager:
             )
             return True
 
-        if game_state.board_card_count == 5:
-            current_pot = game_state.pot
-            if (
-                self._last_pot_at_showdown is not None
-                and current_pot == self._last_pot_at_showdown
-            ):
-                self._showdown_stable_count += 1
-            else:
-                self._showdown_stable_count = 0
-                self._last_pot_at_showdown = current_pot
-
-            if self._showdown_stable_count >= 10:
-                logger.info("Hand end: showdown complete (pot stable for 10 frames)")
-                return True
-        else:
-            self._showdown_stable_count = 0
-            self._last_pot_at_showdown = None
+        self._showdown_stable_count = 0
+        self._last_pot_at_showdown = None
 
         return False
 
@@ -1433,21 +1418,18 @@ class HandManager:
                 "cards_visible": player.cards_visible,
                 "in_current_hand": player.in_current_hand,
             }
-            recovery_visible = player.cards_visible or player.bet > 0
-
             if (
                 seat_key in self._players_in_hand
                 and not self._players_in_hand[seat_key]
-                and recovery_visible
-                and seat_key not in self._folded_seats
+                and (player.cards_visible or player.bet > 0)
             ):
-                self._players_in_hand[seat_key] = True
-                logger.info(
-                    "Player late-recovered: seat=%s cards_visible=%s bet=%d "
-                    "(was False at hand start, now confirmed participating)",
+                logger.debug(
+                    "Player recovery skipped: seat=%s cards_visible=%s bet=%d "
+                    "folded=%s",
                     seat_key,
                     player.cards_visible,
                     player.bet,
+                    seat_key in self._folded_seats,
                 )
 
     def _save_replay_json(self) -> None:

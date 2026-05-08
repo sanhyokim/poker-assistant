@@ -941,7 +941,7 @@ class GameLoop:
         game_state: GameState,
         seat_card_results: dict[int, bool],
     ) -> None:
-        """Generate FOLD actions from consecutive no-card detection."""
+        """Track consecutive no-card detection without generating FOLD actions."""
         players_in_hand = self._hand_manager.get_players_in_hand()
 
         for seat in range(2, 7):
@@ -973,17 +973,10 @@ class GameLoop:
             if streak < self._seat_card_fold_confirm_frames:
                 continue
 
-            already_folded_this_frame = any(
-                action.seat == seat and action.action.upper() == "FOLD"
-                for action in game_state.actions_since_last_frame
-            )
-            if already_folded_this_frame:
-                self._seat_card_fold_latched.add(seat)
-                continue
-
             player = game_state.players[str(seat)]
-            logger.info(
-                "FOLD detected via seat-card absence for seat %d "
+            logger.debug(
+                "Seat-card absence reached fold threshold for seat %d; "
+                "FOLD generation is disabled "
                 "(streak=%d, cards_visible=%s, is_seated=%s, stack=%s, bet=%d)",
                 seat,
                 streak,
@@ -992,15 +985,6 @@ class GameLoop:
                 player.stack,
                 player.bet,
             )
-            game_state.actions_since_last_frame.append(
-                ActionRecord(
-                    seat=seat,
-                    action="FOLD",
-                    amount=0,
-                    confidence="high",
-                )
-            )
-            self._seat_card_fold_latched.add(seat)
 
     def _sync_game_state_with_hand_manager(self, game_state: GameState) -> None:
         """Copy HandManager phase, hand ID, and active count into GameState."""
