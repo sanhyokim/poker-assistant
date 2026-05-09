@@ -1583,6 +1583,7 @@ class HandManager:
                 street_actions,
             )
 
+        seat_to_name = self._db_participant_seat_to_name()
         return {
             "meta": {
                 "hand_id": self._hand_id,
@@ -1593,6 +1594,8 @@ class HandManager:
                 "site": "coinpoker",
             },
             "participated_seats": sorted(self._participated_seats),
+            "seat_to_name": seat_to_name,
+            "db_participant_names": sorted(seat_to_name.values()),
             "streets": streets,
             "result": {
                 "outcome": "unknown",
@@ -1601,6 +1604,18 @@ class HandManager:
                 "opponent_cards": None,
             },
         }
+
+    def _db_participant_seat_to_name(self) -> dict[str, str]:
+        """Return named non-hero participants for replay and DB audit output."""
+        seat_to_name: dict[str, str] = {}
+        for seat_key, player in self._current_players.items():
+            if seat_key == "1" or seat_key not in self._participated_seats:
+                continue
+            name = player.get("name")
+            if not name or name == "-":
+                continue
+            seat_to_name[seat_key] = str(name)
+        return seat_to_name
 
     def _build_street_replay(
         self,

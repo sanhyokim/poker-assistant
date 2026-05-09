@@ -174,7 +174,7 @@ def normalize_name(value: Any) -> str | None:
 def extract_seat_to_name(replay: dict[str, Any]) -> dict[str, str]:
     """Extract seat-to-name mapping from known replay shapes when available."""
     seat_to_name: dict[str, str] = {}
-    for key in ["player_names", "players", "current_players"]:
+    for key in ["seat_to_name", "player_names", "players", "current_players"]:
         raw = replay.get(key)
         if not isinstance(raw, dict):
             continue
@@ -205,6 +205,9 @@ def parse_replay(path: Path) -> ReplayAudit | None:
     else:
         participated_seats = None
         warnings.append(f"WARNING: {path.name} has no participated_seats")
+
+    if not isinstance(replay.get("seat_to_name"), dict):
+        warnings.append(f"WARNING: {path.name} has no seat_to_name")
 
     return ReplayAudit(
         path=path,
@@ -437,8 +440,14 @@ def print_summary(warnings: list[str], compare_warnings: list[str]) -> None:
         missing_count = sum("has no participated_seats" in item for item in warnings)
         if missing_count:
             emit(f"WARNING: {missing_count} replay files missing participated_seats")
+        missing_names = sum("has no seat_to_name" in item for item in warnings)
+        if missing_names:
+            emit(f"WARNING: {missing_names} replay files missing seat_to_name")
         for warning in warnings:
-            if "has no participated_seats" in warning:
+            if (
+                "has no participated_seats" in warning
+                or "has no seat_to_name" in warning
+            ):
                 continue
             emit(warning)
     else:

@@ -1713,14 +1713,59 @@ class TestPersistence:
         replay = json.loads(replay_path.read_text(encoding="utf-8"))
 
         assert set(replay.keys()) == {
+            "db_participant_names",
             "meta",
             "participated_seats",
+            "seat_to_name",
             "streets",
             "result",
         }
         assert {"hand_id", "timestamp", "table", "seat", "blinds", "site"}.issubset(
             replay["meta"].keys()
         )
+
+    def test_replay_json_saves_participant_seat_to_name(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Replay stores named non-hero participated seats for DB auditing."""
+        manager = make_manager(tmp_path)
+        manager._hand_id = 1
+        manager._hero_cards = ["Ah", "Kd"]
+        manager._participated_seats = {"1", "2", "4", "5"}
+        manager._current_players = {
+            "1": {"name": "Hero"},
+            "2": {"name": "PlayerA"},
+            "4": {"name": "PlayerB"},
+            "5": {"name": "-"},
+        }
+
+        replay = manager._build_replay_json(datetime.now(timezone.utc))
+
+        assert replay["seat_to_name"] == {
+            "2": "PlayerA",
+            "4": "PlayerB",
+        }
+        assert replay["db_participant_names"] == ["PlayerA", "PlayerB"]
+
+    def test_replay_json_excludes_names_outside_participated_seats(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Replay seat_to_name excludes seated players who did not participate."""
+        manager = make_manager(tmp_path)
+        manager._hand_id = 1
+        manager._hero_cards = ["Ah", "Kd"]
+        manager._participated_seats = {"1", "2"}
+        manager._current_players = {
+            "2": {"name": "PlayerA"},
+            "6": {"name": "PlayerC"},
+        }
+
+        replay = manager._build_replay_json(datetime.now(timezone.utc))
+
+        assert replay["seat_to_name"] == {"2": "PlayerA"}
+        assert "6" not in replay["seat_to_name"]
 
     def test_replay_streets_preflop_and_flop(self, tmp_path: Path) -> None:
         """Preflop and flop actions are saved while turn/river stay null."""
