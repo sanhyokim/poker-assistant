@@ -923,6 +923,67 @@ class TestActionAccumulation:
 
         assert manager.get_players_in_hand() == {1, 2}
 
+    def test_duplicate_fold_action_does_not_reprocess_folded_seat(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Repeated FOLD for an already folded seat leaves fold state stable."""
+        manager._phase = "preflop"
+        manager._players_in_hand = {"1": True, "2": True, "3": True}
+
+        manager._add_actions([ActionRecord(seat=3, action="FOLD", amount=0)])
+        manager._update_players_in_hand_from_action(
+            ActionRecord(seat=3, action="FOLD", amount=0)
+        )
+
+        assert manager._players_in_hand["3"] is False
+        assert manager._folded_seats == {"3"}
+        assert manager.get_players_in_hand() == {1, 2}
+
+    def test_rejoin_seat_promotes_non_folded_seat(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """rejoin_seat promotes an out-of-hand non-folded active seat."""
+        manager._phase = "flop"
+        manager._hand_id = 7
+        manager._players_in_hand = {"1": True, "2": True, "3": False}
+        manager._folded_seats = set()
+
+        promoted = manager.rejoin_seat(3)
+
+        assert promoted is True
+        assert manager._players_in_hand["3"] is True
+        assert "3" in manager._participated_seats
+
+    def test_rejoin_seat_rejects_folded_seat(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """rejoin_seat rejects seats already folded in the hand."""
+        manager._phase = "flop"
+        manager._players_in_hand = {"1": True, "2": True, "3": False}
+        manager._folded_seats = {"3"}
+
+        promoted = manager.rejoin_seat(3)
+
+        assert promoted is False
+        assert manager._players_in_hand["3"] is False
+        assert "3" not in manager._participated_seats
+
+    def test_rejoin_seat_rejects_when_waiting(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """rejoin_seat is disabled outside active hand phases."""
+        manager._phase = "waiting"
+        manager._players_in_hand = {"1": True, "3": False}
+
+        promoted = manager.rejoin_seat(3)
+
+        assert promoted is False
+        assert manager._players_in_hand["3"] is False
+
     def test_fold_updates_players_in_hand(self, manager: HandManager) -> None:
         """FOLD actions remove each folded seat from _players_in_hand."""
         manager._phase = "flop"

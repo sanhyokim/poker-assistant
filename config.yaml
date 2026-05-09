@@ -88,3 +88,7 @@ preflop_delta:
   shift_cap_low: 0.03
   shift_cap_high: 0.08
   timeout_ms: 1000
+
+debug:
+  save_solver_io: true
+  solver_io_dir: "debug/solver_io"

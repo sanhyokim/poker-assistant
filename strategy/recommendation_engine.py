@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 
 from core.game_state import ActionRecord, GameState
@@ -349,6 +352,15 @@ class RecommendationEngine:
             )
 
         latency["headsup_total_ms"] = self._elapsed_ms(started_at)
+        self._save_solver_debug(
+            game_state=game_state,
+            solver_request=request,
+            solver_output=solver_output,
+            recommendation_action=action,
+            recommendation_amount=amount,
+            recommendation_reason=reason,
+            latency=latency,
+        )
         return Recommendation(
             action=action,
             amount=amount,
@@ -372,7 +384,8 @@ class RecommendationEngine:
         stats_list = self._stats_list(opponent_stats)
         result = self.multiway_engine.evaluate(game_state, stats_list)
         action = self._normalize_action(str(result.get("action", "check")))
-        amount = self._parse_amount(result.get("size"), 0)
+        raw_amount = self._parse_amount(result.get("size"), 0)
+        amount = self._ensure_multiway_amount(raw_amount, action, game_state)
 
         return Recommendation(
             action=action,
@@ -383,6 +396,168 @@ class RecommendationEngine:
             action_probabilities={action: 1.0},
             latency_breakdown={"multiway_ms": self._elapsed_ms(started_at)},
         )
+
+    def _ensure_multiway_amount(
+        self,
+        amount: int,
+        action: str,
+        game_state: GameState,
+    ) -> int:
+        """Ensure a non-zero amount for multiway actions that require one.
+
+        Args:
+            amount: Parsed amount from LLM output.
+            action: Normalized action string.
+            game_state: Current game state.
+
+        Returns:
+            Existing positive amount, or a computed default for sized actions.
+        """
+        if amount > 0:
+            return amount
+
+        pot = int(game_state.pot or 0)
+        blind_bb = int(self.config.get("game", {}).get("blind_bb", 100))
+        max_bet = self._current_max_bet(game_state)
+        hero_bet = game_state.hero.bet
+
+        if action == "BET":
+            default = max(int(pot * 0.6), blind_bb)
+            self.logger.info(
+                "Multiway BET amount was 0, using default: %d (60%% of pot %d)",
+                default,
+                pot,
+            )
+            return default
+
+        if action == "CALL":
+            call_amount = max(0, max_bet - hero_bet)
+            if call_amount > 0:
+                self.logger.info(
+                    "Multiway CALL amount was 0, using call amount: %d "
+                    "(max_bet=%d, hero_bet=%d)",
+                    call_amount,
+                    max_bet,
+                    hero_bet,
+                )
+                return call_amount
+            return 0
+
+        if action == "RAISE":
+            if max_bet > 0:
+                default = max(int(max_bet * 2.5), pot)
+            else:
+                default = max(int(pot * 0.6), blind_bb)
+            self.logger.info(
+                "Multiway RAISE amount was 0, using default: %d "
+                "(max_bet=%d, pot=%d)",
+                default,
+                max_bet,
+                pot,
+            )
+            return default
+
+        if action == "ALL_IN":
+            hero_stack = int(game_state.hero.stack or 0)
+            if hero_stack > 0:
+                self.logger.info(
+                    "Multiway ALL_IN amount was 0, using hero stack: %d",
+                    hero_stack,
+                )
+                return hero_stack
+            return 0
+
+        return 0
+
+    def _save_solver_debug(
+        self,
+        game_state: GameState,
+        solver_request: dict[str, Any] | None,
+        solver_output: dict[str, Any],
+        recommendation_action: str,
+        recommendation_amount: int,
+        recommendation_reason: str,
+        latency: dict[str, float],
+    ) -> None:
+        """Save solver input/output debug JSON for post-hoc analysis.
+
+        Saving failures are logged as warnings and never interrupt the
+        recommendation pipeline.
+
+        Args:
+            game_state: Current GameState at the time of solver invocation.
+            solver_request: JSON dictionary sent to the solver CLI.
+            solver_output: JSON dictionary received from the solver CLI.
+            recommendation_action: Final recommended action string.
+            recommendation_amount: Final recommended amount in chips.
+            recommendation_reason: Reason text for the recommendation.
+            latency: Latency breakdown dictionary.
+        """
+        debug_config = self.config.get("debug", {})
+        if not debug_config.get("save_solver_io", False):
+            return
+
+        try:
+            now = datetime.now(timezone.utc)
+            date_str = now.strftime("%Y-%m-%d")
+            time_str = now.strftime("%H%M%S") + f"_{now.microsecond // 1000:03d}"
+            hand_id = game_state.hand_id or 0
+            phase = game_state.phase or "unknown"
+
+            players_in_hand: dict[str, bool] = {"1": True}
+            current_bets: dict[str, int] = {"1": game_state.hero.bet}
+            folded_seats: list[str] = []
+            for seat_key, player in game_state.players.items():
+                players_in_hand[seat_key] = player.in_current_hand
+                current_bets[seat_key] = player.bet
+                if not player.in_current_hand:
+                    folded_seats.append(seat_key)
+
+            debug_data = {
+                "timestamp": now.isoformat(),
+                "hand_id": hand_id,
+                "phase": phase,
+                "street": phase,
+                "hero_cards": list(game_state.hero.cards or []),
+                "board": list(game_state.board or []),
+                "pot": game_state.pot,
+                "call_amount": self._compute_call_amount(game_state),
+                "active_player_count": game_state.active_player_count,
+                "players_in_hand": players_in_hand,
+                "folded_seats": sorted(folded_seats),
+                "current_bets": current_bets,
+                "actions": [
+                    {
+                        "seat": action.seat,
+                        "action": action.action,
+                        "amount": action.amount,
+                        "confidence": action.confidence,
+                    }
+                    for action in game_state.actions_since_last_frame
+                ],
+                "solver_request": solver_request,
+                "solver_output": solver_output,
+                "recommendation": {
+                    "action": recommendation_action,
+                    "amount": recommendation_amount,
+                    "source": "solver",
+                    "reason": recommendation_reason,
+                },
+                "latency": latency,
+            }
+
+            base_dir = str(debug_config.get("solver_io_dir", "debug/solver_io"))
+            day_dir = os.path.join(base_dir, date_str)
+            os.makedirs(day_dir, exist_ok=True)
+            filename = f"hand_{hand_id:06d}_{phase}_{time_str}_solver.json"
+            filepath = os.path.join(day_dir, filename)
+
+            with open(filepath, "w", encoding="utf-8") as file:
+                json.dump(debug_data, file, ensure_ascii=False, indent=2)
+
+            self.logger.debug("Solver debug saved: %s", filepath)
+        except Exception as exc:
+            self.logger.warning("Solver debug save failed: %s", exc)
 
     def _generate_fallback(self, game_state: GameState, reason: str) -> Recommendation:
         """Generate the final low-confidence fallback recommendation."""
@@ -1130,6 +1305,19 @@ class RecommendationEngine:
         bets = [game_state.hero.bet]
         bets.extend(player.bet for player in game_state.players.values())
         return max(bets) if bets else 0
+
+    @staticmethod
+    def _compute_call_amount(game_state: GameState) -> int:
+        """Compute the amount hero needs to call.
+
+        Args:
+            game_state: Current game state.
+
+        Returns:
+            Call amount in chips. 0 if hero already matches the max bet.
+        """
+        max_bet = RecommendationEngine._current_max_bet(game_state)
+        return max(0, max_bet - game_state.hero.bet)
 
     @staticmethod
     def _first_stats(opponent_stats: JsonDict | None) -> JsonDict | None:

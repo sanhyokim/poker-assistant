@@ -151,6 +151,17 @@ class NoneCapture:
         return False
 
 
+class StaticFrameCapture:
+    """Capture test double returning one static frame."""
+
+    def __init__(self) -> None:
+        self.frame = np.zeros((10, 10, 3), dtype=np.uint8)
+
+    def get_frame(self) -> np.ndarray:
+        """Return a dummy frame."""
+        return self.frame
+
+
 def install_fakes(monkeypatch: pytest.MonkeyPatch) -> None:
     """Install fake recognizers into core.game_loop."""
     monkeypatch.setattr("core.game_loop.CardRecognizer", FakeCardRecognizer)
@@ -330,6 +341,56 @@ def test_populate_players_waiting_counts_zero(
     assert game_state.active_player_count == 0
     assert game_state.players["2"].is_seated is True
     assert game_state.players["2"].in_current_hand is False
+
+
+def test_populate_players_clears_unseated_player_name(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unseated player names are cleared from GameState and cache."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._cached_player_names["3"] = "DepartedPlayer"
+    game_state = create_empty_game_state()
+    number_results = {
+        "player_stacks": {"2": 4900, "3": None, "4": None, "5": None, "6": None},
+        "player_bets": {"2": 0, "3": 0, "4": None, "5": None, "6": None},
+    }
+    player_names = {
+        "2": "Alice",
+        "3": "DepartedPlayer",
+        "4": None,
+        "5": None,
+        "6": None,
+    }
+
+    loop._populate_players(game_state, number_results, player_names)
+
+    assert game_state.players["3"].is_seated is False
+    assert game_state.players["3"].name is None
+    assert loop._cached_player_names["3"] is None
+
+
+def test_stop_clears_cached_state(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stop() clears cached live state for a clean UI/HUD stop."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._cached_player_names = {"2": "Alice"}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    loop._cached_hand_id = 12
+    loop._previous_recommendation = Recommendation(action="BET", amount=100)
+    loop._last_recommendation_log = "BET 100"
+    loop._last_strategy_is_my_turn = True
+
+    loop.stop()
+
+    assert loop._cached_player_names == {}
+    assert loop._cached_hero_cards is None
+    assert loop._cached_hand_id is None
+    assert loop._previous_recommendation is None
+    assert loop._last_recommendation_log is None
+    assert loop._last_strategy_is_my_turn is False
 
 
 def _state_with_player(seat: str, stack: int = 5000, bet: int = 0) -> Any:
@@ -595,6 +656,93 @@ def test_seat_card_detector_skipped_during_hand_start_grace(
     assert loop._seat_no_card_streak == {}
 
 
+def test_revalidation_promotes_seat_with_cards(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto-revalidation promotes a seated out-of-hand seat with cards."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": False}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_detector = MagicMock()
+    loop._seat_card_detector.detect_all.return_value = {3: True}
+    game_state = _state_with_player("3")
+    game_state.active_player_count = 2
+    game_state.players["3"].in_current_hand = False
+    game_state.players["3"].cards_visible = False
+
+    loop._revalidate_seat_cards_before_strategy(game_state)
+
+    assert game_state.players["3"].in_current_hand is True
+    assert game_state.players["3"].cards_visible is True
+    assert game_state.active_player_count == 3
+    assert 3 in loop._hand_manager.get_players_in_hand()
+    assert "3" in loop._hand_manager._participated_seats
+
+
+def test_revalidation_does_not_promote_folded_seat(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto-revalidation does not promote a folded seat."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": False}
+    loop._hand_manager._folded_seats = {"3"}
+    loop._seat_card_detector = MagicMock()
+    loop._seat_card_detector.detect_all.return_value = {3: True}
+    game_state = _state_with_player("3")
+    game_state.active_player_count = 2
+    game_state.players["3"].in_current_hand = False
+
+    loop._revalidate_seat_cards_before_strategy(game_state)
+
+    assert game_state.players["3"].in_current_hand is False
+    assert game_state.active_player_count == 2
+
+
+def test_revalidation_does_not_promote_empty_seat(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto-revalidation does not promote an unseated seat."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": False}
+    loop._seat_card_detector = MagicMock()
+    loop._seat_card_detector.detect_all.return_value = {3: True}
+    game_state = create_empty_game_state()
+    game_state.players["3"].is_seated = False
+    game_state.players["3"].in_current_hand = False
+    game_state.active_player_count = 2
+
+    loop._revalidate_seat_cards_before_strategy(game_state)
+
+    assert game_state.players["3"].in_current_hand is False
+    assert game_state.active_player_count == 2
+
+
+def test_revalidation_skipped_when_capture_fails(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Auto-revalidation is skipped when no frame is available."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": False}
+    loop._seat_card_detector = MagicMock()
+    game_state = _state_with_player("3")
+    game_state.active_player_count = 2
+    game_state.players["3"].in_current_hand = False
+
+    loop._revalidate_seat_cards_before_strategy(game_state)
+
+    loop._seat_card_detector.detect_all.assert_not_called()
+    assert game_state.players["3"].in_current_hand is False
+    assert game_state.active_player_count == 2
+
+
 def test_apply_seat_card_visibility_sets_player_cards_visible(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -609,6 +757,93 @@ def test_apply_seat_card_visibility_sets_player_cards_visible(
 
     assert state.players["2"].cards_visible is True
     assert state.players["3"].cards_visible is False
+
+
+def test_visual_obstruction_detected_on_three_simultaneous_card_changes(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Three simultaneous seat-card changes activate visual obstruction guard."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._last_seat_card_states = {2: True, 3: True, 4: True}
+    state = create_empty_game_state()
+    for seat in ["2", "3", "4"]:
+        state.players[seat].is_seated = True
+
+    loop._apply_seat_card_visibility(state, {2: False, 3: False, 4: False})
+
+    assert loop._is_visual_obstruction_active() is True
+
+
+def test_visual_obstruction_freezes_cards_visible_true_to_false(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visual obstruction keeps previously visible cards from dropping to NO."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._visual_obstruction_active = True
+    loop._visual_obstruction_until = time.monotonic() + 10.0
+    loop._prev_state = create_empty_game_state()
+    loop._prev_state.players["2"].cards_visible = True
+    state = create_empty_game_state()
+    state.players["2"].is_seated = True
+
+    loop._apply_seat_card_visibility(state, {2: False})
+
+    assert state.players["2"].cards_visible is True
+
+
+def test_visual_obstruction_allows_cards_visible_false_to_true(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visual obstruction still allows cards visibility to recover to YES."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._visual_obstruction_active = True
+    loop._visual_obstruction_until = time.monotonic() + 10.0
+    loop._prev_state = create_empty_game_state()
+    loop._prev_state.players["2"].cards_visible = False
+    state = create_empty_game_state()
+    state.players["2"].is_seated = True
+
+    loop._apply_seat_card_visibility(state, {2: True})
+
+    assert state.players["2"].cards_visible is True
+
+
+def test_fold_badge_detection_ignored_during_visual_obstruction(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FoldBadge FOLD actions are not generated during visual obstruction."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._visual_obstruction_active = True
+    loop._visual_obstruction_until = time.monotonic() + 10.0
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    game_state = _state_with_player("2")
+
+    loop._process_fold_badge_detection(game_state, {2: True})
+
+    assert game_state.actions_since_last_frame == []
+
+
+def test_visual_obstruction_keeps_existing_player_name(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Blank name OCR does not overwrite cached names during obstruction."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._visual_obstruction_active = True
+    loop._visual_obstruction_until = time.monotonic() + 10.0
+    loop._cached_player_names["2"] = "Alice"
+    state = create_empty_game_state()
+    state.players["2"].is_seated = True
+    state.players["2"].name = "-"
+
+    loop._apply_seat_card_visibility(state, {2: True})
+
+    assert state.players["2"].name == "Alice"
 
 
 def test_table_visibility_fresh_dealer_makes_visible(

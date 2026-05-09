@@ -151,6 +151,40 @@ class HandManager:
             if in_hand
         }
 
+    def rejoin_seat(self, seat: int) -> bool:
+        """Promote a seated player back into the current hand.
+
+        Args:
+            seat: Seat number from 2 to 6 to rejoin.
+
+        Returns:
+            True if the seat was promoted, False otherwise.
+        """
+        if self._phase not in self._ACTIVE_PHASES:
+            return False
+
+        seat_key = str(seat)
+        if self._players_in_hand.get(seat_key, False):
+            return False
+
+        if seat_key in self._folded_seats:
+            logger.info("Rejoin rejected for seat %d: already in folded_seats", seat)
+            return False
+
+        self._players_in_hand[seat_key] = True
+        self._participated_seats.add(seat_key)
+        logger.info(
+            "Seat %d rejoined hand %s via revalidation. players_in_hand: %s",
+            seat,
+            self._hand_id,
+            {
+                seat_id: in_hand
+                for seat_id, in_hand in self._players_in_hand.items()
+                if in_hand
+            },
+        )
+        return True
+
     def close(self) -> None:
         """Close the SQLite connection."""
         try:
@@ -663,6 +697,9 @@ class HandManager:
 
         if action_name == "FOLD":
             seat_key = str(action.seat)
+            if seat_key in self._folded_seats:
+                logger.debug("Duplicate fold ignored: seat=%s", seat_key)
+                return
             self._players_in_hand[seat_key] = False
             self._folded_seats.add(seat_key)
             logger.info(

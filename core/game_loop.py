@@ -84,6 +84,10 @@ class GameLoop:
         self._table_active_confirm_frames = int(
             recognition_config.get("table_active_confirm_frames", 1)
         )
+        self._visual_obstruction_active = False
+        self._visual_obstruction_until = 0.0
+        self._visual_obstruction_hold_sec = 1.0
+        self._last_seat_card_states: dict[int, bool] = {}
 
         self._running = False
         self._prev_state: GameState | None = None
@@ -144,6 +148,13 @@ class GameLoop:
     def stop(self) -> None:
         """Request polling loop stop."""
         self._running = False
+        self._cached_player_names = {}
+        self._cached_hero_cards = None
+        self._cached_hand_id = None
+        self._previous_recommendation = None
+        self._last_recommendation_log = None
+        self._last_strategy_is_my_turn = False
+        self._notify_hud(None)
 
         if self._recommendation_engine is not None:
             solver_bridge = self._recommendation_engine.solver_bridge
@@ -261,6 +272,9 @@ class GameLoop:
             self._seat_card_detector.reset()
             self._seat_no_card_streak.clear()
             self._seat_card_fold_latched.clear()
+            self._visual_obstruction_active = False
+            self._visual_obstruction_until = 0.0
+            self._last_seat_card_states.clear()
             self._hero_cards_missing_since_hand_end = False
             self._last_ended_hero_cards = None
             logger.debug(
@@ -311,6 +325,9 @@ class GameLoop:
         self._table_visible = False
         self._table_inactive_streak = 0
         self._table_active_streak = 0
+        self._visual_obstruction_active = False
+        self._visual_obstruction_until = 0.0
+        self._last_seat_card_states.clear()
         logger.info("Game loop reset")
 
     def _init_strategy_modules(self) -> None:
@@ -501,6 +518,7 @@ class GameLoop:
                 self._notify_hud(self._previous_recommendation)
             else:
                 self._notify_hud_computing()
+                self._revalidate_seat_cards_before_strategy(game_state)
                 recommendation = self._generate_recommendation(
                     game_state,
                     preflop_actions=self._get_preflop_actions_for_strategy(),
@@ -546,6 +564,7 @@ class GameLoop:
             else:
                 # 初回計算（自分のターンが来た最初のフレーム）
                 self._notify_hud_computing()
+                self._revalidate_seat_cards_before_strategy(game_state)
                 recommendation = self._generate_recommendation(game_state)
                 guarded = self._guard_postflop_recommendation_source(
                     recommendation, game_state, phase, "Synchronous"
@@ -831,6 +850,96 @@ class GameLoop:
                 opponent_stats=opponent_stats,
             )
 
+    def _revalidate_seat_cards_before_strategy(self, game_state: GameState) -> None:
+        """Re-scan seat cards and promote incorrectly excluded seats.
+
+        Args:
+            game_state: Current game state, mutated when seats are promoted.
+        """
+        capture = getattr(self, "_capture", None)
+        seat_card_detector = getattr(self, "_seat_card_detector", None)
+        if capture is None or seat_card_detector is None:
+            return
+
+        frame = capture.get_frame()
+        if frame is None:
+            return
+
+        seat_card_results = seat_card_detector.detect_all(frame)
+        players_in_hand = self._hand_manager.get_players_in_hand()
+        changed = False
+
+        for seat in range(2, 7):
+            if seat in players_in_hand:
+                continue
+            if not seat_card_results.get(seat, False):
+                continue
+
+            seat_key = str(seat)
+            player = game_state.players.get(seat_key)
+            if player is None or not player.is_seated:
+                continue
+
+            promoted = self._hand_manager.rejoin_seat(seat)
+            if not promoted:
+                continue
+
+            player.in_current_hand = True
+            player.cards_visible = True
+            changed = True
+            logger.info(
+                "Auto-revalidation: seat %d promoted to in_current_hand "
+                "(cards detected)",
+                seat,
+            )
+
+        if changed:
+            new_active = len(self._hand_manager.get_players_in_hand())
+            if new_active != game_state.active_player_count:
+                logger.info(
+                    "Auto-revalidation updated active_player_count: %d -> %d",
+                    game_state.active_player_count,
+                    new_active,
+                )
+                game_state.active_player_count = new_active
+
+    def request_rejoin_seat(self, seat: int) -> bool:
+        """Attempt to rejoin a seat via manual UI request.
+
+        Args:
+            seat: Seat number from 2 to 6.
+
+        Returns:
+            True if the seat was successfully promoted.
+        """
+        if seat < 2 or seat > 6:
+            logger.warning("Rejoin request for invalid seat %d", seat)
+            return False
+
+        frame = self._capture.get_frame()
+        if frame is None:
+            logger.warning("Rejoin failed for seat %d: capture unavailable", seat)
+            return False
+
+        seat_card_results = self._seat_card_detector.detect_all(frame)
+        if not seat_card_results.get(seat, False):
+            logger.info(
+                "Rejoin rejected for seat %d: no card detected on re-scan",
+                seat,
+            )
+            return False
+
+        promoted = self._hand_manager.rejoin_seat(seat)
+        if promoted:
+            logger.info("Manual rejoin: seat %d promoted to in_current_hand", seat)
+            return True
+
+        logger.info(
+            "Manual rejoin: seat %d was not promoted (already in hand or folded)",
+            seat,
+        )
+        return False
+
     @staticmethod
     def _recommendation_generate_accepts_keywords(generate_method: Any) -> bool:
         """Return whether a recommendation generate callable accepts kwargs."""
@@ -891,6 +1000,15 @@ class GameLoop:
         """
         players_in_hand = self._hand_manager.get_players_in_hand()
 
+        if self._is_visual_obstruction_active():
+            for seat, detected in fold_results.items():
+                if detected:
+                    logger.info(
+                        "Fold badge ignored during visual obstruction: seat=%s",
+                        seat,
+                    )
+            return
+
         if 1 in players_in_hand and fold_results.get(1, False):
             logger.info("Hero FOLD detected via badge for seat 1")
             game_state.actions_since_last_frame.append(
@@ -925,14 +1043,99 @@ class GameLoop:
         seat_card_results: dict[int, bool],
     ) -> None:
         """Apply SeatCardDetector results to PlayerState.cards_visible."""
+        self._update_visual_obstruction(seat_card_results)
+        obstruction_active = self._is_visual_obstruction_active()
+
         for seat in range(2, 7):
             seat_key = str(seat)
             player = game_state.players.get(seat_key)
             if player is None:
                 continue
-            player.cards_visible = bool(
+            previous_visible = self._previous_player_cards_visible(game_state, seat_key)
+            detected_visible = bool(
                 player.is_seated and seat_card_results.get(seat, False)
             )
+            if obstruction_active and previous_visible and not detected_visible:
+                player.cards_visible = True
+                logger.debug(
+                    "Cards visibility freeze during visual obstruction: seat=%s "
+                    "keep=True",
+                    seat,
+                )
+                continue
+            player.cards_visible = bool(
+                detected_visible
+            )
+        self._apply_name_obstruction_guard(game_state)
+
+    def _update_visual_obstruction(self, seat_card_results: dict[int, bool]) -> None:
+        """Detect simultaneous seat-card changes that indicate visual obstruction."""
+        changed_seats = []
+        for seat, has_card in seat_card_results.items():
+            prev = self._last_seat_card_states.get(seat)
+            if prev is not None and prev != has_card:
+                changed_seats.append(seat)
+
+        self._last_seat_card_states = dict(seat_card_results)
+        if len(changed_seats) >= 3:
+            self._visual_obstruction_active = True
+            self._visual_obstruction_until = (
+                time.monotonic() + self._visual_obstruction_hold_sec
+            )
+            logger.info(
+                "Visual obstruction detected: simultaneous seat card changes=%s "
+                "hold=%.1fs",
+                changed_seats,
+                self._visual_obstruction_hold_sec,
+            )
+
+    def _is_visual_obstruction_active(self) -> bool:
+        """Return whether temporary visual obstruction protection is active."""
+        if not self._visual_obstruction_active:
+            return False
+        if time.monotonic() <= self._visual_obstruction_until:
+            return True
+        self._visual_obstruction_active = False
+        return False
+
+    def _previous_player_cards_visible(
+        self,
+        game_state: GameState,
+        seat_key: str,
+    ) -> bool:
+        """Return the last known cards_visible value for a seat."""
+        if self._prev_state is not None:
+            previous_player = self._prev_state.players.get(seat_key)
+            if previous_player is not None:
+                return previous_player.cards_visible
+        current_player = game_state.players.get(seat_key)
+        return bool(current_player and current_player.cards_visible)
+
+    def _apply_name_obstruction_guard(self, game_state: GameState) -> None:
+        """Keep existing names when visual obstruction causes blank OCR."""
+        if not self._is_visual_obstruction_active():
+            return
+
+        for seat_key, player in game_state.players.items():
+            if player.name not in {None, "", "-"}:
+                continue
+            previous_name = self._previous_player_name(seat_key)
+            if previous_name in {None, "", "-"}:
+                continue
+            player.name = previous_name
+            self._cached_player_names[seat_key] = previous_name
+
+    def _previous_player_name(self, seat_key: str) -> str | None:
+        """Return cached or previous-frame name for a seat."""
+        cached_name = self._cached_player_names.get(seat_key)
+        if cached_name not in {None, "", "-"}:
+            return cached_name
+        if self._prev_state is None:
+            return None
+        previous_player = self._prev_state.players.get(seat_key)
+        if previous_player is None:
+            return None
+        return previous_player.name
 
     def _is_seat_card_detection_allowed(self) -> bool:
         """Return whether opponent card detection may run for the current frame."""
@@ -1306,8 +1509,11 @@ class GameLoop:
             bet = player_bets.get(seat_key)
             is_seated = stack is not None
             existing_player = game_state.players.get(seat_key, PlayerState())
+            name = player_names.get(seat_key) if is_seated else None
+            if not is_seated and self._cached_player_names.get(seat_key) is not None:
+                self._cached_player_names[seat_key] = None
             game_state.players[seat_key] = PlayerState(
-                name=player_names.get(seat_key),
+                name=name,
                 stack=stack,
                 bet=int(bet or 0),
                 is_seated=is_seated,

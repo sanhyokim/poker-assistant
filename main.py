@@ -284,6 +284,9 @@ def main() -> None:
     main_window.start_requested.connect(on_start)
     main_window.stop_requested.connect(on_stop)
     main_window.reload_requested.connect(on_reload)
+    main_window.rejoin_seat_requested.connect(
+        lambda seat: game_loop.request_rejoin_seat(seat)
+    )
 
     _load_stats(hand_manager, main_window)
 

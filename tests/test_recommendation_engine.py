@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import logging
+import shutil
+import uuid
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,6 +17,17 @@ from strategy.recommendation_engine import Recommendation, RecommendationEngine
 
 
 TEST_CONFIG = {"game": {"blind_bb": 100}, "preflop_delta": {"sample_threshold_low": 50}}
+
+
+@pytest.fixture
+def workspace_tmp() -> Path:
+    """Return a workspace-local temporary directory."""
+    path = Path(".test_tmp") / f"recommendation_engine_{uuid.uuid4().hex}"
+    path.mkdir(parents=True, exist_ok=True)
+    try:
+        yield path
+    finally:
+        shutil.rmtree(path, ignore_errors=True)
 
 
 def make_engine(config: dict | None = None) -> RecommendationEngine:
@@ -510,6 +525,73 @@ def test_recommendation_enriched_with_pot_percentage_and_bb() -> None:
     assert recommendation.preset_hint == "33%"
 
 
+def test_multiway_bet_zero_gets_default_amount() -> None:
+    """Multiway BET with null size defaults to 60 percent pot."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=3)
+    state.pot = 1000
+    engine.multiway_engine.evaluate.return_value = {
+        "action": "bet",
+        "size": None,
+        "reasoning": "Bet with default size.",
+    }
+
+    recommendation = engine.generate(state)
+
+    assert recommendation.action == "BET"
+    assert recommendation.amount == 600
+
+
+def test_multiway_call_zero_gets_call_amount() -> None:
+    """Multiway CALL with null size defaults to max_bet minus hero_bet."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=3)
+    state.hero.bet = 0
+    state.players["2"].bet = 300
+    engine.multiway_engine.evaluate.return_value = {
+        "action": "call",
+        "size": None,
+        "reasoning": "Call the bet.",
+    }
+
+    recommendation = engine.generate(state)
+
+    assert recommendation.action == "CALL"
+    assert recommendation.amount == 300
+
+
+def test_multiway_check_zero_stays_zero() -> None:
+    """Multiway CHECK with null size keeps amount at zero."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=3)
+    engine.multiway_engine.evaluate.return_value = {
+        "action": "check",
+        "size": None,
+        "reasoning": "Check back.",
+    }
+
+    recommendation = engine.generate(state)
+
+    assert recommendation.action == "CHECK"
+    assert recommendation.amount == 0
+
+
+def test_multiway_bet_with_valid_size_unchanged() -> None:
+    """Multiway BET with a valid positive size keeps the LLM amount."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=3)
+    engine.multiway_engine.evaluate.return_value = {
+        "action": "bet",
+        "size": 500,
+        "reasoning": "Specific bet size.",
+    }
+
+    recommendation = engine.generate(state)
+
+    assert recommendation.action == "BET"
+    assert recommendation.amount == 500
+
+
 def test_fold_converted_to_check_when_check_button_available(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -955,6 +1037,123 @@ def test_generate_postflop_headsup_uses_configured_stats_threshold() -> None:
     engine.llm_pipeline.suggest_exploit.assert_called_once()
     engine.llm_pipeline.estimate_ranges.assert_not_called()
     engine.llm_pipeline.generate_reason.assert_not_called()
+
+
+def test_solver_debug_json_saved_when_enabled(workspace_tmp: Path) -> None:
+    """Solver debug JSON is saved after successful HU solver recommendation."""
+    config = {
+        "game": {"blind_bb": 100},
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": True,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 4
+    state.hero.bet = 50
+    state.players["2"].bet = 200
+    state.players["3"].in_current_hand = False
+    state.actions_since_last_frame = [
+        ActionRecord(seat=2, action="BET", amount=200, confidence="high")
+    ]
+    solver_request = {"board": "Td7c2h", "range_oop": "OOP_RANGE"}
+    solver_output = {
+        "success": True,
+        "exploitability": 1.25,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
+        },
+    }
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = solver_request
+    engine.solver_bridge.solve.return_value = solver_output
+
+    recommendation = engine.generate(state, {"2": {"vpip": 30, "total_hands": 49}})
+
+    files = list((workspace_tmp / "solver_io").rglob("*.json"))
+    assert len(files) == 1
+    debug_data = json.loads(files[0].read_text(encoding="utf-8"))
+    assert files[0].name.startswith("hand_000004_flop_")
+    assert debug_data["hand_id"] == 4
+    assert debug_data["phase"] == "flop"
+    assert debug_data["hero_cards"] == ["Ah", "As"]
+    assert debug_data["board"] == ["Td", "7c", "2h"]
+    assert debug_data["call_amount"] == 150
+    assert debug_data["solver_request"] == solver_request
+    assert debug_data["solver_output"] == solver_output
+    assert debug_data["recommendation"]["action"] == recommendation.action
+    assert debug_data["recommendation"]["amount"] == recommendation.amount
+    assert "latency" in debug_data
+
+
+def test_solver_debug_json_not_saved_when_disabled(workspace_tmp: Path) -> None:
+    """Solver debug JSON is not saved when debug.save_solver_io is false."""
+    config = {
+        "game": {"blind_bb": 100},
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": False,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {"board": "Td7c2h"}
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
+        },
+    }
+
+    engine.generate(state, {"2": {"vpip": 30, "total_hands": 49}})
+
+    assert list(workspace_tmp.rglob("*.json")) == []
+
+
+def test_solver_debug_save_failure_does_not_block_recommendation(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Solver debug save failures do not block recommendations."""
+    config = {
+        "game": {"blind_bb": 100},
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": True,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {"board": "Td7c2h"}
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
+        },
+    }
+
+    def fail_open(*_args: object, **_kwargs: object) -> None:
+        raise OSError("blocked")
+
+    monkeypatch.setattr("builtins.open", fail_open)
+    with caplog.at_level(logging.WARNING):
+        recommendation = engine.generate(
+            state,
+            {"2": {"vpip": 30, "total_hands": 49}},
+        )
+
+    assert recommendation.action == "BET"
+    assert "Solver debug save failed" in caplog.text
 
 
 def test_generate_postflop_multiway_uses_multiway_engine() -> None:

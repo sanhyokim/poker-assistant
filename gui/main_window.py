@@ -79,6 +79,7 @@ _OPERATION_PLAYER_COLUMNS = [
     "Cards",
     "In Hand",
     "Status",
+    "",
 ]
 
 
@@ -103,6 +104,7 @@ class MainWindow(QMainWindow):
     start_requested = pyqtSignal()
     stop_requested = pyqtSignal()
     reload_requested = pyqtSignal()
+    rejoin_seat_requested = pyqtSignal(int)
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         super().__init__()
@@ -155,6 +157,31 @@ class MainWindow(QMainWindow):
             logger.exception("Failed to serialize GameState for display")
             json_text = str(game_state)
         self._state_display.setPlainText(json_text)
+
+    def clear_live_state(self) -> None:
+        """Clear live game state displays after polling stops."""
+        for key in self._summary_labels:
+            self._set_summary_value(key, "-")
+        self.update_phase("waiting")
+
+        button_column = len(_OPERATION_PLAYER_COLUMNS) - 1
+        for row, seat in enumerate(range(2, 7)):
+            for column in range(self._player_table.columnCount()):
+                self._player_table.removeCellWidget(row, column)
+                value = str(seat) if column == 0 else "-"
+                foreground = QColor("#888888")
+                background = QColor("#1e1e1e")
+                if column == button_column:
+                    value = ""
+                    foreground = QColor("#1e1e1e")
+                self._player_table.setItem(
+                    row,
+                    column,
+                    self._make_operation_table_item(value, foreground, background),
+                )
+
+        self._state_display.clear()
+        logger.info("Live state cleared")
 
     def append_log(self, message: str, level: str = "INFO") -> None:
         """Append a log message to the operation log display.
@@ -305,6 +332,7 @@ class MainWindow(QMainWindow):
         self._start_stop_btn.setStyleSheet("")
         self._status_label.setText("Stopped")
         self._status_label.setStyleSheet("color: #cc3333;")
+        self.clear_live_state()
 
     def _create_operation_tab(self) -> QWidget:
         """Create the operation tab contents."""
@@ -384,8 +412,14 @@ class MainWindow(QMainWindow):
             "padding: 4px; border: 1px solid #3c3c3c; }"
         )
         player_header = self._player_table.horizontalHeader()
-        player_header.setStretchLastSection(True)
+        player_header.setStretchLastSection(False)
         player_header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        button_column = len(_OPERATION_PLAYER_COLUMNS) - 1
+        player_header.setSectionResizeMode(
+            button_column,
+            QHeaderView.ResizeMode.Fixed,
+        )
+        self._player_table.setColumnWidth(button_column, 40)
 
         self._state_display = QTextEdit()
         self._state_display.setReadOnly(True)
@@ -517,6 +551,66 @@ class MainWindow(QMainWindow):
                     column,
                     self._make_operation_table_item(value, foreground, background),
                 )
+            self._update_rejoin_button(
+                row=row,
+                seat=seat,
+                is_seated=is_seated,
+                in_hand=in_hand,
+                phase=game_state.phase,
+            )
+
+    def _update_rejoin_button(
+        self,
+        row: int,
+        seat: int,
+        is_seated: bool,
+        in_hand: bool,
+        phase: str,
+    ) -> None:
+        """Update one player-table rejoin button cell."""
+        button_column = len(_OPERATION_PLAYER_COLUMNS) - 1
+        can_rejoin = (
+            is_seated
+            and not in_hand
+            and phase in {"preflop", "flop", "turn", "river"}
+        )
+        if can_rejoin:
+            rejoin_button = QPushButton("↻")
+            rejoin_button.setFixedSize(30, 22)
+            rejoin_button.setToolTip(f"Re-scan seat {seat} cards and rejoin hand")
+            rejoin_button.setStyleSheet(
+                "QPushButton { background-color: #3c6e3c; color: white; "
+                "border: 1px solid #5a5a5a; border-radius: 3px; "
+                "font-size: 13px; }"
+                "QPushButton:hover { background-color: #4a8a4a; }"
+            )
+            rejoin_button.clicked.connect(
+                lambda _checked=False, selected_seat=seat: self._on_rejoin_clicked(
+                    selected_seat
+                )
+            )
+            self._player_table.setCellWidget(row, button_column, rejoin_button)
+            return
+
+        self._player_table.removeCellWidget(row, button_column)
+        self._player_table.setItem(
+            row,
+            button_column,
+            self._make_operation_table_item(
+                "",
+                QColor("#1e1e1e"),
+                QColor("#1e1e1e"),
+            ),
+        )
+
+    def _on_rejoin_clicked(self, seat: int) -> None:
+        """Handle rejoin button click for a specific seat.
+
+        Args:
+            seat: Seat number from 2 to 6.
+        """
+        logger.info("Rejoin button clicked for seat %d", seat)
+        self.rejoin_seat_requested.emit(seat)
 
     def _set_summary_value(
         self,
@@ -954,6 +1048,7 @@ class MainWindow(QMainWindow):
         self._start_stop_btn.setStyleSheet("")
         self._status_label.setText("Stopped")
         self._status_label.setStyleSheet("color: #cc3333;")
+        self.clear_live_state()
         self.stop_requested.emit()
         logger.info("Stop requested")
 

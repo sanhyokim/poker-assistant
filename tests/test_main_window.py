@@ -198,6 +198,140 @@ def test_update_game_state_table_closed_summary_and_players(
     assert window._player_table.item(0, 7).text() == "TABLE CLOSED"
 
 
+def test_clear_live_state_resets_summary(qapp: QApplication) -> None:
+    """clear_live_state resets summary labels and phase display."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.phase = "river"
+    game_state.table_visible = True
+    game_state.hand_id = 9
+    game_state.pot = 2400
+
+    window.update_game_state(game_state)
+    window.clear_live_state()
+
+    assert all(label.text() == "-" for label in window._summary_labels.values())
+    assert window._phase_label.text() == "Phase: waiting"
+
+
+def test_clear_live_state_resets_player_table(qapp: QApplication) -> None:
+    """clear_live_state clears player rows and removes Rejoin buttons."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.phase = "flop"
+    game_state.table_visible = True
+    game_state.players["3"].name = "Bob"
+    game_state.players["3"].stack = 4800
+    game_state.players["3"].is_seated = True
+    game_state.players["3"].in_current_hand = False
+    window.update_game_state(game_state)
+
+    assert isinstance(window._player_table.cellWidget(1, 8), QPushButton)
+
+    window.clear_live_state()
+
+    for row, seat in enumerate(range(2, 7)):
+        assert window._player_table.item(row, 0).text() == str(seat)
+        assert window._player_table.item(row, 1).text() == "-"
+        assert window._player_table.cellWidget(row, 8) is None
+
+
+def test_request_stop_calls_clear_live_state(qapp: QApplication) -> None:
+    """_request_stop clears live displays before emitting stop."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.phase = "turn"
+    game_state.table_visible = True
+    game_state.pot = 1200
+    window.update_game_state(game_state)
+
+    window._request_stop()
+
+    assert all(label.text() == "-" for label in window._summary_labels.values())
+    assert window._phase_label.text() == "Phase: waiting"
+    assert window._state_display.toPlainText() == ""
+
+
+def test_rejoin_button_visible_for_out_seat(qapp: QApplication) -> None:
+    """OUT seated players in active phases show a Rejoin button."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.phase = "flop"
+    game_state.table_visible = True
+    game_state.players["3"].name = "Bob"
+    game_state.players["3"].stack = 4800
+    game_state.players["3"].is_seated = True
+    game_state.players["3"].cards_visible = True
+    game_state.players["3"].in_current_hand = False
+
+    window.update_game_state(game_state)
+
+    button = window._player_table.cellWidget(1, 8)
+    assert isinstance(button, QPushButton)
+    assert button.text() == "↻"
+
+
+def test_rejoin_button_hidden_for_active_seat(qapp: QApplication) -> None:
+    """ACTIVE seats do not show a Rejoin button."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.phase = "flop"
+    game_state.table_visible = True
+    game_state.players["3"].stack = 4800
+    game_state.players["3"].is_seated = True
+    game_state.players["3"].cards_visible = True
+    game_state.players["3"].in_current_hand = True
+
+    window.update_game_state(game_state)
+
+    assert window._player_table.cellWidget(1, 8) is None
+
+
+def test_rejoin_button_hidden_during_waiting(qapp: QApplication) -> None:
+    """Waiting phase does not show Rejoin buttons."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.phase = "waiting"
+    game_state.table_visible = True
+    game_state.players["3"].stack = 4800
+    game_state.players["3"].is_seated = True
+    game_state.players["3"].cards_visible = True
+    game_state.players["3"].in_current_hand = False
+
+    window.update_game_state(game_state)
+
+    for row in range(5):
+        assert window._player_table.cellWidget(row, 8) is None
+
+
+def test_rejoin_signal_emitted_on_click(qapp: QApplication) -> None:
+    """Rejoin button click emits rejoin_seat_requested with the seat number."""
+    _ = qapp
+    window = MainWindow()
+    callback = MagicMock()
+    window.rejoin_seat_requested.connect(callback)
+    game_state = create_empty_game_state()
+    game_state.phase = "flop"
+    game_state.table_visible = True
+    game_state.players["3"].stack = 4800
+    game_state.players["3"].is_seated = True
+    game_state.players["3"].cards_visible = True
+    game_state.players["3"].in_current_hand = False
+    window.update_game_state(game_state)
+
+    button = window._player_table.cellWidget(1, 8)
+    assert isinstance(button, QPushButton)
+    button.click()
+
+    callback.assert_called_once_with(3)
+
+
 def test_append_log_and_filter(qapp: QApplication) -> None:
     """append_log adds messages that pass the current filter."""
     _ = qapp
