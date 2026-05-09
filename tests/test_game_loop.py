@@ -846,6 +846,32 @@ def test_visual_obstruction_keeps_existing_player_name(
     assert state.players["2"].name == "Alice"
 
 
+def test_new_hand_suppressed_during_visual_obstruction(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NEW_HAND events are suppressed while visual obstruction guard is active."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._hand_manager._phase = "flop"
+    loop._prev_state = create_empty_game_state()
+    loop._prev_state.pot = 3000
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    loop._visual_obstruction_active = True
+    loop._visual_obstruction_until = time.monotonic() + 10.0
+    loop._action_estimator = MagicMock()
+    loop._action_estimator.estimate.return_value = {
+        "game_event": "NEW_HAND",
+        "actions": [],
+        "filtered_pot": None,
+    }
+
+    state = loop.process_one_frame()
+
+    assert state is not None
+    assert state.game_event is None
+
+
 def test_table_visibility_fresh_dealer_makes_visible(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1863,6 +1889,63 @@ def test_waiting_same_hero_cards_after_clear_can_start_hand(
     loop._hand_manager.process_frame(state)
 
     assert state.hero.cards == ["Kd", "Qc"]
+    assert loop._hand_manager.phase == "preflop"
+
+
+def test_stale_suppression_timeout(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Stale hero-card suppression expires after the safety timeout."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._hand_manager._phase = "waiting"
+    loop._last_hand_manager_phase = "waiting"
+    loop._last_ended_hero_cards = ["Kd", "Qc"]
+    loop._hero_cards_missing_since_hand_end = False
+    loop._stale_suppression_start_time = time.monotonic() - 11.0
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["Kd", "Qc"]
+    )
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        state = loop.process_one_frame()
+        assert state is not None
+        loop._hand_manager.process_frame(state)
+
+    assert state.hero.cards == ["Kd", "Qc"]
+    assert loop._hand_manager.phase == "preflop"
+    assert "Stale card suppression timed out" in caplog.text
+
+
+def test_stale_suppression_normal_clear(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing-card frame clears stale suppression through the normal path."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "waiting"
+    loop._last_hand_manager_phase = "waiting"
+    loop._last_ended_hero_cards = ["Kd", "Qc"]
+    loop._hero_cards_missing_since_hand_end = False
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        side_effect=[[None, None], ["Kd", "Qc"]]
+    )
+
+    first_state = loop.process_one_frame()
+    assert first_state is not None
+    loop._hand_manager.process_frame(first_state)
+
+    assert first_state.hero.cards is None
+    assert loop._hero_cards_missing_since_hand_end is True
+    assert loop._hand_manager.phase == "waiting"
+
+    second_state = loop.process_one_frame()
+    assert second_state is not None
+    loop._hand_manager.process_frame(second_state)
+
+    assert second_state.hero.cards == ["Kd", "Qc"]
     assert loop._hand_manager.phase == "preflop"
 
 

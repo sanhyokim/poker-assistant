@@ -276,14 +276,28 @@ class TestPhaseTransitions:
         manager: HandManager,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A NEW_STREET frame while waiting is ignored with a warning."""
-        with caplog.at_level(logging.WARNING):
+        """A NEW_STREET frame while waiting is ignored with debug logging."""
+        with caplog.at_level(logging.DEBUG):
             manager.process_frame(
                 make_state(board=["2c", "7d", "Ts"], game_event="NEW_STREET")
             )
 
         assert manager.phase == "waiting"
         assert "Invalid transition ignored" in caplog.text
+
+    def test_invalid_transition_log_level(
+        self,
+        manager: HandManager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """waiting -> street invalid transition is not logged as a warning."""
+        with caplog.at_level(logging.INFO):
+            manager.process_frame(
+                make_state(board=["2c", "7d", "Ts"], game_event="NEW_STREET")
+            )
+
+        assert manager.phase == "waiting"
+        assert "Invalid transition ignored" not in caplog.text
 
     def test_invalid_new_street_is_ignored(
         self,

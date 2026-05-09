@@ -114,6 +114,7 @@ class GameLoop:
         self._waiting_for_card_clear = False
         self._hero_cards_missing_since_hand_end = False
         self._last_ended_hero_cards: list[str | None] | None = None
+        self._stale_suppression_start_time: float | None = None
         self._last_hand_manager_phase: str | None = None
         self._previous_recommendation: Recommendation | None = None
         self._last_strategy_phase: str | None = None
@@ -210,7 +211,14 @@ class GameLoop:
             )
             game_state.game_event = estimation.get("game_event")
             if game_state.game_event == "NEW_HAND":
-                if self._hand_manager.phase not in {"preflop", "flop", "turn", "river"}:
+                if self._is_visual_obstruction_active():
+                    logger.info(
+                        "NEW_HAND suppressed: visual obstruction active "
+                        "(until %.1fs from now)",
+                        self._visual_obstruction_until - time.monotonic(),
+                    )
+                    game_state.game_event = None
+                elif self._hand_manager.phase not in {"preflop", "flop", "turn", "river"}:
                     logger.info(
                         "NEW_HAND filter skipped: phase=%s (not active)",
                         self._hand_manager.phase,
@@ -313,6 +321,7 @@ class GameLoop:
         self._waiting_for_card_clear = False
         self._hero_cards_missing_since_hand_end = False
         self._last_ended_hero_cards = None
+        self._stale_suppression_start_time = None
         self._last_hand_manager_phase = None
         self._previous_recommendation = None
         self._last_strategy_phase = None
@@ -1444,6 +1453,7 @@ class GameLoop:
             self._last_ended_hero_cards = self._current_visible_hero_cards()
             self._hero_cards_missing_since_hand_end = False
             self._waiting_for_card_clear = True
+            self._stale_suppression_start_time = time.monotonic()
             self._clear_hero_card_cache("phase transition to waiting")
         self._last_hand_manager_phase = current_phase
 
@@ -1467,11 +1477,24 @@ class GameLoop:
         hero_cards: list[str | None] | None,
     ) -> bool:
         """Return whether waiting-state hero cards are stale from the last hand."""
-        return (
-            self._last_ended_hero_cards is not None
-            and hero_cards == self._last_ended_hero_cards
-            and not self._hero_cards_missing_since_hand_end
-        )
+        if self._last_ended_hero_cards is None:
+            return False
+        if hero_cards != self._last_ended_hero_cards:
+            return False
+        if self._hero_cards_missing_since_hand_end:
+            return False
+        if (
+            self._stale_suppression_start_time is not None
+            and time.monotonic() - self._stale_suppression_start_time > 10.0
+        ):
+            logger.info(
+                "Stale card suppression timed out (>10s), "
+                "accepting cards as new hand: %s",
+                hero_cards,
+            )
+            self._stale_suppression_start_time = None
+            return False
+        return True
 
     def _log_stale_waiting_cards(self, hero_cards: Any) -> None:
         """Log stale waiting cards that are suppressed as a false hand start."""

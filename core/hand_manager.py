@@ -236,7 +236,7 @@ class HandManager:
             if self._has_visible_hero_cards(game_state):
                 self._start_new_hand(game_state)
             elif game_state.game_event == "NEW_STREET":
-                logger.warning("Invalid transition ignored: waiting -> street")
+                logger.debug("Invalid transition ignored: waiting -> street")
             return
 
         if self._phase == "hand_end":
