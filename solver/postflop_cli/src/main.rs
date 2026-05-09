@@ -35,6 +35,7 @@ struct SolveRequest {
     target_exploitability_pct: f64,
     timeout_ms: u64,
     bunching: Option<serde_json::Value>,
+    actions_played: Option<Vec<String>>,
 }
 
 #[derive(Serialize)]
@@ -49,6 +50,8 @@ struct SolveResponse {
     iterations_run: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     root_strategy: Option<RootStrategy>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_strategy: Option<RootStrategy>,
     queried_nodes: Vec<serde_json::Value>,
 }
 
@@ -257,9 +260,25 @@ fn process_request(line: &str) -> SolveResponse {
     game.back_to_root();
     game.cache_normalized_weights();
 
-    let root_strategy = match extract_root_strategy(&game) {
+    let root_strategy = match extract_strategy(&game) {
         Ok(value) => Some(value),
         Err(error) => return error_response(error, started_at),
+    };
+
+    let node_strategy = if let Some(ref actions) = req.actions_played {
+        if actions.is_empty() {
+            None
+        } else {
+            match navigate_and_extract(&mut game, actions) {
+                Ok(strategy) => Some(strategy),
+                Err(error) => {
+                    eprintln!("actions_played navigation warning: {}", error);
+                    None
+                }
+            }
+        }
+    } else {
+        None
     };
 
     SolveResponse {
@@ -271,8 +290,124 @@ fn process_request(line: &str) -> SolveResponse {
         memory_usage_bytes,
         iterations_run,
         root_strategy,
+        node_strategy,
         queried_nodes: Vec::new(),
     }
+}
+
+fn navigate_and_extract(
+    game: &mut PostFlopGame,
+    actions_played: &[String],
+) -> Result<RootStrategy, String> {
+    game.back_to_root();
+
+    for (step, action_str) in actions_played.iter().enumerate() {
+        if game.is_terminal_node() {
+            return Err(format!(
+                "reached terminal node at step {} before playing '{}'",
+                step, action_str
+            ));
+        }
+
+        if game.is_chance_node() {
+            let card_str = action_str.trim();
+            let card = card_from_str(card_str)
+                .map_err(|e| format!("invalid chance card '{}' at step {}: {}", card_str, step, e))?;
+            let possible = game.possible_cards();
+            if possible & (1u64 << card) == 0 {
+                return Err(format!(
+                    "card '{}' is not a possible deal at step {}",
+                    card_str, step
+                ));
+            }
+            game.play(card as usize);
+            continue;
+        }
+
+        let available = game.available_actions();
+        let action_index = match_action(&available, action_str)
+            .ok_or_else(|| {
+                let available_strs: Vec<String> =
+                    available.iter().map(format_action).collect();
+                format!(
+                    "action '{}' not found at step {}. available: {:?}",
+                    action_str, step, available_strs
+                )
+            })?;
+        game.play(action_index);
+    }
+
+    if game.is_terminal_node() {
+        return Err("navigation ended at a terminal node".to_string());
+    }
+
+    if game.is_chance_node() {
+        return Err(
+            "navigation ended at a chance node (turn/river deal pending)".to_string(),
+        );
+    }
+
+    game.cache_normalized_weights();
+    extract_strategy(game)
+}
+
+fn match_action(available: &[Action], action_str: &str) -> Option<usize> {
+    let normalized = action_str.trim().to_lowercase();
+    let parts: Vec<&str> = normalized.split_whitespace().collect();
+    let action_word = parts.first().map(|s| s.as_ref()).unwrap_or("");
+    let amount: Option<i32> = parts.get(1).and_then(|s| s.parse().ok());
+
+    for (i, action) in available.iter().enumerate() {
+        if format_action(action).to_lowercase() == normalized {
+            return Some(i);
+        }
+    }
+
+    match action_word {
+        "fold" => available.iter().position(|a| matches!(a, Action::Fold)),
+        "check" => available.iter().position(|a| matches!(a, Action::Check)),
+        "call" => available.iter().position(|a| matches!(a, Action::Call)),
+        "bet" => {
+            if let Some(target) = amount {
+                find_closest_sized(available, target, |a| {
+                    if let Action::Bet(v) = a { Some(*v) } else { None }
+                })
+            } else {
+                available.iter().position(|a| matches!(a, Action::Bet(_)))
+            }
+        }
+        "raise" => {
+            if let Some(target) = amount {
+                find_closest_sized(available, target, |a| {
+                    if let Action::Raise(v) = a { Some(*v) } else { None }
+                })
+            } else {
+                available.iter().position(|a| matches!(a, Action::Raise(_)))
+            }
+        }
+        "allin" | "all_in" | "all-in" => {
+            available.iter().position(|a| matches!(a, Action::AllIn(_)))
+        }
+        _ => None,
+    }
+}
+
+fn find_closest_sized<F>(available: &[Action], target: i32, extractor: F) -> Option<usize>
+where
+    F: Fn(&Action) -> Option<i32>,
+{
+    let mut best_index: Option<usize> = None;
+    let mut best_diff = i32::MAX;
+    for (i, action) in available.iter().enumerate() {
+        if let Some(value) = extractor(action) {
+            let diff = (value - target).abs();
+            if diff < best_diff {
+                best_diff = diff;
+                best_index = Some(i);
+            }
+        }
+    }
+    best_index
 }
 
 fn parse_bet_sizes(
@@ -299,10 +434,12 @@ fn optional_card_from_str(value: Option<&str>, label: &str) -> Result<Card, Stri
     }
 }
 
-fn extract_root_strategy(game: &PostFlopGame) -> Result<RootStrategy, String> {
+fn extract_strategy(game: &PostFlopGame) -> Result<RootStrategy, String> {
     let raw_actions = game.available_actions();
     let actions: Vec<String> = raw_actions.iter().map(format_action).collect();
-    let hands = holes_to_strings(game.private_cards(0))
+
+    let current_player = game.current_player();
+    let hands = holes_to_strings(game.private_cards(current_player))
         .map_err(|error| format!("private card conversion error: {}", error))?;
     let num_actions = actions.len();
     let num_hands = hands.len();
@@ -316,14 +453,14 @@ fn extract_root_strategy(game: &PostFlopGame) -> Result<RootStrategy, String> {
         }
     }
 
-    let equity: Vec<f64> = game.equity(0).iter().map(|value| *value as f64).collect();
+    let equity: Vec<f64> = game.equity(current_player).iter().map(|v| *v as f64).collect();
     let ev: Vec<f64> = game
-        .expected_values(0)
+        .expected_values(current_player)
         .iter()
-        .map(|value| *value as f64)
+        .map(|v| *v as f64)
         .collect();
-    let weights = game.normalized_weights(0);
-    let total_weight: f64 = weights.iter().map(|value| *value as f64).sum();
+    let weights = game.normalized_weights(current_player);
+    let total_weight: f64 = weights.iter().map(|v| *v as f64).sum();
     let mut average_strategy = HashMap::new();
 
     for (action_idx, action_name) in actions.iter().enumerate() {
@@ -376,6 +513,7 @@ fn error_response(error: String, started_at: Instant) -> SolveResponse {
         memory_usage_bytes: 0,
         iterations_run: 0,
         root_strategy: None,
+        node_strategy: None,
         queried_nodes: Vec::new(),
     }
 }
