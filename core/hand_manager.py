@@ -569,7 +569,7 @@ class HandManager:
 
         valid_targets = self._VALID_TRANSITIONS.get(self._phase, set())
         if new_phase not in valid_targets:
-            logger.warning("Invalid transition ignored: %s -> %s", self._phase, new_phase)
+            logger.debug("Invalid transition ignored: %s -> %s", self._phase, new_phase)
             return
 
         old_phase = self._phase

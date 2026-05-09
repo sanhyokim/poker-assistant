@@ -99,6 +99,30 @@ def print_schema(conn: sqlite3.Connection) -> None:
         emit()
 
 
+def print_empty_table_status(conn: sqlite3.Connection, table: str) -> None:
+    """Print a friendly message when a DB table has no rows."""
+    try:
+        row = conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+    except sqlite3.Error as exc:
+        emit(f"WARNING: failed to count {table}: {exc}")
+        return
+    count = int(row[0]) if row is not None else 0
+    if count != 0:
+        return
+
+    emit("=== DB Status ===")
+    if table == "opponents":
+        emit("opponents table is empty.")
+        emit("Run a live session first to accumulate opponent data.")
+        emit("This is normal for a fresh or reset database.")
+    elif table == "hand_history":
+        emit("hand_history table is empty.")
+        emit("No hands have been recorded yet.")
+    else:
+        emit(f"{table} table is empty.")
+    emit()
+
+
 def recent_replay_paths(replay_dir: Path, limit: int) -> list[Path]:
     """Return most recently modified replay JSON paths."""
     if not replay_dir.exists():
@@ -479,10 +503,12 @@ def main() -> int:
     args = build_parser().parse_args()
     conn = connect_db(args.db)
     try:
-        if conn is not None and (args.schema or not any(
+        should_print_schema = args.schema or not any(
             [args.recent, args.snapshot, args.compare]
-        )):
+        )
+        if conn is not None and should_print_schema:
             print_schema(conn)
+            print_empty_table_status(conn, "opponents")
 
         expected_counts: Counter[str] = Counter()
         replay_warnings: list[str] = []
@@ -490,6 +516,8 @@ def main() -> int:
         if recent_limit is None and args.compare:
             recent_limit = 10
         if recent_limit is not None:
+            if conn is not None:
+                print_empty_table_status(conn, "hand_history")
             expected_counts, replay_warnings = run_recent_audit(
                 conn,
                 args.replay_dir,
