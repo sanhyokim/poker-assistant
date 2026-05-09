@@ -108,6 +108,8 @@ class GameLoop:
         self._last_waiting_log: str | None = None
         self._last_recommendation_log: str | None = None
         self._waiting_for_card_clear = False
+        self._hero_cards_missing_since_hand_end = False
+        self._last_ended_hero_cards: list[str | None] | None = None
         self._last_hand_manager_phase: str | None = None
         self._previous_recommendation: Recommendation | None = None
         self._last_strategy_phase: str | None = None
@@ -259,6 +261,8 @@ class GameLoop:
             self._seat_card_detector.reset()
             self._seat_no_card_streak.clear()
             self._seat_card_fold_latched.clear()
+            self._hero_cards_missing_since_hand_end = False
+            self._last_ended_hero_cards = None
             logger.debug(
                 "Fold badge and seat-card states cleared on hand start (hand_id=%s)",
                 self._hand_manager.hand_id,
@@ -293,6 +297,8 @@ class GameLoop:
         self._hand_dealer_seat = None
         self._last_waiting_log = None
         self._waiting_for_card_clear = False
+        self._hero_cards_missing_since_hand_end = False
+        self._last_ended_hero_cards = None
         self._last_hand_manager_phase = None
         self._previous_recommendation = None
         self._last_strategy_phase = None
@@ -1119,14 +1125,13 @@ class GameLoop:
                     if self._hero_cards_missing(hero_cards):
                         logger.debug("Waiting for card clear: cards cleared")
                         self._waiting_for_card_clear = False
+                        self._hero_cards_missing_since_hand_end = True
                     else:
-                        logger.debug(
-                            "Waiting for card clear: still seeing cards %s",
-                            hero_cards,
-                        )
+                        self._log_stale_waiting_cards(hero_cards)
                     game_state.hero.cards = None
                     game_state.hero.cards_visible = False
                 elif self._hero_cards_missing(hero_cards):
+                    self._hero_cards_missing_since_hand_end = True
                     current_log_key = str(hero_cards)
                     if current_log_key != self._last_waiting_log:
                         logger.info(
@@ -1140,6 +1145,10 @@ class GameLoop:
                             "suppressed - result=%s",
                             hero_cards,
                         )
+                elif self._should_suppress_stale_waiting_cards(game_state.hero.cards):
+                    self._log_stale_waiting_cards(game_state.hero.cards)
+                    game_state.hero.cards = None
+                    game_state.hero.cards_visible = False
                 else:
                     logger.info(
                         "Waiting: hero cards recognized - %s, starting hand",
@@ -1229,6 +1238,8 @@ class GameLoop:
             current_phase == "waiting"
             and self._last_hand_manager_phase not in {None, "waiting"}
         ):
+            self._last_ended_hero_cards = self._current_visible_hero_cards()
+            self._hero_cards_missing_since_hand_end = False
             self._waiting_for_card_clear = True
             self._clear_hero_card_cache("phase transition to waiting")
         self._last_hand_manager_phase = current_phase
@@ -1236,6 +1247,37 @@ class GameLoop:
     @staticmethod
     def _hero_cards_missing(cards: Any) -> bool:
         return cards is None or len(cards) < 2 or any(card is None for card in cards)
+
+    def _current_visible_hero_cards(self) -> list[str | None] | None:
+        """Return the best known visible hero cards from the ending hand."""
+        if self._cached_hero_cards is not None:
+            return list(self._cached_hero_cards)
+        if (
+            self._prev_state is not None
+            and not self._hero_cards_missing(self._prev_state.hero.cards)
+        ):
+            return list(self._prev_state.hero.cards or [])
+        return None
+
+    def _should_suppress_stale_waiting_cards(
+        self,
+        hero_cards: list[str | None] | None,
+    ) -> bool:
+        """Return whether waiting-state hero cards are stale from the last hand."""
+        return (
+            self._last_ended_hero_cards is not None
+            and hero_cards == self._last_ended_hero_cards
+            and not self._hero_cards_missing_since_hand_end
+        )
+
+    def _log_stale_waiting_cards(self, hero_cards: Any) -> None:
+        """Log stale waiting cards that are suppressed as a false hand start."""
+        logger.info(
+            "Waiting: hero cards recognized but suppressed as stale cards - "
+            "current=%s last=%s",
+            hero_cards,
+            self._last_ended_hero_cards,
+        )
 
     def _build_button_state(self, frame: np.ndarray) -> ButtonState | None:
         button_result = self._button_recognizer.classify_buttons(frame)

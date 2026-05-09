@@ -56,6 +56,7 @@ def make_state(
     actions: list[ActionRecord] | None = None,
     players: dict[str, tuple[int | None, int]] | None = None,
     player_cards_visible: set[str] | None = None,
+    player_names: dict[str, str] | None = None,
 ) -> GameState:
     """Create a GameState for HandManager tests.
 
@@ -71,6 +72,7 @@ def make_state(
         actions: Actions since last frame.
         players: Seat to (stack, bet) mapping.
         player_cards_visible: Seats whose opponent cards are visible.
+        player_names: Seat to recognized player name mapping.
 
     Returns:
         Configured GameState.
@@ -89,9 +91,11 @@ def make_state(
 
     values = players or {"2": (5000, 0), "3": (5000, 0)}
     visible_seats = player_cards_visible or set()
+    names = player_names or {}
     for seat_key in ["2", "3", "4", "5", "6"]:
         stack, bet = values.get(seat_key, (None, 0))
         state.players[seat_key] = PlayerState(
+            name=names.get(seat_key),
             stack=stack,
             bet=bet,
             is_seated=stack is not None,
@@ -160,14 +164,16 @@ def finish_hand_by_pot_decrease(
     manager: HandManager,
     board: list[str] | None = None,
     players: dict[str, tuple[int | None, int]] | None = None,
+    player_names: dict[str, str] | None = None,
 ) -> None:
-    """Move an active hand to hand_end with a payout-like pot decrease."""
+    """Finish an active hand with a payout-like pot decrease."""
     manager.process_frame(
         make_state(
             hero_cards=["Ah", "Kd"],
             board=board,
             pot=1200,
             players=players,
+            player_names=player_names,
         )
     )
     manager.process_frame(
@@ -176,6 +182,7 @@ def finish_hand_by_pot_decrease(
             board=board,
             pot=0,
             players=players,
+            player_names=player_names,
         )
     )
 
@@ -222,7 +229,7 @@ class TestPhaseTransitions:
         assert manager.hand_id is None
 
     def test_full_lifecycle_transition(self, manager: HandManager) -> None:
-        """waiting -> preflop -> flop -> turn -> river -> hand_end -> waiting."""
+        """waiting -> preflop -> flop -> turn -> river -> waiting."""
         start_hand(manager)
         assert manager.phase == "preflop"
         assert manager.hand_id == 1
@@ -261,9 +268,6 @@ class TestPhaseTransitions:
                 pot=0,
             )
         )
-        assert manager.phase == "hand_end"
-
-        manager.process_frame(make_state(game_event="NEW_HAND"))
         assert manager.phase == "waiting"
         assert manager.hand_id is None
 
@@ -449,7 +453,7 @@ class TestHandEndConditions:
 
         manager.process_frame(make_state(hero_cards=None, pot=0))
 
-        assert manager.phase == "hand_end"
+        assert manager.phase == "waiting"
 
     def test_river_stable_pot_does_not_end_hand(self, manager: HandManager) -> None:
         """A five-card board with stable pot does not end the hand by itself."""
@@ -475,13 +479,28 @@ class TestHandEndConditions:
         assert manager.phase == "river"
 
     def test_pot_decrease_ends_hand(self, manager: HandManager) -> None:
-        """A pot decrease during an active hand ends the hand."""
+        """A pot decrease during an active hand returns immediately to waiting."""
         start_hand(manager)
         manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=1200))
 
         manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
 
-        assert manager.phase == "hand_end"
+        assert manager.phase == "waiting"
+        assert manager.last_saved_hand_id == 1
+
+    def test_pot_decrease_does_not_wait_for_hand_end_timeout(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """A pot decrease returns to waiting even with a long hand_end timeout."""
+        manager._waiting_timeout_sec = 999.0
+        start_hand(manager)
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=6840))
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
+
+        assert manager.phase == "waiting"
+        assert manager.last_saved_hand_id == 1
 
     def test_pot_same_zero_does_not_end_hand(self, manager: HandManager) -> None:
         """Repeated zero pot values do not trigger pot-decrease hand end."""
@@ -549,7 +568,10 @@ class TestPlayersInHandStartModel:
 
         assert manager.get_players_in_hand() == {1, 2}
 
-    @pytest.mark.parametrize("action", ["BET", "CALL", "RAISE", "ALL_IN"])
+    @pytest.mark.parametrize(
+        "action",
+        ["BET", "CALL", "RAISE", "ALL_IN", "BLIND_SB", "BLIND_BB"],
+    )
     def test_action_participant_is_in_hand(
         self,
         manager: HandManager,
@@ -569,6 +591,157 @@ class TestPlayersInHandStartModel:
 
 class TestPlayersInHandRecovery:
     """Tests for delayed participant recovery from card or bet visibility."""
+
+    def test_observation_window_cards_visible_recovers_player(
+        self,
+        manager: HandManager,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missed seat becomes a participant if cards appear in the start window."""
+        current_time = 100.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: current_time)
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "6": (5000, 0)},
+                player_cards_visible={"2"},
+            )
+        )
+        assert 6 not in manager.get_players_in_hand()
+
+        current_time = 100.5
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "6": (5000, 0)},
+                player_cards_visible={"2", "6"},
+            )
+        )
+
+        assert 6 in manager.get_players_in_hand()
+
+    def test_observation_window_expiry_blocks_cards_visible_recovery(
+        self,
+        manager: HandManager,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Cards appearing after the start window do not recover a participant."""
+        current_time = 100.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: current_time)
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "6": (5000, 0)},
+                player_cards_visible={"2"},
+            )
+        )
+        assert 6 not in manager.get_players_in_hand()
+
+        current_time = 102.0
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "6": (5000, 0)},
+                player_cards_visible={"2", "6"},
+            )
+        )
+
+        assert 6 not in manager.get_players_in_hand()
+        assert manager._participant_observation_active is False
+
+    def test_observation_window_bet_recovers_player(
+        self,
+        manager: HandManager,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missed seat becomes a participant if a live bet appears in window."""
+        current_time = 100.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: current_time)
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "6": (5000, 0)},
+                player_cards_visible={"2"},
+            )
+        )
+
+        current_time = 100.5
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "6": (4900, 100)},
+                player_cards_visible={"2"},
+            )
+        )
+
+        assert 6 in manager.get_players_in_hand()
+
+    def test_observation_window_action_recovers_player(
+        self,
+        manager: HandManager,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A missed seat becomes a participant if a qualifying action appears."""
+        current_time = 100.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: current_time)
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "6": (5000, 0)},
+                player_cards_visible={"2"},
+            )
+        )
+
+        current_time = 100.5
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "6": (5000, 0)},
+                player_cards_visible={"2"},
+                actions=[ActionRecord(seat=6, action="CALL", amount=100)],
+            )
+        )
+
+        assert 6 in manager.get_players_in_hand()
+
+    def test_observation_window_does_not_recover_folded_player(
+        self,
+        manager: HandManager,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Folded seats are not recovered even during the start window."""
+        current_time = 100.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: current_time)
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "5": (5000, 0)},
+                player_cards_visible={"2", "5"},
+            )
+        )
+        assert 5 in manager.get_players_in_hand()
+
+        current_time = 100.2
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "5": (5000, 0)},
+                player_cards_visible={"2", "5"},
+                actions=[ActionRecord(seat=5, action="FOLD", amount=0)],
+            )
+        )
+        assert 5 not in manager.get_players_in_hand()
+
+        current_time = 100.5
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players={"2": (5000, 0), "5": (5000, 0)},
+                player_cards_visible={"2", "5"},
+            )
+        )
+
+        assert 5 not in manager.get_players_in_hand()
 
     def test_late_stack_only_does_not_recover_player(
         self,
@@ -597,9 +770,12 @@ class TestPlayersInHandRecovery:
     def test_late_cards_visible_does_not_recover_player_in_hand(
         self,
         manager: HandManager,
+        monkeypatch: pytest.MonkeyPatch,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A missed seat does not recover when cards become visible later."""
+        """A missed seat does not recover when cards become visible after window."""
+        current_time = 100.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: current_time)
         manager.process_frame(
             make_state(
                 hero_cards=["Ah", "Kd"],
@@ -609,6 +785,7 @@ class TestPlayersInHandRecovery:
         )
         assert 4 not in manager.get_players_in_hand()
 
+        current_time = 102.0
         with caplog.at_level(logging.DEBUG):
             manager.process_frame(
                 make_state(
@@ -624,8 +801,11 @@ class TestPlayersInHandRecovery:
     def test_late_bet_does_not_recover_player_in_hand(
         self,
         manager: HandManager,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """A missed seat does not recover when a live bet appears later."""
+        """A missed seat does not recover when a live bet appears after window."""
+        current_time = 100.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: current_time)
         manager.process_frame(
             make_state(
                 hero_cards=["Ah", "Kd"],
@@ -634,6 +814,7 @@ class TestPlayersInHandRecovery:
             )
         )
 
+        current_time = 102.0
         manager.process_frame(
             make_state(
                 hero_cards=["Ah", "Kd"],
@@ -701,7 +882,7 @@ class TestWaitingTransition:
     ) -> None:
         """NEW_HAND event moves hand_end to waiting."""
         start_hand(manager)
-        finish_hand_by_pot_decrease(manager)
+        manager._transition_phase("hand_end", make_state(hero_cards=["Ah", "Kd"]))
 
         manager.process_frame(make_state(game_event="NEW_HAND"))
 
@@ -718,7 +899,7 @@ class TestWaitingTransition:
         monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: current_time)
 
         start_hand(manager)
-        finish_hand_by_pot_decrease(manager)
+        manager._transition_phase("hand_end", make_state(hero_cards=["Ah", "Kd"]))
         assert manager.phase == "hand_end"
 
         current_time = 111.0
@@ -1214,6 +1395,183 @@ class TestPersistence:
         assert stats["pfr"] == 0.0
         assert "sample_size_note" in stats
 
+    def test_preflop_folded_participant_increments_total_hands(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A player who participated then folded is still saved to DB stats."""
+        db_path = tmp_path / "history.db"
+        manager = make_manager(tmp_path, db_path=str(db_path))
+        players = {"2": (5000, 0), "3": (5000, 0)}
+        names = {"2": "Alice"}
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players=players,
+                player_cards_visible={"2"},
+                player_names=names,
+            )
+        )
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                actions=[ActionRecord(seat=2, action="FOLD", amount=0)],
+                players=players,
+                player_names=names,
+            )
+        )
+        finish_hand_by_pot_decrease(manager, players=players, player_names=names)
+
+        stats = manager.get_opponent_stats("Alice")
+        manager.close()
+
+        assert stats is not None
+        assert stats["total_hands"] == 1
+
+    def test_remaining_participant_increments_total_hands(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A player still active at hand end is saved to DB stats."""
+        db_path = tmp_path / "history.db"
+        manager = make_manager(tmp_path, db_path=str(db_path))
+        players = {"3": (5000, 0)}
+        names = {"3": "Bob"}
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players=players,
+                player_cards_visible={"3"},
+                player_names=names,
+            )
+        )
+        finish_hand_by_pot_decrease(manager, players=players, player_names=names)
+
+        stats = manager.get_opponent_stats("Bob")
+        manager.close()
+
+        assert stats is not None
+        assert stats["total_hands"] == 1
+
+    def test_undealt_seat_does_not_increment_total_hands(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A named but undealt seat is not saved to opponent stats."""
+        db_path = tmp_path / "history.db"
+        manager = make_manager(tmp_path, db_path=str(db_path))
+        players = {"5": (5000, 0)}
+        names = {"5": "Eve"}
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players=players,
+                player_names=names,
+            )
+        )
+        finish_hand_by_pot_decrease(manager, players=players, player_names=names)
+
+        stats = manager.get_opponent_stats("Eve")
+        manager.close()
+
+        assert stats is None
+
+    def test_observation_promoted_folded_seat_increments_total_hands(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A seat observed during the start window is saved even after folding."""
+        db_path = tmp_path / "history.db"
+        manager = make_manager(tmp_path, db_path=str(db_path))
+        now = 100.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: now)
+        players = {"6": (5000, 0)}
+        names = {"6": "Carol"}
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players=players,
+                player_names=names,
+            )
+        )
+
+        now = 100.5
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players=players,
+                player_cards_visible={"6"},
+                player_names=names,
+            )
+        )
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                actions=[ActionRecord(seat=6, action="FOLD", amount=0)],
+                players=players,
+                player_names=names,
+            )
+        )
+        finish_hand_by_pot_decrease(manager, players=players, player_names=names)
+
+        stats = manager.get_opponent_stats("Carol")
+        manager.close()
+
+        assert stats is not None
+        assert stats["total_hands"] == 1
+
+    def test_action_participated_seat_increments_total_hands(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A player with a participation action is saved without visible cards."""
+        db_path = tmp_path / "history.db"
+        manager = make_manager(tmp_path, db_path=str(db_path))
+        players = {"4": (5000, 0)}
+        names = {"4": "Dave"}
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                players=players,
+                player_names=names,
+            )
+        )
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                actions=[ActionRecord(seat=4, action="CALL", amount=100)],
+                players=players,
+                player_names=names,
+            )
+        )
+        finish_hand_by_pot_decrease(manager, players=players, player_names=names)
+
+        stats = manager.get_opponent_stats("Dave")
+        manager.close()
+
+        assert stats is not None
+        assert stats["total_hands"] == 1
+
+    def test_empty_db_participants_logs_possible_false_start(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A hand with no DB participant targets emits a false-start warning."""
+        db_path = tmp_path / "history.db"
+        manager = make_manager(tmp_path, db_path=str(db_path))
+        manager._hand_id = 1
+        manager._hero_cards = ["Ah", "Kd"]
+        manager._participated_seats = {"1"}
+        manager._current_players = {"2": {"name": "Alice", "in_current_hand": False}}
+
+        with caplog.at_level(logging.WARNING, logger="core.hand_manager"):
+            manager._save_to_db()
+
+        manager.close()
+        assert "possible false hand start" in caplog.text
+
     def test_hand_end_updates_existing_opponent_by_prefix(self, tmp_path: Path) -> None:
         """Existing opponents are matched by prefix and updated incrementally."""
         db_path = tmp_path / "history.db"
@@ -1354,7 +1712,12 @@ class TestPersistence:
         replay_path = next((tmp_path / "replays").glob("*/hand_000001.json"))
         replay = json.loads(replay_path.read_text(encoding="utf-8"))
 
-        assert set(replay.keys()) == {"meta", "streets", "result"}
+        assert set(replay.keys()) == {
+            "meta",
+            "participated_seats",
+            "streets",
+            "result",
+        }
         assert {"hand_id", "timestamp", "table", "seat", "blinds", "site"}.issubset(
             replay["meta"].keys()
         )
@@ -1753,6 +2116,7 @@ class TestOpponentStatsDBUpdate:
         manager._hand_id = 1
         manager._hero_cards = ["Ah", "Kd"]
         manager._current_players = {"2": {"name": "Alice", "in_current_hand": True}}
+        manager._participated_seats = {"2"}
         manager._street_actions = {
             "preflop": StreetActions(
                 street="preflop",

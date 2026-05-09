@@ -39,6 +39,14 @@ class HandManager:
     """
 
     NEW_HAND_COOLDOWN_SEC = 5.0
+    _PARTICIPANT_ACTIONS = {
+        "BET",
+        "CALL",
+        "RAISE",
+        "ALL_IN",
+        "BLIND_SB",
+        "BLIND_BB",
+    }
     _ACTIVE_PHASES = {"preflop", "flop", "turn", "river"}
     _VALID_TRANSITIONS: dict[str, set[str]] = {
         "waiting": {"preflop"},
@@ -73,6 +81,7 @@ class HandManager:
 
         self._hero_cards: list[str] | None = None
         self._players_in_hand: dict[str, bool] = {}
+        self._participated_seats: set[str] = set()
         self._folded_seats: set[str] = set()
         self._current_players: dict[str, dict[str, Any]] = {}
 
@@ -94,6 +103,11 @@ class HandManager:
         self._hand_just_started = False
         self._hand_start_monotonic: float | None = None
         self._prev_frame_pot: int | None = None
+        self._last_hand_end_reason: str | None = None
+        self._participant_observation_active = False
+        self._participant_observation_started_at: float | None = None
+        self._participant_observation_duration_sec = 1.5
+        self._participant_observed_seats: set[str] = set()
 
         self._init_db()
 
@@ -238,7 +252,12 @@ class HandManager:
         self._update_hero_turn_boundary(game_state)
 
         if self._check_hand_end_conditions(game_state):
+            hand_end_reason = self._last_hand_end_reason
             self._transition_phase("hand_end", game_state)
+            if hand_end_reason == "pot_decreased":
+                self._transition_phase("waiting", game_state)
+                self._prev_frame_pot = game_state.pot
+                return
 
         self._prev_frame_pot = game_state.pot
 
@@ -272,6 +291,7 @@ class HandManager:
             "phase": self._phase,
             "hero_cards": self._hero_cards,
             "players_in_hand": dict(self._players_in_hand),
+            "participated_seats": sorted(self._participated_seats),
             "actions": [
                 {
                     "seat": action.seat,
@@ -454,11 +474,9 @@ class HandManager:
                 game_state.hero.cards,
             )
         self._seen_hero_cards_this_hand = self._has_any_hero_card(game_state)
-        action_participant_seats = {
-            str(action.seat)
-            for action in game_state.actions_since_last_frame
-            if action.seat != 1 and action.action.upper() not in {"FOLD", "CHECK"}
-        }
+        action_participant_seats = self._participant_action_seats(
+            game_state.actions_since_last_frame
+        )
         self._players_in_hand = {
             seat_key: bool(
                 player.cards_visible
@@ -468,9 +486,26 @@ class HandManager:
             for seat_key, player in game_state.players.items()
         }
         self._players_in_hand["1"] = True
+        self._participated_seats = {
+            seat_key
+            for seat_key, in_hand in self._players_in_hand.items()
+            if in_hand
+        }
+        self._participant_observation_active = True
+        self._participant_observation_started_at = time.monotonic()
+        self._participant_observed_seats = {
+            seat_key
+            for seat_key, in_hand in self._players_in_hand.items()
+            if seat_key != "1" and in_hand
+        }
         logger.info(
             "Players in hand at start: %s",
             dict(self._players_in_hand),
+        )
+        logger.info(
+            "Participant observation started: duration=%.1fs initial=%s",
+            self._participant_observation_duration_sec,
+            sorted(self._participant_observed_seats),
         )
         self._update_current_players(game_state)
         self._street_actions = {
@@ -527,6 +562,7 @@ class HandManager:
 
     def _check_hand_end_conditions(self, game_state: GameState) -> bool:
         """Return whether the active hand should move to hand_end."""
+        self._last_hand_end_reason = None
         if self._hero_folded:
             self._hero_card_missing_count = 0
         else:
@@ -545,6 +581,7 @@ class HandManager:
                 self._hero_card_missing_count = 0
 
         if self._hero_card_missing_count >= 5:
+            self._last_hand_end_reason = "hero_cards_missing"
             logger.info("Hand end: hero cards missing for 5 consecutive frames")
             return True
 
@@ -561,6 +598,7 @@ class HandManager:
             and game_state.pot < self._prev_frame_pot
             and self._prev_frame_pot > 0
         ):
+            self._last_hand_end_reason = "pot_decreased"
             logger.info(
                 "Hand end: pot decreased (%d -> %d), payout detected",
                 self._prev_frame_pot,
@@ -619,7 +657,11 @@ class HandManager:
 
     def _update_players_in_hand_from_action(self, action: ActionRecord) -> None:
         """Remove folded seats from the current hand participant set."""
-        if action.action.upper() == "FOLD":
+        action_name = action.action.upper()
+        if action.seat not in (None, 0) and action_name in self._PARTICIPANT_ACTIONS:
+            self._participated_seats.add(str(action.seat))
+
+        if action_name == "FOLD":
             seat_key = str(action.seat)
             self._players_in_hand[seat_key] = False
             self._folded_seats.add(seat_key)
@@ -914,6 +956,7 @@ class HandManager:
         """Clear state scoped to the current hand."""
         self._hero_cards = None
         self._players_in_hand = {}
+        self._participated_seats.clear()
         self._folded_seats = set()
         self._current_players = {}
         self._street_actions = {}
@@ -931,6 +974,10 @@ class HandManager:
         self._prev_is_my_turn = False
         self._last_hero_action = None
         self._prev_frame_pot = None
+        self._last_hand_end_reason = None
+        self._participant_observation_active = False
+        self._participant_observation_started_at = None
+        self._participant_observed_seats.clear()
 
     def _on_hand_end(self, game_state: GameState) -> None:
         """Persist hand data when the hand reaches hand_end."""
@@ -965,9 +1012,22 @@ class HandManager:
                 ("hero", timestamp, hole_cards, actions_json, None, board_json),
             )
 
+            db_participants = sorted(
+                seat_key
+                for seat_key in self._participated_seats
+                if seat_key != "1"
+                and self._current_players.get(seat_key, {}).get("name")
+            )
+            logger.info("DB participants for hand %s: %s", self._hand_id, db_participants)
+            if not db_participants:
+                logger.warning(
+                    "Hand %s has no DB participants; possible false hand start",
+                    self._hand_id,
+                )
+
             for seat_key, player in self._current_players.items():
                 player_name = player.get("name")
-                if not player_name or not player.get("in_current_hand", False):
+                if not player_name or seat_key not in self._participated_seats:
                     continue
                 player_seat = self._parse_seat(seat_key)
                 if player_seat is None or player_seat == 1:
@@ -1431,6 +1491,61 @@ class HandManager:
                     player.bet,
                     seat_key in self._folded_seats,
                 )
+        self._update_participant_observation(game_state)
+
+    def _participant_action_seats(self, actions: list[ActionRecord]) -> set[str]:
+        """Return opponent seats with actions that prove hand participation."""
+        return {
+            str(action.seat)
+            for action in actions
+            if action.seat != 1 and action.action.upper() in self._PARTICIPANT_ACTIONS
+        }
+
+    def _update_participant_observation(self, game_state: GameState) -> None:
+        """Promote observed participants during the hand-start observation window."""
+        if not self._participant_observation_active:
+            return
+
+        started_at = self._participant_observation_started_at
+        now = time.monotonic()
+        elapsed = 0.0 if started_at is None else now - started_at
+        if elapsed >= self._participant_observation_duration_sec:
+            self._participant_observation_active = False
+            logger.info(
+                "Participant observation ended: players_in_hand=%s",
+                dict(self._players_in_hand),
+            )
+            return
+
+        action_participant_seats = self._participant_action_seats(
+            game_state.actions_since_last_frame
+        )
+
+        for seat_key, player in game_state.players.items():
+            if seat_key in self._folded_seats:
+                continue
+
+            reason: str | None = None
+            if player.cards_visible:
+                reason = "cards_visible"
+            elif player.bet > 0:
+                reason = "bet"
+            elif seat_key in action_participant_seats:
+                reason = "action"
+
+            if reason is None:
+                continue
+
+            was_in_hand = self._players_in_hand.get(seat_key, False)
+            self._participant_observed_seats.add(seat_key)
+            self._players_in_hand[seat_key] = True
+            self._participated_seats.add(seat_key)
+            if not was_in_hand:
+                logger.info(
+                    "Participant observed during start window: seat=%s reason=%s",
+                    seat_key,
+                    reason,
+                )
 
     def _save_replay_json(self) -> None:
         """Save the current hand replay JSON."""
@@ -1477,6 +1592,7 @@ class HandManager:
                 "blinds": [blind_sb, blind_bb],
                 "site": "coinpoker",
             },
+            "participated_seats": sorted(self._participated_seats),
             "streets": streets,
             "result": {
                 "outcome": "unknown",

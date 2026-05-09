@@ -50,6 +50,9 @@ class SeatCardDetector:
         self._card_gray_mean_min = float(
             recognition_config.get("card_gray_mean_min", 80.0)
         )
+        self._card_gray_std_min = float(
+            recognition_config.get("card_gray_std_min", 20.0)
+        )
         self._no_card_streak: dict[int, int] = {}
         self._last_detection: dict[int, bool] = {}
 
@@ -97,7 +100,11 @@ class SeatCardDetector:
         edge_density = float(np.count_nonzero(edges)) / total_pixels
         gray_mean = float(np.mean(gray))
         gray_std = float(np.std(gray))
-        has_card = edge_density >= self._card_edge_density_min
+        has_card = (
+            edge_density >= self._card_edge_density_min
+            and gray_mean >= self._card_gray_mean_min
+            and gray_std >= self._card_gray_std_min
+        )
         prev = self._last_detection.get(seat)
         if prev is not None and prev != has_card:
             logger.info(
@@ -113,12 +120,14 @@ class SeatCardDetector:
         else:
             logger.debug(
                 "Seat %d card detect: density=%.4f (min=%.4f) "
-                "gray_mean=%.1f gray_std=%.1f -> %s",
+                "gray_mean=%.1f (min=%.1f) gray_std=%.1f (min=%.1f) -> %s",
                 seat,
                 edge_density,
                 self._card_edge_density_min,
                 gray_mean,
+                self._card_gray_mean_min,
                 gray_std,
+                self._card_gray_std_min,
                 "CARD" if has_card else "NO_CARD",
             )
         self._last_detection[seat] = has_card

@@ -1582,3 +1582,72 @@ def test_hero_card_cache_does_not_carry_to_next_hand(
     assert loop._cached_hero_cards == ["Qs", "Qc"]
     assert loop._cached_hand_id == 2
     assert state.hero.cards == ["Qs", "Qc"]
+
+
+def test_waiting_same_hero_cards_without_clear_does_not_start_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Stale hero cards from the previous hand are suppressed in waiting."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._last_hand_manager_phase = "preflop"
+    loop._hand_manager._phase = "waiting"
+    loop._cached_hero_cards = ["Kd", "Qc"]
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["Kd", "Qc"]
+    )
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        state = loop.process_one_frame()
+        assert state is not None
+        loop._hand_manager.process_frame(state)
+
+    assert state.hero.cards is None
+    assert loop._hand_manager.phase == "waiting"
+    assert "suppressed as stale cards" in caplog.text
+
+
+def test_waiting_same_hero_cards_after_clear_can_start_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same hero cards can start a hand after a missing-card frame."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._hand_manager._phase = "waiting"
+    loop._last_ended_hero_cards = ["Kd", "Qc"]
+    loop._hero_cards_missing_since_hand_end = True
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["Kd", "Qc"]
+    )
+
+    state = loop.process_one_frame()
+    assert state is not None
+    loop._hand_manager.process_frame(state)
+
+    assert state.hero.cards == ["Kd", "Qc"]
+    assert loop._hand_manager.phase == "preflop"
+
+
+def test_waiting_different_hero_cards_can_start_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Different hero cards are accepted as a new hand without a clear frame."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._hand_manager._phase = "waiting"
+    loop._last_ended_hero_cards = ["Kd", "Qc"]
+    loop._hero_cards_missing_since_hand_end = False
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["8d", "Td"]
+    )
+
+    state = loop.process_one_frame()
+    assert state is not None
+    loop._hand_manager.process_frame(state)
+
+    assert state.hero.cards == ["8d", "Td"]
+    assert loop._hand_manager.phase == "preflop"
