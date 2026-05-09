@@ -270,22 +270,11 @@ class RecommendationEngine:
                 started_at,
             )
 
-        range_started = time.perf_counter()
         baseline_oop = self._baseline_range("OOP")
         baseline_ip = self._baseline_range("IP")
-        if self.llm_pipeline is not None:
-            ranges = self.llm_pipeline.estimate_ranges(
-                game_state,
-                self._first_stats(opponent_stats),
-                baseline_oop,
-                baseline_ip,
-            )
-            range_oop = str(ranges.get("range_oop", baseline_oop))
-            range_ip = str(ranges.get("range_ip", baseline_ip))
-        else:
-            range_oop = baseline_oop
-            range_ip = baseline_ip
-        latency["range_estimation_ms"] = self._elapsed_ms(range_started)
+        range_oop = baseline_oop
+        range_ip = baseline_ip
+        latency["range_estimation_ms"] = 0.0
 
         request_started = time.perf_counter()
         request = self.solver_request_builder.build_request(
@@ -323,26 +312,41 @@ class RecommendationEngine:
         )
         latency["solver_parse_ms"] = self._elapsed_ms(parse_started)
 
-        reason = "ソルバー推奨"
-        if self.llm_pipeline is not None:
+        reason = "HU solver recommendation"
+        latency["exploit_adjustment_ms"] = 0.0
+        latency["reason_generation_ms"] = 0.0
+        first_stats = self._first_stats(opponent_stats)
+        usable_stats = self._has_usable_stats(first_stats)
+        if self.llm_pipeline is not None and usable_stats:
+            logger.info(
+                "HU exploit LLM enabled: total_hands=%s",
+                first_stats.get("total_hands") if first_stats else None,
+            )
             exploit_started = time.perf_counter()
-            exploit = self.llm_pipeline.suggest_exploit(
-                solver_output,
-                game_state,
-                self._first_stats(opponent_stats),
+            try:
+                exploit = self.llm_pipeline.suggest_exploit(
+                    solver_output,
+                    game_state,
+                    first_stats,
+                )
+                latency["exploit_adjustment_ms"] = self._elapsed_ms(exploit_started)
+                adjusted_action = self._normalize_adjusted_action(
+                    exploit.get("adjusted_action")
+                )
+                if adjusted_action is not None:
+                    action = adjusted_action
+                    amount = self._parse_amount(exploit.get("adjusted_size"), amount)
+                reason = str(exploit.get("reasoning") or "DB stats exploit adjustment")
+            except Exception as exc:
+                latency["exploit_adjustment_ms"] = self._elapsed_ms(exploit_started)
+                logger.warning("HU exploit LLM failed; using solver result: %s", exc)
+        else:
+            logger.info(
+                "HU exploit LLM skipped: usable_stats=%s total_hands=%s threshold=%s",
+                usable_stats,
+                first_stats.get("total_hands") if first_stats else None,
+                self._stats_sample_threshold_low(),
             )
-            latency["exploit_adjustment_ms"] = self._elapsed_ms(exploit_started)
-            if exploit.get("adjusted_action"):
-                action = self._normalize_action(str(exploit["adjusted_action"]))
-                amount = self._parse_amount(exploit.get("adjusted_size"), amount)
-            reason_started = time.perf_counter()
-            reason = self.llm_pipeline.generate_reason(
-                action,
-                str(exploit.get("reasoning", reason)),
-                "".join(game_state.hero.cards or []),
-                "".join(game_state.board),
-            )
-            latency["reason_generation_ms"] = self._elapsed_ms(reason_started)
 
         latency["headsup_total_ms"] = self._elapsed_ms(started_at)
         return Recommendation(
@@ -712,18 +716,40 @@ class RecommendationEngine:
     ) -> Recommendation:
         """Return a heads-up fallback when solver cannot produce a result."""
         fallback = self._generate_fallback(game_state, reason)
-        if self.llm_pipeline is not None:
-            exploit = self.llm_pipeline.suggest_exploit(
-                {},
-                game_state,
-                self._first_stats(opponent_stats),
+        first_stats = self._first_stats(opponent_stats)
+        usable_stats = self._has_usable_stats(first_stats)
+        latency.setdefault("range_estimation_ms", 0.0)
+        latency.setdefault("reason_generation_ms", 0.0)
+        latency["exploit_adjustment_ms"] = 0.0
+        if self.llm_pipeline is not None and usable_stats:
+            exploit_started = time.perf_counter()
+            try:
+                exploit = self.llm_pipeline.suggest_exploit(
+                    {},
+                    game_state,
+                    first_stats,
+                )
+                latency["exploit_adjustment_ms"] = self._elapsed_ms(exploit_started)
+                adjusted_action = self._normalize_adjusted_action(
+                    exploit.get("adjusted_action")
+                )
+                if adjusted_action is not None:
+                    fallback.action = adjusted_action
+                    fallback.amount = self._parse_amount(exploit.get("adjusted_size"), 0)
+                    fallback.reason = str(exploit.get("reasoning", reason))
+                    fallback.confidence = "medium"
+                    fallback.strategy_source = "llm_headsup_fallback"
+            except Exception as exc:
+                latency["exploit_adjustment_ms"] = self._elapsed_ms(exploit_started)
+                logger.warning("HU fallback exploit LLM failed: %s", exc)
+        else:
+            logger.info(
+                "HU fallback exploit LLM skipped: usable_stats=%s total_hands=%s "
+                "threshold=%s",
+                usable_stats,
+                first_stats.get("total_hands") if first_stats else None,
+                self._stats_sample_threshold_low(),
             )
-            if exploit.get("adjusted_action"):
-                fallback.action = self._normalize_action(str(exploit["adjusted_action"]))
-                fallback.amount = self._parse_amount(exploit.get("adjusted_size"), 0)
-                fallback.reason = str(exploit.get("reasoning", reason))
-                fallback.confidence = "medium"
-                fallback.strategy_source = "llm_headsup_fallback"
         latency["headsup_total_ms"] = self._elapsed_ms(started_at)
         fallback.latency_breakdown.update(latency)
         return fallback
@@ -1057,6 +1083,40 @@ class RecommendationEngine:
         if not RecommendationEngine._is_number(text):
             return default
         return int(float(text))
+
+    @staticmethod
+    def _normalize_adjusted_action(value: Any) -> str | None:
+        """Normalize an optional LLM exploit action without inventing CHECK."""
+        if value is None:
+            return None
+        normalized = str(value).strip().upper().replace("-", "_").replace(" ", "_")
+        mapping = {
+            "BET": "BET",
+            "RAISE": "RAISE",
+            "CALL": "CALL",
+            "CHECK": "CHECK",
+            "FOLD": "FOLD",
+            "ALLIN": "ALL_IN",
+            "ALL_IN": "ALL_IN",
+            "3BET": "RAISE",
+            "4BET": "RAISE",
+        }
+        return mapping.get(normalized)
+
+    def _stats_sample_threshold_low(self) -> int:
+        """Return the minimum sample size required for opponent stats."""
+        return int(self.config.get("preflop_delta", {}).get("sample_threshold_low", 50))
+
+    def _has_usable_stats(self, stats: JsonDict | None) -> bool:
+        """Return whether stats have enough hands for LLM exploit adjustment."""
+        if not stats:
+            return False
+
+        total_hands = stats.get("total_hands", 0)
+        if not isinstance(total_hands, (int, float)):
+            return False
+
+        return total_hands >= self._stats_sample_threshold_low()
 
     @staticmethod
     def _can_check(game_state: GameState) -> bool:

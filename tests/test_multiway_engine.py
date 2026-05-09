@@ -10,13 +10,13 @@ from strategy.llm_pipeline import LLMPipeline
 from strategy.multiway_engine import MultiwayEngine
 
 
-TEST_CONFIG = {"game": {"blind_bb": 100}}
+TEST_CONFIG = {"game": {"blind_bb": 100}, "preflop_delta": {"sample_threshold_low": 50}}
 
 
-def make_engine() -> MultiwayEngine:
+def make_engine(config: dict | None = None) -> MultiwayEngine:
     """Create a MultiwayEngine with a mocked LLM pipeline."""
     llm = MagicMock(spec=LLMPipeline)
-    engine = MultiwayEngine(llm, TEST_CONFIG)
+    engine = MultiwayEngine(llm, config or TEST_CONFIG)
     engine.mc_samples = 2000
     return engine
 
@@ -178,6 +178,7 @@ def test_format_opponent_profiles_with_stats() -> None:
             {
                 "player_name": "villain",
                 "long_term_style": "LAG",
+                "total_hands": 50,
                 "vpip": 35,
                 "pfr": 25,
                 "freshness_note": "fresh",
@@ -199,19 +200,38 @@ def test_format_opponent_profiles_with_stats() -> None:
 
 
 def test_format_opponent_profiles_none() -> None:
-    """Missing opponent stats produce default Unknown profiles."""
+    """Missing opponent stats are excluded from LLM profiles."""
     profiles = make_engine()._format_opponent_profiles([None])
 
-    assert profiles == [
-        {
-            "identifier": "seat_2",
-            "player": "seat_2",
-            "style": "Unknown",
-            "vpip": "N/A",
-            "pfr": "N/A",
-            "notes": "No data available",
-        }
-    ]
+    assert profiles == []
+
+
+def test_format_opponent_profiles_filters_low_sample_stats() -> None:
+    """Opponent stats below the sample threshold are excluded from profiles."""
+    profiles = make_engine()._format_opponent_profiles(
+        [
+            {"player_name": "low", "total_hands": 49, "vpip": 40, "pfr": 20},
+            {"player_name": "usable", "total_hands": 50, "vpip": 30, "pfr": 18},
+        ]
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0]["identifier"] == "seat_3"
+    assert profiles[0]["vpip"] == 30
+
+
+def test_format_opponent_profiles_uses_configured_threshold() -> None:
+    """Multiway opponent profile threshold is read from config."""
+    config = {"game": {"blind_bb": 100}, "preflop_delta": {"sample_threshold_low": 80}}
+    profiles = make_engine(config)._format_opponent_profiles(
+        [
+            {"player_name": "below", "total_hands": 79, "vpip": 40, "pfr": 20},
+            {"player_name": "at", "total_hands": 80, "vpip": 30, "pfr": 18},
+        ]
+    )
+
+    assert len(profiles) == 1
+    assert profiles[0]["identifier"] == "seat_3"
 
 
 def test_multiway_no_player_name_in_llm_input() -> None:
@@ -227,8 +247,8 @@ def test_multiway_no_player_name_in_llm_input() -> None:
     engine.evaluate(
         make_state(),
         [
-            {"player_name": "SecretOne", "vpip": 30},
-            {"name": "SecretTwo", "vpip": 22},
+            {"player_name": "SecretOne", "total_hands": 50, "vpip": 30},
+            {"name": "SecretTwo", "total_hands": 50, "vpip": 22},
         ],
     )
 
@@ -252,6 +272,29 @@ def test_evaluate_returns_medium_confidence() -> None:
     result = engine.evaluate(make_state(), [{"vpip": 30}, {"vpip": 22}])
 
     assert result["confidence"] == "medium"
+
+
+def test_evaluate_continues_without_usable_opponent_stats() -> None:
+    """Multiway evaluation continues with empty profiles when stats are weak."""
+    engine = make_engine()
+    engine.llm.decide_multiway.return_value = {
+        "action": "check",
+        "size": None,
+        "confidence": "medium",
+        "reasoning": "No usable opponent stats",
+    }
+
+    result = engine.evaluate(
+        make_state(),
+        [
+            {"player_name": "LowOne", "total_hands": 10, "vpip": 30},
+            None,
+        ],
+    )
+
+    profiles = engine.llm.decide_multiway.call_args.kwargs["opponent_profiles"]
+    assert profiles == []
+    assert result["action"] == "check"
 
 
 def test_equity_calculation_time() -> None:

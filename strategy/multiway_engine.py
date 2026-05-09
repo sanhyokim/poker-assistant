@@ -31,6 +31,9 @@ class MultiwayEngine:
         """
         self.llm = llm_pipeline
         self.blind_bb: int = int(config.get("game", {}).get("blind_bb", 100))
+        self.sample_threshold_low: int = int(
+            config.get("preflop_delta", {}).get("sample_threshold_low", 50)
+        )
         self.mc_samples: int = 10000
         self.logger = logger
 
@@ -158,17 +161,12 @@ class MultiwayEngine:
         profiles: list[JsonDict] = []
         for index, stats in enumerate(stats_list):
             if stats is None:
-                seat_id = f"seat_{index + 2}"
-                profiles.append(
-                    {
-                        "identifier": seat_id,
-                        "player": seat_id,
-                        "style": "Unknown",
-                        "vpip": "N/A",
-                        "pfr": "N/A",
-                        "notes": "No data available",
-                    }
-                )
+                continue
+
+            total_hands = stats.get("total_hands", 0)
+            if not isinstance(total_hands, (int, float)):
+                continue
+            if total_hands < self.sample_threshold_low:
                 continue
 
             seat_id = f"seat_{index + 2}"

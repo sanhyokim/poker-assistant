@@ -12,10 +12,10 @@ from strategy.preflop_chart import PreflopChart
 from strategy.recommendation_engine import Recommendation, RecommendationEngine
 
 
-TEST_CONFIG = {"game": {"blind_bb": 100}}
+TEST_CONFIG = {"game": {"blind_bb": 100}, "preflop_delta": {"sample_threshold_low": 50}}
 
 
-def make_engine() -> RecommendationEngine:
+def make_engine(config: dict | None = None) -> RecommendationEngine:
     """Create a RecommendationEngine with mocked dependencies."""
     preflop_chart = MagicMock()
     solver_bridge = MagicMock()
@@ -24,7 +24,7 @@ def make_engine() -> RecommendationEngine:
     llm_pipeline = MagicMock()
     multiway_engine = MagicMock()
     return RecommendationEngine(
-        TEST_CONFIG,
+        config or TEST_CONFIG,
         preflop_chart,
         solver_bridge,
         solver_request_builder,
@@ -839,10 +839,6 @@ def test_generate_postflop_headsup_solver_success() -> None:
     engine = make_engine()
     state = make_state(phase="flop", active_player_count=2)
     engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
-    engine.llm_pipeline.estimate_ranges.return_value = {
-        "range_oop": "QQ+",
-        "range_ip": "22+",
-    }
     engine.solver_request_builder.build_request.return_value = {"board": "Td7c2h"}
     engine.solver_bridge.solve.return_value = {
         "success": True,
@@ -854,13 +850,9 @@ def test_generate_postflop_headsup_solver_success() -> None:
             "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
         },
     }
-    engine.llm_pipeline.suggest_exploit.return_value = {
-        "adjusted_action": None,
-        "reasoning": "Solver likes betting.",
-    }
     engine.llm_pipeline.generate_reason.return_value = "高頻度ベット推奨"
 
-    recommendation = engine.generate(state, {"2": {"vpip": 30}})
+    recommendation = engine.generate(state, {"2": {"vpip": 30, "total_hands": 49}})
 
     assert recommendation.action == "BET"
     assert recommendation.amount == 120
@@ -869,6 +861,100 @@ def test_generate_postflop_headsup_solver_success() -> None:
     assert recommendation.solver_exploitability == 1.25
     assert recommendation.action_probabilities == {"CHECK": 0.25, "BET 120": 0.75}
     assert "solver_ms" in recommendation.latency_breakdown
+    assert recommendation.latency_breakdown["range_estimation_ms"] == 0.0
+    assert recommendation.latency_breakdown["exploit_adjustment_ms"] == 0.0
+    assert recommendation.latency_breakdown["reason_generation_ms"] == 0.0
+    engine.llm_pipeline.estimate_ranges.assert_not_called()
+    engine.llm_pipeline.suggest_exploit.assert_not_called()
+    engine.llm_pipeline.generate_reason.assert_not_called()
+
+
+def test_generate_postflop_headsup_uses_exploit_only_with_usable_stats() -> None:
+    """Heads-up postflop calls only suggest_exploit when stats meet threshold."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {"board": "Td7c2h"}
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.2, "Bet 120": 0.8},
+        },
+    }
+    engine.llm_pipeline.suggest_exploit.return_value = {
+        "adjusted_action": "call",
+        "adjusted_size": None,
+        "reasoning": "Enough hands to exploit.",
+    }
+
+    recommendation = engine.generate(state, {"2": {"vpip": 30, "total_hands": 50}})
+
+    assert recommendation.action == "CALL"
+    assert recommendation.reason == "Enough hands to exploit."
+    engine.llm_pipeline.estimate_ranges.assert_not_called()
+    engine.llm_pipeline.suggest_exploit.assert_called_once()
+    engine.llm_pipeline.generate_reason.assert_not_called()
+
+
+def test_generate_postflop_headsup_exploit_failure_returns_solver() -> None:
+    """Heads-up postflop keeps solver output when exploit LLM fails."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {"board": "Td7c2h"}
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.2, "Bet 120": 0.8},
+        },
+    }
+    engine.llm_pipeline.suggest_exploit.side_effect = RuntimeError("boom")
+
+    recommendation = engine.generate(state, {"2": {"vpip": 30, "total_hands": 100}})
+
+    assert recommendation.action == "BET"
+    assert recommendation.amount == 120
+    assert recommendation.reason == "HU solver recommendation"
+    engine.llm_pipeline.estimate_ranges.assert_not_called()
+    engine.llm_pipeline.suggest_exploit.assert_called_once()
+    engine.llm_pipeline.generate_reason.assert_not_called()
+
+
+def test_generate_postflop_headsup_uses_configured_stats_threshold() -> None:
+    """Heads-up exploit threshold is read from config."""
+    config = {"game": {"blind_bb": 100}, "preflop_delta": {"sample_threshold_low": 80}}
+    engine = make_engine(config)
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = [
+        "OOP_RANGE",
+        "IP_RANGE",
+        "OOP_RANGE",
+        "IP_RANGE",
+    ]
+    engine.solver_request_builder.build_request.return_value = {"board": "Td7c2h"}
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.2, "Bet 120": 0.8},
+        },
+    }
+    engine.llm_pipeline.suggest_exploit.return_value = {
+        "adjusted_action": "call",
+        "reasoning": "Configured threshold met.",
+    }
+
+    below = engine.generate(state, {"2": {"vpip": 30, "total_hands": 79}})
+    assert below.action == "BET"
+    engine.llm_pipeline.suggest_exploit.assert_not_called()
+
+    at_threshold = engine.generate(state, {"2": {"vpip": 30, "total_hands": 80}})
+    assert at_threshold.action == "CALL"
+    engine.llm_pipeline.suggest_exploit.assert_called_once()
+    engine.llm_pipeline.estimate_ranges.assert_not_called()
+    engine.llm_pipeline.generate_reason.assert_not_called()
 
 
 def test_generate_postflop_multiway_uses_multiway_engine() -> None:
@@ -901,7 +987,7 @@ def test_solver_disabled_falls_back_to_llm() -> None:
         "reasoning": "Solver disabled; call is acceptable.",
     }
 
-    recommendation = engine.generate(make_state(), {"2": {"vpip": 30}})
+    recommendation = engine.generate(make_state(), {"2": {"vpip": 30, "total_hands": 50}})
 
     assert recommendation.action == "CALL"
     assert recommendation.confidence == "medium"
