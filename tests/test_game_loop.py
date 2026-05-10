@@ -2100,3 +2100,63 @@ def test_confirmed_seat_is_protected(game_loop_env: tuple[GameLoop, HandManager]
 
     # Confirmed seat should be protected
     assert gs.players["3"].cards_visible is True
+
+
+def test_cards_invisible_forces_not_in_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cards_visible=False, in_current_hand=True, not folded, not confirmed -> NO."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = set()
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is False
+
+
+def test_cards_invisible_folded_stays_in_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cards_visible=False, in_current_hand=True, folded=True -> stays True."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    loop._hand_manager._folded_seats = {"3"}
+    loop._seat_card_confirmed = set()
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is True
+
+
+def test_cards_invisible_confirmed_stays_in_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """cards_visible=False, in_current_hand=True, confirmed -> stays True."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = {3}
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is True

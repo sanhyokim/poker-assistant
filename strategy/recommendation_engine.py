@@ -391,6 +391,13 @@ class RecommendationEngine:
         """Generate a postflop multiway recommendation."""
         started_at = time.perf_counter()
         stats_list = self._stats_list(opponent_stats)
+        logger.info(
+            "Multiway context: hero=%s, board=%s, pot=%d, phase=%s",
+            game_state.hero.cards,
+            game_state.board,
+            game_state.pot,
+            game_state.phase,
+        )
         result = self.multiway_engine.evaluate(game_state, stats_list)
         action = self._normalize_action(str(result.get("action", "check")))
         raw_amount = self._parse_amount(result.get("size"), 0)
@@ -1264,12 +1271,13 @@ class RecommendationEngine:
         """Block non-premium stack-off recommendations facing a huge bet."""
         if recommendation.strategy_source != "preflop_chart":
             return recommendation
-        if recommendation.action not in {"RAISE", "ALL_IN"}:
+        if recommendation.action not in {"RAISE", "ALL_IN", "CALL"}:
             return recommendation
 
         hero_stack = game_state.hero.stack or 0
         max_opponent_bet = self._get_max_opponent_bet(game_state)
-        if hero_stack <= 0 or max_opponent_bet <= hero_stack * 0.5:
+        facing_bet = max_opponent_bet
+        if hero_stack <= 0 or facing_bet <= hero_stack * 0.5:
             return recommendation
 
         hero_hand = self._generic_preflop_hand(game_state.hero.cards or [])
@@ -1281,16 +1289,17 @@ class RecommendationEngine:
             "Safety guard: %s is not premium enough for stack-off facing bet %d "
             "(stack %d)",
             hero_hand,
-            max_opponent_bet,
+            facing_bet,
             hero_stack,
+        )
+        reason = (
+            f"Large opponent bet ({facing_bet}) with {hero_hand}; "
+            "folding for safety"
         )
         return Recommendation(
             action="FOLD",
             amount=0,
-            reason=(
-                f"Large opponent bet ({max_opponent_bet}) with {hero_hand}; "
-                "folding for safety"
-            ),
+            reason=reason,
             confidence="medium",
             strategy_source=recommendation.strategy_source,
             action_probabilities={"FOLD": 1.0},

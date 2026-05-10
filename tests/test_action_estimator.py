@@ -904,3 +904,51 @@ class TestPotSpikeFilter:
         result = estimator.estimate(previous, current)
 
         assert result["filtered_pot"] is None
+
+
+class TestAllInReclassification:
+    """Tests for reclassifying large raises/bets as ALL_IN."""
+
+    def test_raise_reclassified_as_all_in(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """BET/RAISE of 90%+ of previous stack is reclassified as ALL_IN."""
+        previous = make_state(
+            player_values={"2": (10000, 0), "3": (10000, 0)}
+        )
+        current = make_state(
+            player_values={"2": (10000, 0), "3": (500, 9500)}
+        )
+
+        result = estimator.estimate(previous, current)
+
+        assert action_tuples(result) == [(3, "ALL_IN", 9500, "high")]
+
+    def test_raise_not_reclassified_when_small(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Normal RAISE below 90% threshold keeps original action type."""
+        previous = make_state(
+            player_values={"2": (8000, 2000), "3": (10000, 0)}
+        )
+        current = make_state(
+            player_values={"2": (8000, 2000), "3": (7000, 3000)}
+        )
+
+        result = estimator.estimate(previous, current)
+
+        assert action_tuples(result) == [(3, "RAISE", 3000, "high")]
+
+    def test_hero_raise_reclassified_as_all_in(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Hero BET/RAISE of 90%+ of previous stack is reclassified as ALL_IN."""
+        previous = make_state(hero_stack=10000, hero_bet=0)
+        current = make_state(hero_stack=500, hero_bet=9500)
+
+        result = estimator.estimate(previous, current)
+
+        assert action_tuples(result) == [(1, "ALL_IN", 9500, "high")]

@@ -5,9 +5,13 @@ SPEC.md セクション5.8, 5.12 準拠。
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from core.game_state import GameState
+
+
+logger = logging.getLogger(__name__)
 
 
 SolverRequest = dict[str, Any]
@@ -123,7 +127,7 @@ class SolverRequestBuilder:
             else effective_stack
         )
 
-        return {
+        request: SolverRequest = {
             "board": flop_str,
             "turn": turn_str,
             "river": river_str,
@@ -154,6 +158,25 @@ class SolverRequestBuilder:
             "bunching": None,
             "actions_played": actions_played,
         }
+
+        # Extend timeout for deep-SPR flop positions
+        if (
+            game_state.phase == "flop"
+            and request["effective_stack"] > 0
+            and request["starting_pot"] > 0
+            and request["effective_stack"] / request["starting_pot"] > 10
+        ):
+            request["timeout_ms"] = 20000
+            request["max_iterations"] = 300
+            logger.info(
+                "Solver timeout extended for deep-SPR flop: SPR=%.1f, "
+                "timeout_ms=%d, max_iterations=%d",
+                request["effective_stack"] / request["starting_pot"],
+                request["timeout_ms"],
+                request["max_iterations"],
+            )
+
+        return request
 
     @staticmethod
     def _board_to_flop_str(board: list[str]) -> str:

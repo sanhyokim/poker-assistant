@@ -1368,3 +1368,54 @@ def test_parse_solver_strategy_call_amount() -> None:
     assert action == "CALL"
     assert amount == 250
     assert probabilities == {"CALL": 0.7, "FOLD": 0.3}
+
+
+def test_safety_guard_blocks_call_vs_large_bet() -> None:
+    """Safety guard converts weak-hand CALL to FOLD facing a huge bet."""
+    engine = make_engine()
+    engine.preflop_chart.get_scenario.return_value = "vs_all_in"
+    engine.preflop_chart.get_recommendation.return_value = {
+        "action": "call",
+        "amount": 9984,
+        "confidence": "high",
+        "source": "preflop_chart",
+    }
+    engine.preflop_chart.hand_to_generic.side_effect = PreflopChart.hand_to_generic
+    state = make_state(
+        phase="preflop",
+        active_player_count=6,
+        hero_cards=["8c", "6c"],
+    )
+    state.hero.stack = 10000
+    state.players["2"].bet = 60000
+
+    recommendation = engine.generate(state)
+
+    assert recommendation.action == "FOLD"
+    assert recommendation.amount == 0
+    assert recommendation.strategy_source == "preflop_chart"
+
+
+def test_safety_guard_allows_premium_call() -> None:
+    """Safety guard keeps premium-hand CALL facing a huge bet."""
+    engine = make_engine()
+    engine.preflop_chart.get_scenario.return_value = "vs_all_in"
+    engine.preflop_chart.get_recommendation.return_value = {
+        "action": "call",
+        "amount": 9984,
+        "confidence": "high",
+        "source": "preflop_chart",
+    }
+    engine.preflop_chart.hand_to_generic.side_effect = PreflopChart.hand_to_generic
+    state = make_state(
+        phase="preflop",
+        active_player_count=6,
+        hero_cards=["As", "Ac"],
+    )
+    state.hero.stack = 10000
+    state.players["2"].bet = 60000
+
+    recommendation = engine.generate(state)
+
+    assert recommendation.action == "CALL"
+    assert recommendation.strategy_source == "preflop_chart"

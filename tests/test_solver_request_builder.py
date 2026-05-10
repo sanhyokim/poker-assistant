@@ -280,3 +280,55 @@ def test_build_request_actions_played_none() -> None:
 def test_board_to_flop_str() -> None:
     """_board_to_flop_str() concatenates the first three board cards."""
     assert SolverRequestBuilder._board_to_flop_str(["8c", "7d", "8d"]) == "8c7d8d"
+
+
+def test_flop_deep_spr_extends_timeout() -> None:
+    """Flop with deep SPR (>10) extends timeout and max_iterations."""
+    builder = make_builder()
+    state = make_state(
+        phase="flop",
+        hero_stack=10000,
+        opponent_stacks=[10000],
+    )
+    state.pot = 500
+
+    request = builder.build_request(state, "AA", "KK", False)
+
+    assert request is not None
+    assert request["timeout_ms"] == 20000
+    assert request["max_iterations"] == 300
+
+
+def test_flop_shallow_spr_keeps_default_timeout() -> None:
+    """Flop with shallow SPR (<=10) keeps default timeout and max_iterations."""
+    builder = make_builder()
+    state = make_state(
+        phase="flop",
+        hero_stack=500,
+        opponent_stacks=[500],
+    )
+    state.pot = 500
+
+    request = builder.build_request(state, "AA", "KK", False)
+
+    assert request is not None
+    assert request["timeout_ms"] == 7000
+    assert request["max_iterations"] == 200
+
+
+def test_turn_deep_spr_keeps_default_timeout() -> None:
+    """Turn with deep SPR keeps default timeout (only flop applies)."""
+    builder = make_builder()
+    state = make_state(
+        phase="turn",
+        board=["8c", "7d", "8d", "Ah"],
+        hero_stack=10000,
+        opponent_stacks=[10000],
+    )
+    state.pot = 500
+
+    request = builder.build_request(state, "AA", "KK", False)
+
+    assert request is not None
+    assert request["timeout_ms"] == 7000
+    assert request["max_iterations"] == 200

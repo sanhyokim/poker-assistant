@@ -449,6 +449,21 @@ class ActionEstimator:
             )
 
         if hero_stack_curr < hero_stack_prev and diff.hero_bet_changed:
+            # Reclassify as ALL_IN if hero committed ≥90% of previous stack
+            if hero_stack_prev > 0 and diff.hero_bet_curr >= hero_stack_prev * 0.9:
+                logger.info(
+                    "Hero action reclassified as ALL_IN: amount=%d, "
+                    "previous_stack=%d",
+                    diff.hero_bet_curr,
+                    hero_stack_prev,
+                )
+                return ActionRecord(
+                    seat=1,
+                    action="ALL_IN",
+                    amount=diff.hero_bet_curr,
+                    confidence="high",
+                )
+
             if diff.max_bet_prev == 0:
                 return ActionRecord(
                     seat=1,
@@ -525,6 +540,22 @@ class ActionEstimator:
             )
 
         if stack_curr_int < stack_prev_int and bet_changed and bet_curr > bet_prev:
+            # Reclassify as ALL_IN if the player committed ≥90% of their previous stack
+            if stack_prev_int > 0 and bet_curr >= stack_prev_int * 0.9:
+                logger.info(
+                    "Action reclassified as ALL_IN: seat=%d, amount=%d, "
+                    "previous_stack=%d",
+                    seat_num,
+                    bet_curr,
+                    stack_prev_int,
+                )
+                return ActionRecord(
+                    seat=seat_num,
+                    action="ALL_IN",
+                    amount=bet_curr,
+                    confidence="high",
+                )
+
             if diff.max_bet_prev == 0:
                 return ActionRecord(
                     seat=seat_num,

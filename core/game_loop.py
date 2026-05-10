@@ -1149,6 +1149,30 @@ class GameLoop:
                 )
                 continue
             player.cards_visible = bool(detected_visible)
+
+        # Force in_current_hand=False for seats with no visible cards
+        # that are not folded and not confirmed
+        if self._hand_manager.phase in {"preflop", "flop", "turn", "river"}:
+            for seat in range(2, 7):
+                seat_key = str(seat)
+                player = game_state.players.get(seat_key)
+                if player is None:
+                    continue
+                if (
+                    not player.cards_visible
+                    and player.in_current_hand
+                    and seat not in folded_seats
+                    and int(seat) not in folded_seats
+                    and str(seat) not in folded_seats
+                    and seat not in self._seat_card_confirmed
+                ):
+                    player.in_current_hand = False
+                    logger.info(
+                        "Forced in_current_hand=False for seat %d: "
+                        "cards_visible=False, not folded, not confirmed",
+                        seat,
+                    )
+
         self._apply_name_obstruction_guard(game_state)
 
     def _update_visual_obstruction(self, seat_card_results: dict[int, bool]) -> None:
