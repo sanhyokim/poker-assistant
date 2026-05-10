@@ -37,7 +37,7 @@ def _load_config() -> dict[str, Any]:
 
 def _load_env() -> tuple[str | None, str]:
     """Load environment variables required for OpenRouter."""
-    load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=True)
     api_key = os.environ.get("OPENROUTER_API_KEY")
     model = os.environ.get("LLM_MODEL_DEFAULT", "anthropic/claude-sonnet-4")
     return api_key, model

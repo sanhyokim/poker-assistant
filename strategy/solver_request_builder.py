@@ -83,6 +83,9 @@ class SolverRequestBuilder:
         range_oop: str,
         range_ip: str,
         hero_is_ip: bool,
+        street_start_pot: int | None = None,
+        street_start_effective_stack: int | None = None,
+        actions_played: list[str] | None = None,
     ) -> SolverRequest | None:
         """Build a postflop-solver JSON request from a GameState.
 
@@ -92,6 +95,9 @@ class SolverRequestBuilder:
             range_ip: IP range in PioSOLVER-compatible notation.
             hero_is_ip: Whether hero is in position. The request schema keeps
                 ranges explicit, so this flag is reserved for caller validation.
+            street_start_pot: Pot at the start of the current street.
+            street_start_effective_stack: Effective stack at the start of street.
+            actions_played: Solver tree navigation actions already played.
 
         Returns:
             Solver request dictionary, or None when solver use is invalid.
@@ -108,6 +114,14 @@ class SolverRequestBuilder:
         flop_str = self._board_to_flop_str(board)
         turn_str = board[3] if len(board) >= 4 else None
         river_str = board[4] if len(board) >= 5 else None
+        actual_starting_pot = (
+            street_start_pot if street_start_pot is not None else game_state.pot
+        )
+        actual_effective_stack = (
+            street_start_effective_stack
+            if street_start_effective_stack is not None
+            else effective_stack
+        )
 
         return {
             "board": flop_str,
@@ -115,8 +129,8 @@ class SolverRequestBuilder:
             "river": river_str,
             "range_oop": range_oop,
             "range_ip": range_ip,
-            "starting_pot": game_state.pot,
-            "effective_stack": effective_stack,
+            "starting_pot": actual_starting_pot,
+            "effective_stack": actual_effective_stack,
             "flop_bet_sizes_oop": self.default_bet_sizes,
             "flop_bet_sizes_ip": self.default_bet_sizes,
             "flop_raise_sizes_oop": self.default_raise_sizes,
@@ -138,6 +152,7 @@ class SolverRequestBuilder:
             "target_exploitability_pct": self.target_exploitability_pct,
             "timeout_ms": self.timeout_ms,
             "bunching": None,
+            "actions_played": actions_played,
         }
 
     @staticmethod

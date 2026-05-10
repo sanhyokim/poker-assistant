@@ -2520,3 +2520,68 @@ class TestGetOpponentStats:
             "freshness_note",
         ]:
             assert field in row
+
+
+def create_test_game_state(phase: str = "waiting") -> GameState:
+    """Create a test GameState for phase fast-forward tests."""
+    state = create_empty_game_state()
+    state.phase = phase
+    if phase in {"preflop", "flop", "turn", "river"}:
+        state.hero.cards = ["Ah", "Kd"]
+    state.dealer_seat = 1
+    return state
+
+
+@pytest.fixture
+def hand_manager_env(tmp_path: Path) -> HandManager:
+    """Create a HandManager for phase fast-forward tests."""
+    return HandManager(
+        {
+            "capture": {"polling_interval_sec": 0.5},
+            "game": {"blind_sb": 50, "blind_bb": 100},
+            "db": {"path": ":memory:"},
+            "replay": {"base_dir": str(tmp_path / "replays")},
+        },
+    )
+
+
+def test_phase_fast_forward_flop(hand_manager_env: HandManager) -> None:
+    """Hand starting with board_count=3 should fast-forward to flop."""
+    hm = hand_manager_env
+    gs = create_test_game_state(phase="waiting")
+    gs.hero.cards = ["Ah", "Kh"]
+    gs.board = ["Qs", "Jh", "2h"]
+    gs.board_card_count = 3
+    gs.players["2"].is_seated = True
+    gs.players["2"].cards_visible = True
+
+    hm.process_frame(gs)
+    assert hm.phase == "flop"
+
+
+def test_phase_fast_forward_turn(hand_manager_env: HandManager) -> None:
+    """Hand starting with board_count=4 should fast-forward to turn."""
+    hm = hand_manager_env
+    gs = create_test_game_state(phase="waiting")
+    gs.hero.cards = ["Ah", "Kh"]
+    gs.board = ["Qs", "Jh", "2h", "Tc"]
+    gs.board_card_count = 4
+    gs.players["2"].is_seated = True
+    gs.players["2"].cards_visible = True
+
+    hm.process_frame(gs)
+    assert hm.phase == "turn"
+
+
+def test_phase_fast_forward_river(hand_manager_env: HandManager) -> None:
+    """Hand starting with board_count=5 should fast-forward to river."""
+    hm = hand_manager_env
+    gs = create_test_game_state(phase="waiting")
+    gs.hero.cards = ["Ah", "Kh"]
+    gs.board = ["Qs", "Jh", "2h", "Tc", "9d"]
+    gs.board_card_count = 5
+    gs.players["2"].is_seated = True
+    gs.players["2"].cards_visible = True
+
+    hm.process_frame(gs)
+    assert hm.phase == "river"

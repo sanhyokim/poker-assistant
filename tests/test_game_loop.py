@@ -587,6 +587,77 @@ def test_seat_card_detection_does_not_latch_existing_frame_fold(
     assert 2 not in loop._seat_card_fold_latched
 
 
+def test_folded_seat_keeps_cards_visible_true(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Folded seats keep Cards=YES to show they were dealt cards."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": False}
+    loop._hand_manager._folded_seats = {"3"}
+    game_state = create_empty_game_state()
+    game_state.phase = "flop"
+    game_state.players["3"].is_seated = True
+    game_state.players["3"].in_current_hand = False
+    game_state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(
+        game_state,
+        {2: True, 3: False, 4: False, 5: False, 6: False},
+    )
+
+    assert game_state.players["3"].cards_visible is True
+
+
+def test_active_seat_detection_failure_preserves_cards_visible(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Active seats keep Cards=YES through temporary detector failures."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    loop._hand_manager._folded_seats = set()
+    game_state = create_empty_game_state()
+    game_state.phase = "flop"
+    game_state.players["3"].is_seated = True
+    game_state.players["3"].in_current_hand = True
+    game_state.players["3"].cards_visible = True
+
+    loop._seat_card_confirmed = {3}
+
+    loop._apply_seat_card_visibility(
+        game_state,
+        {2: True, 3: False, 4: False, 5: False, 6: False},
+    )
+
+    assert game_state.players["3"].cards_visible is True
+
+
+def test_non_participant_shows_cards_no(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-participating seats still show Cards=NO."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    loop._hand_manager._folded_seats = set()
+    game_state = create_empty_game_state()
+    game_state.phase = "flop"
+    game_state.players["3"].is_seated = True
+    game_state.players["3"].in_current_hand = False
+    game_state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(
+        game_state,
+        {2: True, 3: False, 4: False, 5: False, 6: False},
+    )
+
+    assert game_state.players["3"].cards_visible is False
+
+
 def test_fold_badge_detector_runs_during_active_phase(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1969,3 +2040,63 @@ def test_waiting_different_hero_cards_can_start_hand(
 
     assert state.hero.cards == ["8d", "Td"]
     assert loop._hand_manager.phase == "preflop"
+
+
+def create_test_game_state(phase: str = "waiting") -> Any:
+    """Create a test GameState with basic hero configuration."""
+    state = create_empty_game_state()
+    state.phase = phase
+    if phase in {"preflop", "flop", "turn", "river"}:
+        state.hero.cards = ["Ah", "Kd"]
+    return state
+
+
+@pytest.fixture
+def game_loop_env(workspace_tmp: Path, monkeypatch: pytest.MonkeyPatch) -> tuple[GameLoop, HandManager]:
+    """Create GameLoop and HandManager for seat-card visibility tests."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    return loop, loop._hand_manager
+
+
+def test_unconfirmed_seat_not_protected(game_loop_env: tuple[GameLoop, HandManager]) -> None:
+    """Seat that was never stably detected with cards should not be protected."""
+    gl, hm = game_loop_env
+    hm._phase = "flop"
+    hm._players_in_hand = {"1": True, "2": True, "3": True}
+    hm._folded_seats = set()
+
+    gs = create_test_game_state(phase="flop")
+    gs.players["3"].is_seated = True
+    gs.players["3"].in_current_hand = True
+    gs.players["3"].cards_visible = False
+
+    # Seat 3 was never confirmed (not in _seat_card_confirmed)
+    gl._seat_card_confirmed = set()
+
+    seat_card_results = {2: True, 3: False, 4: False, 5: False, 6: False}
+    gl._apply_seat_card_visibility(gs, seat_card_results)
+
+    # Unconfirmed seat should NOT be protected
+    assert gs.players["3"].cards_visible is False
+
+
+def test_confirmed_seat_is_protected(game_loop_env: tuple[GameLoop, HandManager]) -> None:
+    """Seat that was confirmed with cards should be protected on detection failure."""
+    gl, hm = game_loop_env
+    hm._phase = "flop"
+    hm._players_in_hand = {"1": True, "2": True, "3": True}
+    hm._folded_seats = set()
+
+    gs = create_test_game_state(phase="flop")
+    gs.players["3"].is_seated = True
+    gs.players["3"].in_current_hand = True
+    gs.players["3"].cards_visible = True
+
+    # Seat 3 was previously confirmed
+    gl._seat_card_confirmed = {3}
+
+    seat_card_results = {2: True, 3: False, 4: False, 5: False, 6: False}
+    gl._apply_seat_card_visibility(gs, seat_card_results)
+
+    # Confirmed seat should be protected
+    assert gs.players["3"].cards_visible is True

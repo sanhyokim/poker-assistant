@@ -88,6 +88,7 @@ class GameLoop:
         self._visual_obstruction_until = 0.0
         self._visual_obstruction_hold_sec = 1.0
         self._last_seat_card_states: dict[int, bool] = {}
+        self._seat_card_confirmed: set[int] = set()
 
         self._running = False
         self._prev_state: GameState | None = None
@@ -283,6 +284,7 @@ class GameLoop:
             self._visual_obstruction_active = False
             self._visual_obstruction_until = 0.0
             self._last_seat_card_states.clear()
+            self._seat_card_confirmed.clear()
             self._hero_cards_missing_since_hand_end = False
             self._last_ended_hero_cards = None
             logger.debug(
@@ -337,6 +339,7 @@ class GameLoop:
         self._visual_obstruction_active = False
         self._visual_obstruction_until = 0.0
         self._last_seat_card_states.clear()
+        self._seat_card_confirmed.clear()
         logger.info("Game loop reset")
 
     def _init_strategy_modules(self) -> None:
@@ -383,6 +386,8 @@ class GameLoop:
             from strategy.llm_pipeline import LLMPipeline
 
             llm_pipeline = LLMPipeline(self._config)
+            # Quick connectivity check
+            self._check_llm_connectivity(llm_pipeline)
         except Exception:
             logger.warning("LLMPipeline initialization failed, will use baseline ranges")
 
@@ -402,6 +407,53 @@ class GameLoop:
             llm_pipeline=llm_pipeline,
             multiway_engine=multiway_engine,
         )
+
+    def _check_llm_connectivity(self, llm_pipeline: Any) -> None:
+        """Run a quick LLM API connectivity check at startup."""
+        import requests
+
+        api_key = getattr(llm_pipeline, "api_key", None)
+        model = getattr(llm_pipeline, "model_default", None)
+        if not api_key:
+            logger.warning(
+                "LLM startup check: OPENROUTER_API_KEY is not set. "
+                "LLM features will use fallback."
+            )
+            return
+
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": model or "deepseek/deepseek-chat",
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1,
+                },
+                timeout=5,
+            )
+            if response.status_code == 200:
+                logger.info(
+                    "LLM startup check: OK (model=%s, status=200)",
+                    model,
+                )
+            else:
+                logger.warning(
+                    "LLM startup check: FAILED (model=%s, status=%d). "
+                    "LLM features may use fallback. "
+                    "Check .env OPENROUTER_API_KEY and model name.",
+                    model,
+                    response.status_code,
+                )
+        except Exception as exc:
+            logger.warning(
+                "LLM startup check: connection error (%s). "
+                "LLM features may use fallback.",
+                exc,
+            )
 
     def _handle_capture_failure(self) -> None:
         """Attempt capture reconnection and stop after repeated failures."""
@@ -1054,6 +1106,8 @@ class GameLoop:
         """Apply SeatCardDetector results to PlayerState.cards_visible."""
         self._update_visual_obstruction(seat_card_results)
         obstruction_active = self._is_visual_obstruction_active()
+        folded_seats = set(getattr(self._hand_manager, "_folded_seats", set()))
+        players_in_hand_seats = self._hand_manager.get_players_in_hand()
 
         for seat in range(2, 7):
             seat_key = str(seat)
@@ -1072,9 +1126,29 @@ class GameLoop:
                     seat,
                 )
                 continue
-            player.cards_visible = bool(
-                detected_visible
-            )
+            if seat_key in folded_seats:
+                player.cards_visible = True
+                continue
+
+            # Track seats with confirmed card detection (stable, non-transient)
+            if detected_visible and seat in players_in_hand_seats:
+                self._seat_card_confirmed.add(seat)
+
+            # Guard 2: Active in-hand seat with temporary detection failure
+            # Only protect seats that have been confirmed with cards at least once
+            if (
+                seat in players_in_hand_seats
+                and not detected_visible
+                and seat in self._seat_card_confirmed
+            ):
+                player.cards_visible = True
+                logger.debug(
+                    "Cards visibility preserved for confirmed active seat %d "
+                    "(in_current_hand=True, detected=False, confirmed=True)",
+                    seat,
+                )
+                continue
+            player.cards_visible = bool(detected_visible)
         self._apply_name_obstruction_guard(game_state)
 
     def _update_visual_obstruction(self, seat_card_results: dict[int, bool]) -> None:

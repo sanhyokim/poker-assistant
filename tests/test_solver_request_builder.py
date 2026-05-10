@@ -169,6 +169,7 @@ def test_build_request_flop() -> None:
         "target_exploitability_pct": 0.5,
         "timeout_ms": 7000,
         "bunching": None,
+        "actions_played": None,
     }
 
 
@@ -208,6 +209,72 @@ def test_build_request_preflop_returns_none() -> None:
     state = make_state(phase="preflop")
 
     assert make_builder().build_request(state, "AA", "KK", False) is None
+
+
+def test_build_request_with_actions_played() -> None:
+    """actions_played is passed through to the solver request."""
+    request = make_builder().build_request(
+        make_state(),
+        "AA",
+        "KK",
+        False,
+        actions_played=["Bet 200"],
+    )
+
+    assert request is not None
+    assert request["actions_played"] == ["Bet 200"]
+
+
+def test_build_request_with_street_start_pot() -> None:
+    """street_start_pot overrides GameState.pot in the request."""
+    request = make_builder().build_request(
+        make_state(),
+        "AA",
+        "KK",
+        False,
+        street_start_pot=500,
+    )
+
+    assert request is not None
+    assert request["starting_pot"] == 500
+
+
+def test_build_request_with_street_start_effective_stack() -> None:
+    """street_start_effective_stack overrides computed effective stack."""
+    request = make_builder().build_request(
+        make_state(),
+        "AA",
+        "KK",
+        False,
+        street_start_effective_stack=3000,
+    )
+
+    assert request is not None
+    assert request["effective_stack"] == 3000
+
+
+def test_build_request_without_new_params() -> None:
+    """Omitting new params preserves existing pot and effective stack behavior."""
+    state = make_state(hero_stack=3500, opponent_stacks=[4500])
+    request = make_builder().build_request(state, "AA", "KK", False)
+
+    assert request is not None
+    assert request["starting_pot"] == state.pot
+    assert request["effective_stack"] == 3500
+
+
+def test_build_request_actions_played_none() -> None:
+    """actions_played defaults to None for legacy solver requests."""
+    request = make_builder().build_request(
+        make_state(),
+        "AA",
+        "KK",
+        False,
+        actions_played=None,
+    )
+
+    assert request is not None
+    assert request["actions_played"] is None
 
 
 def test_board_to_flop_str() -> None:

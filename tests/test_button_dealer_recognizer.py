@@ -114,6 +114,27 @@ class TestButtonRecognizer:
 
         assert button_recognizer.classify_buttons(img) is None
 
+    def test_detect_my_turn_requires_both_fold_and_call(
+        self,
+        profile: dict[str, Any],
+        config: dict[str, Any],
+    ) -> None:
+        """detect_my_turn() rejects fold-only red when call/check is not green."""
+        recognizer = ButtonRecognizer(profile, config)
+        img = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        fold_region = profile.get("btn_fold", {})
+        if fold_region:
+            x = fold_region["x"]
+            y = fold_region["y"]
+            w = fold_region["w"]
+            h = fold_region["h"]
+            img[y : y + h, x : x + w] = [0, 0, 255]
+
+        result = recognizer.detect_my_turn(img)
+
+        if "btn_call_check" in profile:
+            assert result is False
+
 
 class TestDealerRecognizer:
     """Dealer recognizer tests."""

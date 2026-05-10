@@ -121,6 +121,109 @@ def test_generate_preflop_uses_chart() -> None:
     assert "preflop_chart_ms" in recommendation.latency_breakdown
 
 
+def test_parse_solver_strategy_prefers_node_strategy() -> None:
+    """node_strategy is preferred over root_strategy when both are present."""
+    engine = make_engine()
+    state = make_state()
+    solver_output = {
+        "root_strategy": {
+            "actions": ["Check", "Bet 100"],
+            "average_strategy": {"Check": 1.0, "Bet 100": 0.0},
+        },
+        "node_strategy": {
+            "actions": ["Call", "Fold"],
+            "average_strategy": {"Call": 0.8, "Fold": 0.2},
+        },
+    }
+
+    action, amount, probabilities = engine._parse_solver_strategy(
+        solver_output,
+        state,
+    )
+
+    assert action == "CALL"
+    assert amount == 0
+    assert probabilities["CALL"] == 0.8
+
+
+def test_parse_solver_strategy_fallback_to_root() -> None:
+    """root_strategy is used when node_strategy is absent."""
+    engine = make_engine()
+    state = make_state()
+    solver_output = {
+        "root_strategy": {
+            "actions": ["Check", "Bet 100"],
+            "average_strategy": {"Check": 0.1, "Bet 100": 0.9},
+        },
+    }
+
+    action, amount, probabilities = engine._parse_solver_strategy(
+        solver_output,
+        state,
+    )
+
+    assert action == "BET"
+    assert amount == 100
+    assert probabilities["BET 100"] == 0.9
+
+
+def test_detect_preflop_scenario_from_pot_size() -> None:
+    """Preflop scenario is inferred from pot size when actions are unavailable."""
+    engine = make_engine()
+    state = make_state()
+
+    state.pot = 4100
+    assert engine._detect_preflop_scenario(state) == "4bet_pot"
+    state.pot = 1500
+    assert engine._detect_preflop_scenario(state) == "3bet_pot"
+    state.pot = 600
+    assert engine._detect_preflop_scenario(state) == "single_raised_pot"
+    state.pot = 400
+    assert engine._detect_preflop_scenario(state) == "limp_pot"
+
+
+def test_baseline_range_scenario_selection() -> None:
+    """Scenario-specific baseline ranges are selected by position."""
+    engine = make_engine()
+    engine._cached_baseline_ranges = {
+        "single_raised_pot": {"OOP": "OOP_SRP", "IP": "IP_SRP"},
+        "3bet_pot": {"OOP": "OOP_3BET", "IP": "IP_3BET"},
+        "cbet_defend": {"OOP": "OOP_CBET", "IP": "IP_CBET"},
+    }
+
+    assert engine._baseline_range("OOP", "3bet_pot") == "OOP_3BET"
+    assert engine._baseline_range("IP", "single_raised_pot") == "IP_SRP"
+    assert engine._baseline_range("OOP", "missing") == "OOP_CBET"
+
+
+def test_compute_street_start_pot() -> None:
+    """Current street bets are subtracted from recognized pot."""
+    engine = make_engine()
+    state = make_state()
+    state.pot = 1000
+    state.hero.bet = 200
+    state.players["2"].bet = 300
+
+    assert engine._compute_street_start_pot(state) == 500
+
+
+def test_build_actions_played_opponent_bet() -> None:
+    """Opponent current bet becomes a solver Bet action."""
+    engine = make_engine()
+    state = make_state()
+    state.players["2"].bet = 500
+
+    assert engine._build_actions_played(state) == ["Bet 500"]
+
+
+def test_build_actions_played_no_bets() -> None:
+    """No current bets means hero acts first at the root node."""
+    engine = make_engine()
+    state = make_state()
+
+    assert engine._build_actions_played(state) is None
+
+
 def test_generate_preflop_uses_chart_amount() -> None:
     """Preflop recommendation amount comes from the chart result when present."""
     engine = make_engine()

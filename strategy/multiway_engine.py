@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import random
+from itertools import combinations
 from typing import Any
 
 from core.game_state import GameState
@@ -36,6 +37,20 @@ class MultiwayEngine:
         )
         self.mc_samples: int = 10000
         self.logger = logger
+        self._baseline_ranges: JsonDict = self._load_baseline_ranges()
+
+    @staticmethod
+    def _load_baseline_ranges() -> JsonDict:
+        """Load baseline_ranges.json for range-based equity sampling."""
+        try:
+            import json
+            from pathlib import Path
+
+            path = Path(__file__).with_name("baseline_ranges.json")
+            with path.open("r", encoding="utf-8") as json_file:
+                return json.load(json_file)
+        except Exception:
+            return {}
 
     def evaluate(
         self,
@@ -54,7 +69,13 @@ class MultiwayEngine:
         hero_cards = game_state.hero.cards or []
         board = game_state.board
         num_opponents = self._num_opponents(game_state, opponent_stats_list)
-        equity = self.calculate_equity(hero_cards, board, num_opponents)
+        opponent_range = self._get_opponent_range(game_state)
+        equity = self.calculate_equity(
+            hero_cards,
+            board,
+            num_opponents,
+            opponent_range,
+        )
         opponent_profiles = self._format_opponent_profiles(opponent_stats_list)
 
         try:
@@ -84,6 +105,7 @@ class MultiwayEngine:
         hero_cards: list[str],
         board: list[str],
         num_opponents: int,
+        opponent_range_str: str | None = None,
     ) -> float:
         """Calculate Monte-Carlo equity with eval7.
 
@@ -91,6 +113,7 @@ class MultiwayEngine:
             hero_cards: Two hero cards, such as ["Td", "9c"].
             board: Three to five board cards, such as ["8c", "7d", "8d"].
             num_opponents: Number of opponents from 1 to 5.
+            opponent_range_str: Optional PioSOLVER-format opponent range.
 
         Returns:
             Equity from 0.0 to 1.0. Returns 0.5 on calculation failure.
@@ -109,29 +132,48 @@ class MultiwayEngine:
 
             hero = [eval7.Card(card) for card in hero_cards]
             board_cards = [eval7.Card(card) for card in board]
-            known_cards = hero + board_cards
+            known_cards = set(hero + board_cards)
             deck = eval7.Deck()
             remaining = [card for card in deck.cards if card not in known_cards]
-
-            cards_needed = num_opponents * 2 + (5 - len(board_cards))
-            if cards_needed > len(remaining):
-                return 0.5
+            opponent_hands_pool = self._build_opponent_hands_pool(
+                opponent_range_str,
+                remaining,
+                known_cards,
+            )
+            cards_needed_board = 5 - len(board_cards)
 
             wins = 0
             ties = 0
             total = 0
             for _ in range(self.mc_samples):
-                sampled = random.sample(remaining, cards_needed)
-                index = 0
                 opponent_hands = []
+                used_cards = set()
+                valid = True
                 for _ in range(num_opponents):
-                    opponent_hands.append(sampled[index : index + 2])
-                    index += 2
+                    hand = self._sample_opponent_hand(
+                        opponent_hands_pool,
+                        remaining,
+                        used_cards,
+                        known_cards,
+                    )
+                    if hand is None:
+                        valid = False
+                        break
+                    opponent_hands.append(hand)
+                    used_cards.update(hand)
+                if not valid:
+                    continue
 
-                sim_board = board_cards + sampled[index:]
+                board_remaining = [card for card in remaining if card not in used_cards]
+                if len(board_remaining) < cards_needed_board:
+                    continue
+                sim_board = board_cards + random.sample(
+                    board_remaining,
+                    cards_needed_board,
+                )
                 hero_score = eval7.evaluate(hero + sim_board)
                 best_opponent = max(
-                    eval7.evaluate(opponent + sim_board)
+                    eval7.evaluate(list(opponent) + sim_board)
                     for opponent in opponent_hands
                 )
 
@@ -145,6 +187,148 @@ class MultiwayEngine:
         except Exception as error:
             self.logger.warning("Equity calculation failed: %s", error)
             return 0.5
+
+    def _build_opponent_hands_pool(
+        self,
+        range_str: str | None,
+        remaining: list[Any],
+        known_cards: set[Any],
+    ) -> list[tuple[Any, Any]] | None:
+        """Build a pool of valid opponent hands from a range string.
+
+        Args:
+            range_str: PioSOLVER-style range string.
+            remaining: Cards not already known.
+            known_cards: Hero and board cards.
+
+        Returns:
+            Valid hand tuples, or None to fall back to random sampling.
+        """
+        _ = known_cards
+        if not range_str:
+            return None
+
+        try:
+            pool = []
+            for card_one, card_two in combinations(remaining, 2):
+                hand_key = self._cards_to_range_key(card_one, card_two)
+                if self._hand_matches_range(hand_key, range_str):
+                    pool.append((card_one, card_two))
+            if len(pool) < 10:
+                return None
+            return pool
+        except Exception:
+            return None
+
+    def _sample_opponent_hand(
+        self,
+        pool: list[tuple[Any, Any]] | None,
+        remaining: list[Any],
+        used_cards: set[Any],
+        known_cards: set[Any],
+    ) -> tuple[Any, Any] | None:
+        """Sample one opponent hand, avoiding already-used cards."""
+        _ = known_cards
+        if pool is not None:
+            valid = [
+                hand
+                for hand in pool
+                if hand[0] not in used_cards and hand[1] not in used_cards
+            ]
+            if valid:
+                return random.choice(valid)
+
+        available = [card for card in remaining if card not in used_cards]
+        if len(available) < 2:
+            return None
+        sampled = random.sample(available, 2)
+        return (sampled[0], sampled[1])
+
+    @staticmethod
+    def _cards_to_range_key(card_one: Any, card_two: Any) -> str:
+        """Convert two cards to generic notation like AKs, AKo, or TT."""
+        rank_order = "23456789TJQKA"
+        rank_one = str(card_one)[0]
+        rank_two = str(card_two)[0]
+        suit_one = str(card_one)[1]
+        suit_two = str(card_two)[1]
+        if rank_order.index(rank_one) < rank_order.index(rank_two):
+            rank_one, rank_two = rank_two, rank_one
+            suit_one, suit_two = suit_two, suit_one
+        if rank_one == rank_two:
+            return f"{rank_one}{rank_two}"
+        if suit_one == suit_two:
+            return f"{rank_one}{rank_two}s"
+        return f"{rank_one}{rank_two}o"
+
+    @staticmethod
+    def _hand_matches_range(hand_key: str, range_str: str) -> bool:
+        """Return whether a hand key matches a simplified PioSOLVER range."""
+        hands_in_range = set()
+        rank_order = "23456789TJQKA"
+
+        for part in range_str.split(","):
+            part = part.strip()
+            if not part:
+                continue
+
+            if "+" in part:
+                base = part.replace("+", "")
+                if len(base) == 2 and base[0] == base[1]:
+                    start_index = rank_order.index(base[0])
+                    for index in range(start_index, len(rank_order)):
+                        hands_in_range.add(f"{rank_order[index]}{rank_order[index]}")
+                elif len(base) == 3:
+                    rank_high = base[0]
+                    rank_low = base[1]
+                    suitedness = base[2]
+                    start_index = rank_order.index(rank_low)
+                    high_index = rank_order.index(rank_high)
+                    for index in range(start_index, high_index):
+                        hands_in_range.add(
+                            f"{rank_high}{rank_order[index]}{suitedness}"
+                        )
+            elif "-" in part:
+                left, right = part.split("-", 1)
+                left = left.strip()
+                right = right.strip()
+                if (
+                    len(left) == 2
+                    and len(right) == 2
+                    and left[0] == left[1]
+                    and right[0] == right[1]
+                ):
+                    low_index = rank_order.index(right[0])
+                    high_index = rank_order.index(left[0])
+                    for index in range(low_index, high_index + 1):
+                        hands_in_range.add(f"{rank_order[index]}{rank_order[index]}")
+                else:
+                    hands_in_range.add(left)
+                    hands_in_range.add(right)
+            else:
+                hands_in_range.add(part)
+
+        return hand_key in hands_in_range
+
+    def _get_opponent_range(self, game_state: GameState) -> str | None:
+        """Get a baseline opponent range string based on pot-size heuristic."""
+        pot = int(game_state.pot or 0)
+        if self.blind_bb <= 0:
+            ranges = self._baseline_ranges.get("single_raised_pot", {})
+            return ranges.get("IP") if isinstance(ranges, dict) else None
+
+        pot_bb = pot / self.blind_bb
+        if pot_bb >= 40:
+            scenario = "4bet_pot"
+        elif pot_bb >= 15:
+            scenario = "3bet_pot"
+        elif pot_bb <= 4:
+            scenario = "limp_pot"
+        else:
+            scenario = "single_raised_pot"
+
+        ranges = self._baseline_ranges.get(scenario, {})
+        return ranges.get("IP") if isinstance(ranges, dict) else None
 
     def _format_opponent_profiles(
         self,

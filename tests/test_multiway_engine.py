@@ -99,6 +99,51 @@ def test_calculate_equity_full_board() -> None:
     assert 0.0 <= equity <= 1.0
 
 
+def test_calculate_equity_with_range() -> None:
+    """Range-based equity calculation returns a bounded float."""
+    engine = make_engine()
+    engine.mc_samples = 200
+
+    equity = engine.calculate_equity(
+        ["Ah", "As"],
+        ["Td", "7c", "2h"],
+        1,
+        "77+,ATs+",
+    )
+
+    assert 0.0 <= equity <= 1.0
+
+
+def test_calculate_equity_without_range() -> None:
+    """Equity calculation without a range keeps random-opponent behavior."""
+    engine = make_engine()
+    engine.mc_samples = 200
+
+    equity = engine.calculate_equity(
+        ["Ah", "As"],
+        ["Td", "7c", "2h"],
+        1,
+        None,
+    )
+
+    assert 0.0 <= equity <= 1.0
+
+
+def test_hand_matches_range_pair_plus() -> None:
+    """Pair plus notation includes higher pairs."""
+    assert MultiwayEngine._hand_matches_range("TT", "77+")
+
+
+def test_hand_matches_range_suited_plus() -> None:
+    """Suited plus notation includes higher kickers."""
+    assert MultiwayEngine._hand_matches_range("ATs", "A9s+")
+
+
+def test_hand_matches_range_no_match() -> None:
+    """Hands outside the simplified range return False."""
+    assert not MultiwayEngine._hand_matches_range("72o", "77+,ATs+")
+
+
 def test_calculate_equity_invalid_cards() -> None:
     """Invalid card strings return neutral equity without raising."""
     engine = make_engine()

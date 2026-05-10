@@ -26,5 +26,21 @@
   "cbet_defend": {
     "IP": "22+,A2s+,A8o+,K9s+,KTo+,Q9s+,QTo+,J9s+,T8s+,97s+,87s,76s",
     "OOP": "33+,A5s+,A9o+,KTs+,KJo+,QTs+,JTs,T9s"
+  },
+  "single_raised_pot": {
+    "OOP": "22+,A2s+,A8o+,K9s+,KTo+,Q9s+,QTo+,J8s+,JTo,T8s+,97s+,87s,76s,65s",
+    "IP": "22+,A2s+,A7o+,K5s+,K9o+,Q7s+,Q9o+,J7s+,J9o+,T7s+,T9o,96s+,86s+,75s+,65s,54s"
+  },
+  "3bet_pot": {
+    "OOP": "QQ+,AKs,AKo,AQs,AJs,KQs",
+    "IP": "JJ+,AKs,AKo,AQs,AQo,AJs,KQs,KJs"
+  },
+  "4bet_pot": {
+    "OOP": "KK+,AKs",
+    "IP": "QQ+,AKs,AKo"
+  },
+  "limp_pot": {
+    "OOP": "22+,A2s+,A2o+,K2s+,K5o+,Q4s+,Q8o+,J6s+,J8o+,T6s+,T8o+,96s+,86s+,76s,65s,54s",
+    "IP": "22+,A2s+,A2o+,K2s+,K5o+,Q3s+,Q7o+,J5s+,J8o+,T6s+,T8o+,95s+,85s+,75s+,64s+,54s"
   }
 }

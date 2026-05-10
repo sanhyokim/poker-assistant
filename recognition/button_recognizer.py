@@ -51,24 +51,33 @@ class ButtonRecognizer(BaseRecognizer):
         }
 
     def detect_my_turn(self, img: np.ndarray) -> bool:
-        """Detect whether it is hero's turn from the fold button color.
+        """Detect whether it is hero's turn from action button colors.
 
         Args:
             img: BGR source image.
 
         Returns:
-            True if the fold button region is red.
+            True if fold red and call/check green buttons are visible.
         """
-        crop = self.crop_region(img, "btn_fold")
-        if crop is None:
+        fold_crop = self.crop_region(img, "btn_fold")
+        if fold_crop is None:
             return False
 
-        mean_h, mean_s, mean_v = self._mean_hsv(crop)
-        return (
-            (mean_h > 155.0 or mean_h < 10.0)
-            and mean_s > 150.0
-            and mean_v > 140.0
+        fold_h, fold_s, fold_v = self._mean_hsv(fold_crop)
+        fold_is_red = (
+            (fold_h > 155.0 or fold_h < 10.0)
+            and fold_s > 150.0
+            and fold_v > 140.0
         )
+        if not fold_is_red:
+            return False
+
+        call_crop = self.crop_region(img, "btn_call_check")
+        if call_crop is None:
+            return True
+
+        call_h, call_s, call_v = self._mean_hsv(call_crop)
+        return 35.0 <= call_h <= 90.0 and call_s > 150.0 and call_v > 100.0
 
     def classify_buttons(self, img: np.ndarray) -> ButtonState | None:
         """Classify action button types when it is hero's turn.

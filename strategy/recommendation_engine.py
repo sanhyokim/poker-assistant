@@ -273,18 +273,27 @@ class RecommendationEngine:
                 started_at,
             )
 
-        baseline_oop = self._baseline_range("OOP")
-        baseline_ip = self._baseline_range("IP")
+        preflop_scenario = self._detect_preflop_scenario(game_state)
+        baseline_oop = self._baseline_range("OOP", preflop_scenario)
+        baseline_ip = self._baseline_range("IP", preflop_scenario)
         range_oop = baseline_oop
         range_ip = baseline_ip
         latency["range_estimation_ms"] = 0.0
 
         request_started = time.perf_counter()
+        street_start_pot = self._compute_street_start_pot(game_state)
+        street_start_effective_stack = (
+            self._compute_street_start_effective_stack(game_state)
+        )
+        actions_played = self._build_actions_played(game_state)
         request = self.solver_request_builder.build_request(
             game_state,
             range_oop,
             range_ip,
             self._determine_hero_is_ip(game_state),
+            street_start_pot=street_start_pot,
+            street_start_effective_stack=street_start_effective_stack,
+            actions_played=actions_played,
         )
         latency["request_build_ms"] = self._elapsed_ms(request_started)
         if request is None:
@@ -791,8 +800,13 @@ class RecommendationEngine:
         solver_output: JsonDict,
         game_state: GameState,
     ) -> tuple[str, int, dict[str, float]]:
-        """Extract action, amount, and probabilities from solver output."""
-        root_strategy = solver_output.get("root_strategy")
+        """Extract action, amount, and probabilities from solver output.
+
+        Prefers node_strategy after solver tree navigation over root_strategy.
+        """
+        root_strategy = solver_output.get("node_strategy") or solver_output.get(
+            "root_strategy"
+        )
         if not isinstance(root_strategy, dict):
             return "CHECK", 0, {"CHECK": 1.0}
 
@@ -880,6 +894,85 @@ class RecommendationEngine:
     def _determine_hero_is_ip(self, game_state: GameState) -> bool:
         """Return whether hero is likely in position postflop."""
         return game_state.hero.position in {"CO", "BTN"}
+
+    def _compute_street_start_pot(self, game_state: GameState) -> int:
+        """Compute pot size at the start of the current street.
+
+        Args:
+            game_state: Current recognized game state.
+
+        Returns:
+            Estimated street-start pot. Minimum is 1.
+        """
+        pot = int(game_state.pot or 0)
+        total_current_bets = int(game_state.hero.bet or 0)
+        for player in game_state.players.values():
+            total_current_bets += int(player.bet or 0)
+        return max(pot - total_current_bets, 1)
+
+    def _compute_street_start_effective_stack(
+        self,
+        game_state: GameState,
+    ) -> int | None:
+        """Compute effective stack at the start of the current street.
+
+        Args:
+            game_state: Current recognized game state.
+
+        Returns:
+            Effective stack at street start, or None when not heads-up.
+        """
+        hero_stack = game_state.hero.stack
+        hero_bet = int(game_state.hero.bet or 0)
+        if hero_stack is None or hero_stack <= 0:
+            if hero_bet <= 0:
+                return None
+            hero_start_stack = hero_bet
+        else:
+            hero_start_stack = hero_stack + hero_bet
+
+        active_opponents = self.solver_request_builder._get_active_opponents(
+            game_state
+        )
+        if len(active_opponents) != 1:
+            return None
+
+        opp_seat = str(active_opponents[0]["seat"])
+        opp_stack = active_opponents[0]["stack"]
+        opp_bet = (
+            int(game_state.players[opp_seat].bet or 0)
+            if opp_seat in game_state.players
+            else 0
+        )
+        return min(hero_start_stack, opp_stack + opp_bet)
+
+    def _build_actions_played(self, game_state: GameState) -> list[str] | None:
+        """Build solver tree-navigation actions for the current street.
+
+        Args:
+            game_state: Current recognized game state.
+
+        Returns:
+            Solver action strings such as ["Bet 200"], or None.
+        """
+        hero_bet = int(game_state.hero.bet or 0)
+        max_opponent_bet = self._max_opponent_bet(game_state)
+        if max_opponent_bet <= 0 and hero_bet <= 0:
+            return None
+
+        actions: list[str] = []
+        if max_opponent_bet > 0 and hero_bet <= 0:
+            actions.append(f"Bet {max_opponent_bet}")
+        elif max_opponent_bet > 0 and hero_bet > 0:
+            if hero_bet < max_opponent_bet:
+                actions.append(f"Bet {hero_bet}")
+                actions.append(f"Raise {max_opponent_bet}")
+            else:
+                actions.append(f"Bet {max_opponent_bet}")
+        elif hero_bet > 0 and max_opponent_bet <= 0:
+            return None
+
+        return actions or None
 
     def _llm_headsup_fallback(
         self,
@@ -1209,13 +1302,93 @@ class RecommendationEngine:
         blind_bb = int(self.config.get("game", {}).get("blind_bb", 100))
         return blind_bb * 3 if action in {"RAISE", "BET"} else 0
 
-    def _baseline_range(self, position: str) -> str:
-        """Return a baseline c-bet defend range for IP/OOP prompts."""
-        if self.llm_pipeline is not None and hasattr(self.llm_pipeline, "get_baseline_range"):
-            value = self.llm_pipeline.get_baseline_range(position, "cbet_defend")
+    def _baseline_range(
+        self,
+        position: str,
+        scenario: str = "single_raised_pot",
+    ) -> str:
+        """Return a baseline range based on position and preflop scenario.
+
+        Args:
+            position: "OOP" or "IP".
+            scenario: Preflop scenario key.
+
+        Returns:
+            PioSOLVER-compatible range string.
+        """
+        ranges = self._load_baseline_ranges()
+        scenario_ranges = ranges.get(scenario)
+        if isinstance(scenario_ranges, dict):
+            value = scenario_ranges.get(position)
+            if value:
+                return str(value)
+
+        cbet = ranges.get("cbet_defend", {})
+        if isinstance(cbet, dict):
+            value = cbet.get(position)
             if value:
                 return str(value)
         return "22+,A2s+,KTs+,QTs+,JTs"
+
+    def _load_baseline_ranges(self) -> JsonDict:
+        """Load baseline_ranges.json, caching the result."""
+        cached = getattr(self, "_cached_baseline_ranges", None)
+        if cached:
+            return cached
+        try:
+            from pathlib import Path
+
+            path = Path(__file__).with_name("baseline_ranges.json")
+            with path.open("r", encoding="utf-8") as json_file:
+                self._cached_baseline_ranges = json.load(json_file)
+        except Exception:
+            self._cached_baseline_ranges = {}
+        return self._cached_baseline_ranges
+
+    def _detect_preflop_scenario(self, game_state: GameState) -> str:
+        """Detect preflop scenario for postflop range selection.
+
+        Args:
+            game_state: Current recognized game state.
+
+        Returns:
+            One of single_raised_pot, 3bet_pot, 4bet_pot, or limp_pot.
+        """
+        preflop_actions = getattr(game_state, "_preflop_actions", None)
+        if not preflop_actions:
+            pot = int(game_state.pot or 0)
+            blind_bb = int(self.config.get("game", {}).get("blind_bb", 100))
+            if blind_bb <= 0:
+                return "single_raised_pot"
+            pot_bb = pot / blind_bb
+            if pot_bb >= 40:
+                return "4bet_pot"
+            if pot_bb >= 15:
+                return "3bet_pot"
+            if pot_bb <= 4:
+                return "limp_pot"
+            return "single_raised_pot"
+
+        raise_count = 0
+        has_limp = False
+        for action in preflop_actions:
+            if isinstance(action, dict):
+                action_name = str(action.get("action", "")).upper()
+            else:
+                action_name = str(getattr(action, "action", "")).upper()
+
+            if action_name in {"RAISE", "3BET", "4BET", "ALL_IN"}:
+                raise_count += 1
+            elif action_name in {"CALL", "LIMP"}:
+                has_limp = True
+
+        if raise_count >= 3:
+            return "4bet_pot"
+        if raise_count >= 2:
+            return "3bet_pot"
+        if raise_count == 0 and has_limp:
+            return "limp_pot"
+        return "single_raised_pot"
 
     @staticmethod
     def _action_history_to_dicts(actions: list[ActionRecord]) -> list[JsonDict]:

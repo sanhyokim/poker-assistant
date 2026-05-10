@@ -551,6 +551,31 @@ class HandManager:
         self._prev_is_my_turn = game_state.hero.is_my_turn
         self._transition_phase("preflop", game_state)
         self._record_blinds(game_state)
+
+        # If board cards are already visible at hand start, advance phase
+        board_count = game_state.board_card_count
+        if board_count >= 5:
+            self._transition_phase("flop", game_state)
+            self._transition_phase("turn", game_state)
+            self._transition_phase("river", game_state)
+            logger.info(
+                "Phase fast-forwarded to river: board_count=%d at hand start",
+                board_count,
+            )
+        elif board_count >= 4:
+            self._transition_phase("flop", game_state)
+            self._transition_phase("turn", game_state)
+            logger.info(
+                "Phase fast-forwarded to turn: board_count=%d at hand start",
+                board_count,
+            )
+        elif board_count >= 3:
+            self._transition_phase("flop", game_state)
+            logger.info(
+                "Phase fast-forwarded to flop: board_count=%d at hand start",
+                board_count,
+            )
+
         logger.info(
             "New hand started: hand_id=%s, hero_cards=%s",
             self._hand_id,

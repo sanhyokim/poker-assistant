@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile main.py)",
+      "Bash(python -m py_compile core/game_loop.py)",
+      "Bash(python -m py_compile core/hand_manager.py)",
+      "Bash(python -m py_compile scripts/test_llm_connection.py)",
+      "Bash(python -m pytest tests/test_game_loop.py tests/test_hand_manager.py -q)",
+      "Bash(python -m pytest -q)"
+    ]
+  }
+}

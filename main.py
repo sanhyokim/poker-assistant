@@ -198,7 +198,7 @@ class GameLoopWorker(QObject):
 def main() -> None:
     """Run the Poker Assistant application."""
     config = load_config()
-    load_dotenv()
+    load_dotenv(override=True)
     setup_logging(config)
     logger.info("Poker Assistant starting")
 

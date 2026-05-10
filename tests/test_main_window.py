@@ -216,7 +216,7 @@ def test_clear_live_state_resets_summary(qapp: QApplication) -> None:
 
 
 def test_clear_live_state_resets_player_table(qapp: QApplication) -> None:
-    """clear_live_state clears player rows and removes Rejoin buttons."""
+    """clear_live_state clears player rows and hides Rejoin buttons."""
     _ = qapp
     window = MainWindow()
     game_state = create_empty_game_state()
@@ -228,14 +228,15 @@ def test_clear_live_state_resets_player_table(qapp: QApplication) -> None:
     game_state.players["3"].in_current_hand = False
     window.update_game_state(game_state)
 
-    assert isinstance(window._player_table.cellWidget(1, 8), QPushButton)
+    assert window._rejoin_buttons[3].isHidden() is False
 
     window.clear_live_state()
 
     for row, seat in enumerate(range(2, 7)):
         assert window._player_table.item(row, 0).text() == str(seat)
         assert window._player_table.item(row, 1).text() == "-"
-        assert window._player_table.cellWidget(row, 8) is None
+    for button in window._rejoin_buttons.values():
+        assert button.isHidden() is True
 
 
 def test_request_stop_calls_clear_live_state(qapp: QApplication) -> None:
@@ -255,8 +256,21 @@ def test_request_stop_calls_clear_live_state(qapp: QApplication) -> None:
     assert window._state_display.toPlainText() == ""
 
 
+def test_rejoin_buttons_exist_outside_table(qapp: QApplication) -> None:
+    """Rejoin buttons exist as separate widgets, not table cells."""
+    _ = qapp
+    window = MainWindow()
+
+    assert hasattr(window, "_rejoin_buttons")
+    assert len(window._rejoin_buttons) == 5
+    assert window._player_table.columnCount() == 8
+    for seat in range(2, 7):
+        assert window._rejoin_buttons[seat] is not None
+        assert window._rejoin_buttons[seat].isHidden() is True
+
+
 def test_rejoin_button_visible_for_out_seat(qapp: QApplication) -> None:
-    """OUT seated players in active phases show a Rejoin button."""
+    """OUT seated players in active phases show an external Rejoin button."""
     _ = qapp
     window = MainWindow()
     game_state = create_empty_game_state()
@@ -270,9 +284,10 @@ def test_rejoin_button_visible_for_out_seat(qapp: QApplication) -> None:
 
     window.update_game_state(game_state)
 
-    button = window._player_table.cellWidget(1, 8)
+    button = window._rejoin_buttons[3]
     assert isinstance(button, QPushButton)
-    assert button.text() == "↻"
+    assert button.isHidden() is False
+    assert button.text() == "Rejoin Seat 3"
 
 
 def test_rejoin_button_hidden_for_active_seat(qapp: QApplication) -> None:
@@ -289,7 +304,7 @@ def test_rejoin_button_hidden_for_active_seat(qapp: QApplication) -> None:
 
     window.update_game_state(game_state)
 
-    assert window._player_table.cellWidget(1, 8) is None
+    assert window._rejoin_buttons[3].isHidden() is True
 
 
 def test_rejoin_button_hidden_during_waiting(qapp: QApplication) -> None:
@@ -306,8 +321,8 @@ def test_rejoin_button_hidden_during_waiting(qapp: QApplication) -> None:
 
     window.update_game_state(game_state)
 
-    for row in range(5):
-        assert window._player_table.cellWidget(row, 8) is None
+    for button in window._rejoin_buttons.values():
+        assert button.isHidden() is True
 
 
 def test_rejoin_signal_emitted_on_click(qapp: QApplication) -> None:
@@ -325,11 +340,13 @@ def test_rejoin_signal_emitted_on_click(qapp: QApplication) -> None:
     game_state.players["3"].in_current_hand = False
     window.update_game_state(game_state)
 
-    button = window._player_table.cellWidget(1, 8)
+    button = window._rejoin_buttons[3]
     assert isinstance(button, QPushButton)
     button.click()
 
     callback.assert_called_once_with(3)
+    assert button.text() == "Requesting..."
+    assert button.isEnabled() is False
 
 
 def test_append_log_and_filter(qapp: QApplication) -> None:
