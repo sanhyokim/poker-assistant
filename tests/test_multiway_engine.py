@@ -575,3 +575,86 @@ def test_multiway_guard_only_triggers_on_fold_with_bet() -> None:
     # When no bet to face, FOLD should remain FOLD (fallthrough to heuristic)
     # Or it could get converted by action constraints later
     assert result.get("guard_applied") is not True
+
+
+def test_cumulative_actions_passed_to_llm_three_actions() -> None:
+    """BET/CALL/RAISE cumulative actions reach the LLM via current_street_actions."""
+    engine = make_engine()
+    engine.calculate_equity = MagicMock(return_value=0.5)  # type: ignore[method-assign]
+    engine.llm.decide_multiway.return_value = {
+        "action": "call",
+        "size": 1600,
+        "confidence": "medium",
+        "reasoning": "",
+        "raw_response": "",
+    }
+
+    state = make_state()
+    state.current_street_actions = [
+        ActionRecord(seat=4, action="BET", amount=300, confidence="high"),
+        ActionRecord(seat=3, action="CALL", amount=300, confidence="high"),
+        ActionRecord(seat=2, action="RAISE", amount=1600, confidence="high"),
+    ]
+    state.players["5"] = PlayerState(
+        name="p5", stack=4000, bet=1600, is_seated=True, in_current_hand=True,
+    )
+
+    engine.evaluate(state, [])
+
+    call_kwargs = engine.llm.decide_multiway.call_args.kwargs
+    actions = call_kwargs.get("current_street_actions")
+    assert actions is not None
+    actions_list = list(actions)
+    assert len(actions_list) == 3
+
+    action_summary = [(a.seat, a.action, a.amount) for a in actions_list]
+    assert (4, "BET", 300) in action_summary
+    assert (3, "CALL", 300) in action_summary
+    assert (2, "RAISE", 1600) in action_summary
+
+
+def test_llm_uses_current_street_actions_not_actions_since_last_frame() -> None:
+    """LLM receives all current_street_actions, not just the latest frame actions."""
+    engine = make_engine()
+    engine.calculate_equity = MagicMock(return_value=0.5)  # type: ignore[method-assign]
+    engine.llm.decide_multiway.return_value = {
+        "action": "call",
+        "size": 1600,
+        "confidence": "medium",
+        "reasoning": "",
+        "raw_response": "",
+    }
+
+    state = make_state()
+    # actions_since_last_frame has only 1 action (latest frame)
+    state.actions_since_last_frame = [
+        ActionRecord(seat=2, action="RAISE", amount=1600, confidence="high"),
+    ]
+    # current_street_actions has all 3 cumulative actions
+    state.current_street_actions = [
+        ActionRecord(seat=4, action="BET", amount=300, confidence="high"),
+        ActionRecord(seat=3, action="CALL", amount=300, confidence="high"),
+        ActionRecord(seat=2, action="RAISE", amount=1600, confidence="high"),
+    ]
+    state.players["5"] = PlayerState(
+        name="p5", stack=4000, bet=1600, is_seated=True, in_current_hand=True,
+    )
+
+    engine.evaluate(state, [])
+
+    call_kwargs = engine.llm.decide_multiway.call_args.kwargs
+    actions = call_kwargs.get("current_street_actions")
+    assert actions is not None
+    actions_list = list(actions)
+
+    # Should have all 3 actions, not just the 1 from actions_since_last_frame
+    assert len(actions_list) == 3, (
+        f"Expected 3 cumulative actions, got {len(actions_list)}. "
+        "LLM should receive current_street_actions (accumulated), "
+        "not just actions_since_last_frame (per-frame)."
+    )
+
+    action_summary = [(a.seat, a.action, a.amount) for a in actions_list]
+    assert (4, "BET", 300) in action_summary
+    assert (3, "CALL", 300) in action_summary
+    assert (2, "RAISE", 1600) in action_summary

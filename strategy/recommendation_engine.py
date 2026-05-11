@@ -400,13 +400,14 @@ class RecommendationEngine:
         logger.info(
             "Multiway context: hero=%s, board=%s, pot=%d, phase=%s, "
             "hero_bet=%d, active_player_count=%d, "
-            "full_street_actions=%s",
+            "full_street_actions_count=%d, full_street_actions=%s",
             game_state.hero.cards,
             game_state.board,
             game_state.pot,
             game_state.phase,
             game_state.hero.bet,
             game_state.active_player_count,
+            len(full_street_actions),
             [
                 {
                     "seat": a.seat,

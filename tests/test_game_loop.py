@@ -2160,3 +2160,60 @@ def test_cards_invisible_confirmed_stays_in_hand(
     loop._apply_seat_card_visibility(state, {3: False})
 
     assert state.players["3"].in_current_hand is True
+
+
+def test_current_street_actions_synced_from_hand_manager(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """current_street_actions is synced from HandManager to GameState."""
+    from core.hand_manager import StreetActions
+
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    hm = loop._hand_manager
+
+    # Set up flop street actions in HandManager
+    flop_actions = StreetActions(street="flop")
+    flop_actions.actions = [
+        ActionRecord(seat=4, action="BET", amount=300, confidence="high"),
+        ActionRecord(seat=3, action="CALL", amount=300, confidence="high"),
+        ActionRecord(seat=2, action="RAISE", amount=1600, confidence="high"),
+    ]
+    hm._street_actions["flop"] = flop_actions
+    hm._phase = "flop"
+
+    state = create_empty_game_state()
+    state.table_visible = True
+    state.hero.in_current_hand = True
+    state.hero.cards = ["Ah", "Kd"]
+
+    loop._sync_game_state_with_hand_manager(state)
+
+    assert len(state.current_street_actions) == 3
+    assert state.current_street_actions[0].seat == 4
+    assert state.current_street_actions[0].action == "BET"
+    assert state.current_street_actions[0].amount == 300
+    assert state.current_street_actions[1].seat == 3
+    assert state.current_street_actions[1].action == "CALL"
+    assert state.current_street_actions[1].amount == 300
+    assert state.current_street_actions[2].seat == 2
+    assert state.current_street_actions[2].action == "RAISE"
+    assert state.current_street_actions[2].amount == 1600
+
+
+def test_current_street_actions_empty_when_no_street(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """current_street_actions is empty when HandManager has no current street."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    hm = loop._hand_manager
+    hm._phase = "waiting"
+    hm._street_actions.clear()
+
+    state = create_empty_game_state()
+    state.table_visible = True
+
+    loop._sync_game_state_with_hand_manager(state)
+
+    assert state.current_street_actions == []

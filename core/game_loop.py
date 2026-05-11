@@ -1335,6 +1335,22 @@ class GameLoop:
         current_street = self._hand_manager.get_current_street_actions()
         if current_street is not None:
             game_state.current_street_actions = list(current_street.actions)
+        else:
+            game_state.current_street_actions = []
+        logger.debug(
+            "Synced current_street_actions: phase=%s count=%d actions=%s",
+            game_state.phase,
+            len(game_state.current_street_actions),
+            [
+                {
+                    "seat": action.seat,
+                    "action": action.action,
+                    "amount": action.amount,
+                    "confidence": action.confidence,
+                }
+                for action in game_state.current_street_actions
+            ],
+        )
 
         active_count = 1 if hero_in_hand else 0
         active_count += sum(1 for seat in range(2, 7) if seat in players_in_hand)
