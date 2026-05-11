@@ -55,6 +55,7 @@ class HudOverlay(QWidget):
         self._font_size = int(hud_config.get("font_size", 14))
         self._opacity = float(hud_config.get("opacity", 0.85))
         self._drag_position: QPoint | None = None
+        self._closing: bool = False
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -86,6 +87,14 @@ class HudOverlay(QWidget):
         self._status_label.show()
         self.show()
 
+    def mark_closing(self) -> None:
+        """Flag the HUD as closing so pending updates are ignored."""
+        self._closing = True
+
+    def mark_open(self) -> None:
+        """Clear the closing flag when starting a new session."""
+        self._closing = False
+
     def show_waiting(self) -> None:
         """Show the waiting-for-hand status message."""
         self._hide_recommendation_labels()
@@ -96,6 +105,8 @@ class HudOverlay(QWidget):
     @pyqtSlot(object)
     def _on_update(self, recommendation: Recommendation | None) -> None:
         """Apply a recommendation update on the UI thread."""
+        if self._closing:
+            return
         if recommendation is None:
             self.show_waiting()
             return

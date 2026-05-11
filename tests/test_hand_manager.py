@@ -2585,3 +2585,114 @@ def test_phase_fast_forward_river(hand_manager_env: HandManager) -> None:
 
     hm.process_frame(gs)
     assert hm.phase == "river"
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix36: Street action recording tests
+# ---------------------------------------------------------------------------
+
+
+class TestStreetActionRecording:
+    """Verify actions are recorded to the correct street."""
+
+    def test_flop_bet_recorded_to_flop_street(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """A BET action during flop is recorded in flop.actions."""
+        manager._phase = "flop"
+        manager._hand_id = 1
+        manager._street_actions["flop"] = StreetActions(street="flop")
+        manager._players_in_hand = {"1": True, "2": True, "3": True, "4": True}
+
+        manager._add_actions([
+            ActionRecord(seat=4, action="BET", amount=300, confidence="high"),
+        ])
+
+        flop = manager.get_current_street_actions()
+        assert flop is not None
+        assert flop.street == "flop"
+        assert len(flop.actions) == 1
+        assert flop.actions[0].seat == 4
+        assert flop.actions[0].action == "BET"
+        assert flop.actions[0].amount == 300
+
+    def test_turn_actions_accumulated(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Two separate frames of actions on turn both end up in turn.actions."""
+        manager._phase = "turn"
+        manager._hand_id = 1
+        manager._street_actions["turn"] = StreetActions(street="turn")
+        manager._players_in_hand = {"1": True, "3": True, "5": True}
+
+        # Frame 1: Seat3 BET 1600
+        manager._add_actions([
+            ActionRecord(seat=3, action="BET", amount=1600, confidence="high"),
+        ])
+
+        # Frame 2: Seat5 CALL 1600
+        manager._add_actions([
+            ActionRecord(seat=5, action="CALL", amount=1600, confidence="high"),
+        ])
+
+        turn = manager.get_current_street_actions()
+        assert turn is not None
+        assert turn.street == "turn"
+        assert len(turn.actions) == 2
+        assert turn.actions[0].action == "BET"
+        assert turn.actions[1].action == "CALL"
+
+    def test_new_street_frame_action_goes_to_new_street(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Action in the same frame as NEW_STREET is recorded to the new street."""
+        manager._phase = "flop"
+        manager._hand_id = 1
+        manager._street_actions["preflop"] = StreetActions(street="preflop")
+        manager._street_actions["flop"] = StreetActions(street="flop")
+        manager._players_in_hand = {"1": True, "2": True, "3": True}
+
+        gs = make_state(hero_cards=["Ah", "Kd"], board=["Qs", "Jh", "2h", "Tc"])
+        gs.phase = "flop"
+        gs.game_event = "NEW_STREET"
+        gs.board_card_count = 4
+        gs.actions_since_last_frame = [
+            ActionRecord(seat=3, action="BET", amount=1600, confidence="high"),
+        ]
+
+        manager.process_frame(gs)
+
+        assert manager.phase == "turn"
+        turn = manager._street_actions.get("turn")
+        assert turn is not None, "turn StreetActions not created"
+        assert len(turn.actions) == 1
+        assert turn.actions[0].seat == 3
+        assert turn.actions[0].action == "BET"
+
+        # flop should NOT have this action
+        flop = manager._street_actions.get("flop")
+        assert flop is not None
+        assert len(flop.actions) == 0
+
+    def test_current_street_actions_present_after_sync(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """After recording actions, get_current_street_actions returns them."""
+        manager._phase = "turn"
+        manager._hand_id = 1
+        manager._street_actions["turn"] = StreetActions(street="turn")
+        manager._players_in_hand = {"1": True, "3": True, "5": True}
+
+        manager._add_actions([
+            ActionRecord(seat=3, action="BET", amount=1600, confidence="high"),
+            ActionRecord(seat=5, action="CALL", amount=1600, confidence="high"),
+        ])
+
+        street = manager.get_current_street_actions()
+        assert street is not None
+        assert street.street == "turn"
+        assert len(street.actions) == 2

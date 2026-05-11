@@ -13,7 +13,9 @@
       "Bash(python -m py_compile strategy/solver_request_builder.py)",
       "Bash(python -m pytest tests/test_action_estimator.py tests/test_recommendation_engine.py tests/test_solver_request_builder.py tests/test_game_loop.py -q)",
       "Bash(python -m pytest tests/test_recommendation_engine.py -q)",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(Get-Content tests/test_hand_manager.py)",
+      "Bash(Select-Object -Last 15)"
     ]
   }
 }

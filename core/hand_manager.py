@@ -700,6 +700,7 @@ class HandManager:
         """Add non-duplicate actions to hand and street histories."""
         accepted_actions: list[ActionRecord] = []
         street_actions = self.get_current_street_actions()
+        street = self._get_current_street_name() if street_actions is not None else None
 
         for action in actions:
             if self._is_duplicate_action(action, self._last_frame_actions):
@@ -710,7 +711,16 @@ class HandManager:
             if street_actions is not None:
                 street_actions.actions.append(action)
             self._update_players_in_hand_from_action(action)
-            logger.debug("Action added: %s", action)
+            logger.info(
+                "Street action recorded: street=%s seat=%s action=%s "
+                "amount=%s confidence=%s count=%d",
+                street,
+                action.seat,
+                action.action,
+                action.amount,
+                action.confidence,
+                len(street_actions.actions) if street_actions is not None else 0,
+            )
 
         self._last_frame_actions = list(actions)
 

@@ -722,3 +722,124 @@ def test_refresh_statistics_loads_opponents_from_db(
         assert window._stats_table.item(0, 0).text() == "villain"
         assert window._stats_count_label.text() == "1 players"
         window.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix37: END status + Start/Stop stability tests
+# ---------------------------------------------------------------------------
+
+
+class TestEndStatusDisplay:
+    """Tests for END status during hand_end phase."""
+
+    def test_player_status_returns_end_during_hand_end(
+        self,
+        qapp: QApplication,
+    ) -> None:
+        """_player_status returns END when phase is hand_end."""
+        _ = qapp
+        window = MainWindow()
+
+        # A player who was in hand, now hand_end
+        result = window._player_status(
+            is_seated=True, cards_visible=True, in_current_hand=False,
+            phase="hand_end",
+        )
+        assert result == "END"
+
+        window.close()
+
+    def test_player_status_normal_for_active_phases(
+        self,
+        qapp: QApplication,
+    ) -> None:
+        """_player_status returns normal status when phase is not hand_end."""
+        _ = qapp
+        window = MainWindow()
+
+        # ACTIVE player during river
+        result = window._player_status(
+            is_seated=True, cards_visible=True, in_current_hand=True,
+            phase="river",
+        )
+        assert result == "ACTIVE"
+
+        # OUT player during flop
+        result = window._player_status(
+            is_seated=True, cards_visible=True, in_current_hand=False,
+            phase="flop",
+        )
+        assert result == "OUT"
+
+        window.close()
+
+    def test_update_player_table_shows_end_for_hand_end_phase(
+        self,
+        qapp: QApplication,
+    ) -> None:
+        """Player table shows END status when phase is hand_end."""
+        _ = qapp
+        window = MainWindow()
+        state = create_empty_game_state()
+        state.phase = "hand_end"
+        state.table_visible = True
+        state.players["2"].is_seated = True
+        state.players["2"].in_current_hand = True
+        state.players["3"].is_seated = True
+        state.players["3"].in_current_hand = False
+
+        window._update_player_table(state)
+
+        # Seat 2 status column (column 7) should show END
+        status_item = window._player_table.item(0, 7)
+        assert status_item.text() == "END"
+
+        # Seat 3 status column should show END regardless
+        status_item_3 = window._player_table.item(1, 7)
+        assert status_item_3.text() == "END"
+
+        window.close()
+
+
+class TestStartStopGuards:
+    """Tests for double-click prevention on Start/Stop."""
+
+    def test_start_already_running_does_not_restart(
+        self,
+        qapp: QApplication,
+    ) -> None:
+        """START when already running does nothing."""
+        _ = qapp
+        window = MainWindow()
+        window._is_running = True
+
+        start_signal = MagicMock()
+        window.start_requested.connect(start_signal)
+
+        # Clicking START while running should trigger STOP, not START
+        start_signal.assert_not_called()
+        window._on_start_stop_clicked()
+        # _is_running is True → should emit stop_requested, not start_requested
+        start_signal.assert_not_called()
+
+        window.close()
+
+    def test_stop_when_already_stopped_does_not_crash(
+        self,
+        qapp: QApplication,
+    ) -> None:
+        """STOP when already stopped does not crash or double-stop."""
+        _ = qapp
+        window = MainWindow()
+        window._is_running = False
+
+        stop_signal = MagicMock()
+        window.stop_requested.connect(stop_signal)
+
+        # First stop
+        window._on_start_stop_clicked()
+        # _is_running is False → should try to START, calling _request_start()
+        # which emits start_requested → stop_signal should not be called
+        stop_signal.assert_not_called()
+
+        window.close()

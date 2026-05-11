@@ -596,7 +596,9 @@ class MainWindow(QMainWindow):
                 is_seated = bool(player is not None and player.is_seated)
                 cards_visible = bool(player is not None and player.cards_visible)
                 in_hand = bool(player is not None and player.in_current_hand)
-                status = self._player_status(is_seated, cards_visible, in_hand)
+                status = self._player_status(
+                    is_seated, cards_visible, in_hand, phase=game_state.phase,
+                )
             status_foreground, status_background = self._status_colors(status)
 
             values = [
@@ -720,8 +722,11 @@ class MainWindow(QMainWindow):
         is_seated: bool,
         cards_visible: bool,
         in_current_hand: bool,
+        phase: str = "",
     ) -> str:
         """Return compact player status text for the operation table."""
+        if phase == "hand_end":
+            return "END"
         if in_current_hand:
             return "ACTIVE"
         if not is_seated:
@@ -736,6 +741,7 @@ class MainWindow(QMainWindow):
             "ACTIVE": ("#ffffff", "#1f6f3a"),
             "WAITING": ("#1e1e1e", "#b59f3b"),
             "OUT": ("#d4d4d4", "#4d4d4d"),
+            "END": ("#ffffff", "#5a3a6e"),
             "EMPTY": ("#888888", "#2d2d30"),
             "TABLE CLOSED": ("#ff9999", "#3a1f1f"),
         }

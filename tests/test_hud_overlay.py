@@ -197,3 +197,29 @@ def test_hud_overlay_drag_state(qapp: QApplication) -> None:
 
     assert overlay._drag_position is None
     assert event.accepted is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix37: HUD closing guard test
+# ---------------------------------------------------------------------------
+
+
+def test_closing_hud_ignores_updates(qapp: QApplication) -> None:
+    """HUD that is closing ignores incoming recommendation updates."""
+    _ = qapp
+    overlay = HudOverlay()
+
+    # Simulate closing
+    overlay.mark_closing()
+    assert overlay._closing is True
+
+    # Sending an update while closing should not crash
+    rec = Recommendation(action="CALL", amount=100, reason="test")
+    overlay._on_update(rec)
+
+    # After marking open, updates should work again
+    overlay.mark_open()
+    assert overlay._closing is False
+    overlay._on_update(rec)
+
+    overlay.close()

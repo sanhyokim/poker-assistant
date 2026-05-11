@@ -164,6 +164,7 @@ class GameLoopWorker(QObject):
                 game_state = self._game_loop.process_one_frame()
                 if game_state is not None:
                     self._game_loop._hand_manager.process_frame(game_state)
+                    self._game_loop._sync_game_state_with_hand_manager(game_state)
                     saved_hand_id = self._game_loop._hand_manager.last_saved_hand_id
                     if (
                         saved_hand_id is not None
@@ -235,11 +236,16 @@ def main() -> None:
 
     worker: GameLoopWorker | None = None
     thread: QThread | None = None
+    stopping: bool = False
 
     def on_start() -> None:
         """Start the background game loop worker."""
-        nonlocal worker, thread
+        nonlocal worker, thread, stopping
         if thread is not None and thread.isRunning():
+            logger.info("Start ignored: game loop already running")
+            return
+        if stopping:
+            logger.info("Start ignored: stop still in progress")
             return
 
         worker = GameLoopWorker(game_loop)
@@ -256,6 +262,7 @@ def main() -> None:
         worker.stopped.connect(main_window.mark_stopped)
         thread.finished.connect(worker.deleteLater)
 
+        hud.mark_open()
         hud.show()
         hud.show_waiting()
         thread.start()
@@ -263,7 +270,12 @@ def main() -> None:
 
     def on_stop() -> None:
         """Stop the background game loop worker and release resources."""
-        nonlocal worker, thread
+        nonlocal worker, thread, stopping
+        if stopping:
+            logger.info("Stop ignored: already stopping")
+            return
+
+        stopping = True
         if worker is not None:
             worker.request_stop()
         if thread is not None:
@@ -273,7 +285,9 @@ def main() -> None:
             worker = None
         game_loop.stop()
         main_window.mark_stopped()
+        hud.mark_closing()
         hud.hide()
+        stopping = False
         logger.info("Game loop stopped by user")
 
     def on_reload() -> None:
