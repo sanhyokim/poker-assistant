@@ -1332,6 +1332,10 @@ class GameLoop:
             game_state.hero.in_current_hand = False
             return
 
+        current_street = self._hand_manager.get_current_street_actions()
+        if current_street is not None:
+            game_state.current_street_actions = list(current_street.actions)
+
         active_count = 1 if hero_in_hand else 0
         active_count += sum(1 for seat in range(2, 7) if seat in players_in_hand)
         if active_count != game_state.active_player_count:

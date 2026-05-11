@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock
 
-from core.game_state import GameState, HeroState, PlayerState
+from core.game_state import ActionRecord, GameState, HeroState, PlayerState
 from strategy.llm_pipeline import LLMPipeline
 from strategy.multiway_engine import MultiwayEngine
 
@@ -353,3 +353,225 @@ def test_equity_calculation_time() -> None:
 
     assert 0.0 <= equity <= 1.0
     assert elapsed_ms < 100
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix30: Multiway stability tests
+# ---------------------------------------------------------------------------
+
+
+def make_hand9_state() -> GameState:
+    """Create a Hand 9 reproduction: Kh Ks on 9d 5d Jh flop, 3-way.
+
+    Seat5 BET 498, Seat2 CALL 498. Hero BTN with Kh Ks facing 498 call.
+    Pot = 1992.
+    """
+    players = GameState.create_default_players()
+    players["2"] = PlayerState(
+        name="Seat2",
+        stack=5000,
+        bet=498,
+        is_seated=True,
+        in_current_hand=True,
+        cards_visible=True,
+    )
+    players["3"] = PlayerState(
+        name="Seat3",
+        stack=0,
+        bet=0,
+        is_seated=False,
+        in_current_hand=False,
+    )
+    players["4"] = PlayerState(
+        name="Seat4",
+        stack=0,
+        bet=0,
+        is_seated=False,
+        in_current_hand=False,
+    )
+    players["5"] = PlayerState(
+        name="Seat5",
+        stack=5000,
+        bet=498,
+        is_seated=True,
+        in_current_hand=True,
+        cards_visible=True,
+    )
+    players["6"] = PlayerState(
+        name="Seat6",
+        stack=0,
+        bet=0,
+        is_seated=False,
+        in_current_hand=False,
+    )
+
+    full_street_actions = [
+        ActionRecord(seat=5, action="BET", amount=498, confidence="high"),
+        ActionRecord(seat=2, action="CALL", amount=498, confidence="high"),
+    ]
+
+    return GameState(
+        phase="flop",
+        hero=HeroState(
+            seat=1,
+            position="BTN",
+            cards=["Kh", "Ks"],
+            stack=10000,
+            bet=0,
+            is_my_turn=True,
+        ),
+        board=["9d", "5d", "Jh"],
+        board_card_count=3,
+        pot=1992,
+        players=players,
+        dealer_seat=1,
+        active_player_count=3,
+        current_street_actions=full_street_actions,
+    )
+
+
+def test_hand9_fold_guard_overrides_llm_fold_to_call() -> None:
+    """Hand 9: LLM returns FOLD, but equity 47.35% vs required 20% triggers guard."""
+    state = make_hand9_state()
+    engine = make_engine()
+    # Mock equity to known Hand 9 value
+    engine.calculate_equity = MagicMock(return_value=0.4735)  # type: ignore[method-assign]
+    engine.llm.decide_multiway.return_value = {
+        "action": "fold",
+        "size": None,
+        "confidence": "medium",
+        "reasoning": "Multiway conservative fold",
+        "raw_response": '{"action": "fold"}',
+    }
+
+    result = engine.evaluate(state, [{"total_hands": 50, "vpip": 30}, {"total_hands": 50, "vpip": 25}])
+
+    normalized_action = result["action"].lower()
+    assert normalized_action == "call", (
+        f"Expected CALL, got {result['action']}. guard_applied={result.get('guard_applied')}"
+    )
+    assert result.get("guard_applied") is True
+    # Size should be call_amount = 498
+    size = int(result.get("size") or 0)
+    assert size == 498, f"Expected call size 498, got {size}"
+
+
+def test_fold_guard_does_not_override_when_equity_insufficient() -> None:
+    """When equity < required_equity + margin, LLM FOLD is preserved."""
+    state = make_hand9_state()
+    engine = make_engine()
+    engine.calculate_equity = MagicMock(return_value=0.30)  # type: ignore[method-assign]
+    engine.llm.decide_multiway.return_value = {
+        "action": "fold",
+        "size": None,
+        "confidence": "medium",
+        "reasoning": "Insufficient equity",
+        "raw_response": '{"action": "fold"}',
+    }
+
+    result = engine.evaluate(state, [{"total_hands": 50, "vpip": 30}])
+
+    assert result["action"].lower() == "fold"
+    assert result.get("guard_applied") is not True
+
+
+def test_llm_prompt_includes_pot_odds_fields() -> None:
+    """LLM prompt must include Call Amount, Required Equity, Facing Bet, etc."""
+    state = make_hand9_state()
+    engine = make_engine()
+    engine.calculate_equity = MagicMock(return_value=0.4735)  # type: ignore[method-assign]
+    engine.llm.decide_multiway.return_value = {
+        "action": "call",
+        "size": 498,
+        "confidence": "medium",
+        "reasoning": "Good pot odds",
+        "raw_response": "",
+    }
+
+    engine.evaluate(state, [{"total_hands": 50, "vpip": 30}])
+
+    call_kwargs = engine.llm.decide_multiway.call_args.kwargs
+    assert call_kwargs["call_amount"] == 498
+    assert call_kwargs["facing_bet"] == 498
+    assert call_kwargs["pot_after_call"] == 2490  # 1992 + 498
+    assert abs(call_kwargs["required_equity"] - 0.20) < 0.01  # 498/2490 ≈ 0.20
+
+
+def test_full_street_action_history_passed_to_llm() -> None:
+    """BET and CALL from separate frames must both reach Multiway LLM."""
+    state = make_hand9_state()
+    engine = make_engine()
+    engine.calculate_equity = MagicMock(return_value=0.5)  # type: ignore[method-assign]
+    engine.llm.decide_multiway.return_value = {
+        "action": "call",
+        "size": 498,
+        "confidence": "medium",
+        "reasoning": "",
+        "raw_response": "",
+    }
+
+    engine.evaluate(state, [])
+
+    call_kwargs = engine.llm.decide_multiway.call_args.kwargs
+    actions = call_kwargs.get("current_street_actions")
+    assert actions is not None, "current_street_actions must not be None"
+    actions_list = list(actions)
+    assert len(actions_list) == 2
+    # Seat5 BET 498 and Seat2 CALL 498 both present
+    action_summary = [
+        (a.seat, a.action, a.amount) for a in actions_list
+    ]
+    assert (5, "BET", 498) in action_summary
+    assert (2, "CALL", 498) in action_summary
+
+
+def test_multiway_guard_only_triggers_on_fold_with_bet() -> None:
+    """FOLD guard only activates when LLM action is fold AND call_amount > 0.
+
+    Existing normal cases (CHECK, CALL, BET) should not be affected.
+    """
+    state = make_hand9_state()
+    engine = make_engine()
+    engine.calculate_equity = MagicMock(return_value=0.47)  # type: ignore[method-assign]
+
+    # Case 1: LLM returns CALL — guard must not trigger
+    engine.llm.decide_multiway.return_value = {
+        "action": "call",
+        "size": 498,
+        "confidence": "medium",
+        "reasoning": "",
+        "raw_response": "",
+    }
+    result = engine.evaluate(state, [])
+    assert result["action"].lower() == "call"
+    assert result.get("guard_applied") is not True
+
+    # Case 2: LLM returns BET — guard must not trigger
+    engine.llm.decide_multiway.return_value = {
+        "action": "bet",
+        "size": "60%",
+        "confidence": "medium",
+        "reasoning": "",
+        "raw_response": "",
+    }
+    result = engine.evaluate(state, [])
+    assert result["action"].lower() == "bet"
+    assert result.get("guard_applied") is not True
+
+    # Case 3: call_amount == 0 scenario — guard must not trigger even on FOLD
+    no_bet_state = make_hand9_state()
+    # Reset bets so call_amount = 0
+    no_bet_state.players["2"].bet = 0
+    no_bet_state.players["5"].bet = 0
+    no_bet_state.current_street_actions = []
+    engine.llm.decide_multiway.return_value = {
+        "action": "fold",
+        "size": None,
+        "confidence": "medium",
+        "reasoning": "",
+        "raw_response": "",
+    }
+    result = engine.evaluate(no_bet_state, [])
+    # When no bet to face, FOLD should remain FOLD (fallthrough to heuristic)
+    # Or it could get converted by action constraints later
+    assert result.get("guard_applied") is not True

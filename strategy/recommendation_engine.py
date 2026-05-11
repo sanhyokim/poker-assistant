@@ -391,17 +391,47 @@ class RecommendationEngine:
         """Generate a postflop multiway recommendation."""
         started_at = time.perf_counter()
         stats_list = self._stats_list(opponent_stats)
+        full_street_actions = (
+            list(game_state.current_street_actions)
+            if hasattr(game_state, "current_street_actions")
+            and game_state.current_street_actions
+            else []
+        )
         logger.info(
-            "Multiway context: hero=%s, board=%s, pot=%d, phase=%s",
+            "Multiway context: hero=%s, board=%s, pot=%d, phase=%s, "
+            "hero_bet=%d, active_player_count=%d, "
+            "full_street_actions=%s",
             game_state.hero.cards,
             game_state.board,
             game_state.pot,
             game_state.phase,
+            game_state.hero.bet,
+            game_state.active_player_count,
+            [
+                {
+                    "seat": a.seat,
+                    "action": a.action,
+                    "amount": a.amount,
+                }
+                for a in full_street_actions
+            ],
         )
         result = self.multiway_engine.evaluate(game_state, stats_list)
         action = self._normalize_action(str(result.get("action", "check")))
         raw_amount = self._parse_amount(result.get("size"), 0)
         amount = self._ensure_multiway_amount(raw_amount, action, game_state)
+        guard_applied = bool(result.get("guard_applied", False))
+
+        logger.info(
+            "Multiway result: action=%s, amount=%d, equity=%.4f, "
+            "guard_applied=%s, source=%s, reasoning=%s",
+            action,
+            amount,
+            float(result.get("equity", 0.0)),
+            guard_applied,
+            result.get("source", "unknown"),
+            str(result.get("reasoning", ""))[:200],
+        )
 
         return Recommendation(
             action=action,

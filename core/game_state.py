@@ -105,6 +105,7 @@ class GameState:
         active_player_count: Number of players in the current hand.
         buttons: Button state when hero can act, otherwise None.
         actions_since_last_frame: Actions detected since the previous frame.
+        current_street_actions: Cumulative actions on the current street.
         hero_action: Hero action after execution, otherwise None.
         game_event: Game lifecycle event, or None.
     """
@@ -126,6 +127,7 @@ class GameState:
 
     buttons: ButtonState | None = None
     actions_since_last_frame: list[ActionRecord] = field(default_factory=list)
+    current_street_actions: list[ActionRecord] = field(default_factory=list)
     hero_action: ActionRecord | None = None
     game_event: str | None = None
 

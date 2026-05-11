@@ -11,7 +11,7 @@ import random
 from itertools import combinations
 from typing import Any
 
-from core.game_state import GameState
+from core.game_state import ActionRecord, GameState
 from strategy.llm_pipeline import LLMPipeline
 
 
@@ -52,6 +52,10 @@ class MultiwayEngine:
         except Exception:
             return {}
 
+    # 定数: FOLDガードのmargin値
+    FOLD_GUARD_EQUITY_MARGIN = 0.10
+    FOLD_GUARD_MIN_EQUITY = 0.35
+
     def evaluate(
         self,
         game_state: GameState,
@@ -78,27 +82,184 @@ class MultiwayEngine:
         )
         opponent_profiles = self._format_opponent_profiles(opponent_stats_list)
 
+        # 数理メトリクス計算
+        metrics = self._compute_metrics(game_state)
+        full_street_actions = (
+            list(game_state.current_street_actions)
+            if hasattr(game_state, "current_street_actions")
+            and game_state.current_street_actions
+            else None
+        )
+
+        self.logger.info(
+            "Multiway metrics: hero_cards=%s, board=%s, phase=%s, "
+            "pot=%d, hero_stack=%d, hero_current_bet=%d, "
+            "facing_bet=%d, call_amount=%d, pot_after_call=%d, "
+            "required_equity=%.4f, hero_equity=%.4f, "
+            "num_opponents=%d, active_player_count=%d, "
+            "opponent_range=%s, full_street_action_history=%s",
+            hero_cards,
+            board,
+            game_state.phase,
+            game_state.pot,
+            game_state.hero.stack or 0,
+            metrics["hero_current_bet"],
+            metrics["facing_bet"],
+            metrics["call_amount"],
+            metrics["pot_after_call"],
+            metrics["required_equity"],
+            equity,
+            num_opponents,
+            game_state.active_player_count,
+            opponent_range,
+            self._format_actions_summary(full_street_actions),
+        )
+
+        llm_result: JsonDict = {}
+        llm_error: str | None = None
         try:
             llm_result = self.llm.decide_multiway(
                 game_state=game_state,
                 hero_equity=equity,
                 opponent_profiles=opponent_profiles,
+                call_amount=metrics["call_amount"],
+                facing_bet=metrics["facing_bet"],
+                pot_after_call=metrics["pot_after_call"],
+                required_equity=metrics["required_equity"],
+                current_street_actions=full_street_actions,
             )
         except Exception as error:
             self.logger.warning("Multiway LLM decision failed: %s", error)
-            llm_result = {}
+            llm_error = str(error)
+
+        guard_applied = False
+        original_action: str | None = None
 
         if isinstance(llm_result, dict) and llm_result.get("action"):
-            return {
-                "action": llm_result["action"],
-                "size": llm_result.get("size"),
-                "confidence": "medium",
-                "reasoning": llm_result.get("reasoning", ""),
-                "equity": equity,
-                "source": "multiway_engine",
-            }
+            original_action = str(llm_result["action"]).lower()
+            parsed_action = original_action
+            parsed_size = llm_result.get("size")
+            parsed_reasoning = str(llm_result.get("reasoning", ""))
+        else:
+            original_action = None
+            parsed_action = ""
+            parsed_size = None
+            parsed_reasoning = ""
 
-        return self._heuristic_fallback(equity)
+        # FOLDガード: equityが十分ある場合はLLMのFOLDをCALLへ補正
+        if (
+            parsed_action == "fold"
+            and metrics["call_amount"] > 0
+            and equity >= max(
+                metrics["required_equity"] + self.FOLD_GUARD_EQUITY_MARGIN,
+                self.FOLD_GUARD_MIN_EQUITY,
+            )
+        ):
+            self.logger.info(
+                "Multiway FOLD overridden by pot-odds guard: "
+                "equity=%.3f required=%.3f call_amount=%d "
+                "original_action=fold final_action=call",
+                equity,
+                metrics["required_equity"],
+                metrics["call_amount"],
+            )
+            parsed_action = "call"
+            parsed_size = metrics["call_amount"]
+            guard_applied = True
+            parsed_reasoning = (
+                f"{parsed_reasoning} "
+                "[LLM FOLD overridden by pot-odds guard]"
+            ).strip()
+
+        if parsed_action:
+            final_action = parsed_action
+            final_amount = parsed_size
+            result_source = "multiway_engine"
+        else:
+            fallback = self._heuristic_fallback(equity)
+            final_action = fallback["action"]
+            final_amount = fallback["size"]
+            parsed_reasoning = fallback.get("reasoning", "")
+            result_source = fallback.get("source", "multiway_heuristic_fallback")
+
+        self.logger.info(
+            "Multiway LLM result: parsed_action=%s, parsed_size=%s, "
+            "parsed_reasoning=%s, final_action=%s, final_amount=%s, "
+            "guard_applied=%s, llm_error=%s, raw_response_head=%s",
+            original_action,
+            parsed_size,
+            parsed_reasoning[:200],
+            final_action,
+            final_amount,
+            guard_applied,
+            llm_error is not None,
+            (self._safe_head(llm_result.get("raw_response", ""), 1000)
+             if isinstance(llm_result, dict) else ""),
+        )
+
+        result: JsonDict = {
+            "action": final_action,
+            "size": final_amount,
+            "confidence": "medium",
+            "reasoning": parsed_reasoning,
+            "equity": equity,
+            "source": result_source,
+        }
+        if guard_applied:
+            result["guard_applied"] = True
+        return result
+
+    @staticmethod
+    def _compute_metrics(game_state: GameState) -> JsonDict:
+        """Compute mathematical metrics for multiway decision-making.
+
+        Returns dictionary with: hero_current_bet, facing_bet, call_amount,
+        pot_after_call, required_equity, pot_odds.
+        """
+        hero_current_bet = int(game_state.hero.bet or 0)
+        facing_bet = max(
+            (int(player.bet or 0) for player in game_state.players.values()),
+            default=0,
+        )
+        call_amount = max(0, facing_bet - hero_current_bet)
+
+        if call_amount > 0:
+            pot_after_call = int(game_state.pot or 0) + call_amount
+            required_equity = call_amount / pot_after_call
+        else:
+            pot_after_call = int(game_state.pot or 0)
+            required_equity = 0.0
+
+        return {
+            "hero_current_bet": hero_current_bet,
+            "facing_bet": facing_bet,
+            "call_amount": call_amount,
+            "pot_after_call": pot_after_call,
+            "required_equity": required_equity,
+            "pot_odds": required_equity,
+        }
+
+    @staticmethod
+    def _format_actions_summary(
+        actions: list[ActionRecord] | None,
+    ) -> str:
+        """Format street actions as a compact summary for logging."""
+        if not actions:
+            return "[]"
+        parts = []
+        for action in actions:
+            seat = getattr(action, "seat", "?")
+            action_name = getattr(action, "action", "?")
+            amount = getattr(action, "amount", 0)
+            parts.append(f"S{seat} {action_name} {amount}")
+        return "[" + ", ".join(parts) + "]"
+
+    @staticmethod
+    def _safe_head(text: str, max_chars: int) -> str:
+        """Return the first max_chars of text, truncating safely."""
+        if not text:
+            return ""
+        return text[:max_chars]
 
     def calculate_equity(
         self,

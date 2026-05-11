@@ -17,7 +17,7 @@ from typing import Any
 import requests
 from pydantic import BaseModel, ValidationError
 
-from core.game_state import GameState
+from core.game_state import ActionRecord, GameState
 from strategy.llm_schemas import (
     ExploitAdjustmentResponse,
     MultiwayDecisionResponse,
@@ -121,24 +121,34 @@ Solver cannot be used (3+ players). Use the equity data and opponent stats to re
 - Hero Position: {hero_position}
 - Pot: {pot} chips
 - Hero Stack: {hero_stack} chips
+- Hero Current Bet: {hero_current_bet} chips
 - Number of Players: {num_players}
+
+## Betting Situation
+- Facing Bet: {facing_bet} chips
+- Call Amount: {call_amount} chips
+- Pot After Call: {pot_after_call} chips
+- Required Equity To Call: {required_equity:.1f}%
 
 ## Hero Equity (Monte Carlo, 10000 simulations)
 - Equity vs all opponents: {equity:.1f}%
 
-## Action History This Street
+## Full Street Action History
 {action_history}
 
 ## Opponent Profiles
 {opponent_profiles}
 
 ## Instructions
-1. With 3+ players, be MORE conservative than heads-up.
-2. Equity thresholds (guidelines, adjust based on position and action):
+1. "Conservative in multiway" means avoiding thin bluffs and thin value-raises,
+   NOT folding strong made hands that have clear pot odds.
+2. When facing a bet, compare Hero equity with required equity:
+   - If Hero equity significantly exceeds required equity, a FOLD needs strong justification.
+   - Made hands with 40-60% equity that comfortably beat required equity should lean CALL.
+3. Equity thresholds (guidelines, adjust based on position and action):
    - Equity > 60%: Bet/Raise for value
-   - Equity 40-60%: Check/Call (pot control)
-   - Equity < 40%: Check/Fold (unless good bluff spot)
-3. Adjust for opponent tendencies and board texture.
+   - Equity 40-60%: Check/Call (pot control, but CALL when facing a bet and equity > required)
+   - Equity < 40%: Check/Fold (unless good bluff spot or pot odds justify)
 4. With multiple opponents, bluffing is less effective.
 5. {reason_jp_instruction}
 
@@ -351,6 +361,11 @@ class LLMPipeline:
         game_state: GameState,
         hero_equity: float,
         opponent_profiles: list[JsonDict],
+        call_amount: int = 0,
+        facing_bet: int = 0,
+        pot_after_call: int = 0,
+        required_equity: float = 0.0,
+        current_street_actions: list[ActionRecord] | None = None,
     ) -> JsonDict:
         """Recommend an action for multiway pots where solver is unavailable.
 
@@ -358,6 +373,11 @@ class LLMPipeline:
             game_state: Current game state.
             hero_equity: Hero equity from 0.0 to 1.0.
             opponent_profiles: List of opponent profile dictionaries.
+            call_amount: Amount hero must call (0 when no bet to face).
+            facing_bet: Maximum opponent bet hero is facing.
+            pot_after_call: Pot size after hero calls.
+            required_equity: Required equity to justify a call.
+            current_street_actions: Full current street action history.
 
         Returns:
             Action recommendation dictionary.
@@ -369,9 +389,17 @@ class LLMPipeline:
             hero_position=game_state.hero.position or "Unknown",
             pot=game_state.pot,
             hero_stack=game_state.hero.stack or 0,
+            hero_current_bet=game_state.hero.bet or 0,
+            facing_bet=facing_bet,
+            call_amount=call_amount,
+            pot_after_call=pot_after_call,
+            required_equity=required_equity * 100.0,
             num_players=game_state.active_player_count,
             equity=hero_equity * 100.0,
-            action_history=self._format_action_history(game_state),
+            action_history=self._format_action_history(
+                game_state,
+                current_street_actions,
+            ),
             opponent_profiles=json.dumps(
                 self._anonymize_opponent_profiles(opponent_profiles),
                 ensure_ascii=False,
@@ -386,6 +414,7 @@ class LLMPipeline:
                 "size": None,
                 "confidence": "low",
                 "reasoning": "LLM利用不可のため安全にチェック",
+                "raw_response": (text or ""),
             }
 
         validated = self._validate_llm_response(
@@ -406,6 +435,7 @@ class LLMPipeline:
             "size": parsed.get("size"),
             "confidence": parsed.get("confidence", "low"),
             "reasoning": parsed.get("reasoning", ""),
+            "raw_response": (text or ""),
         }
 
     def generate_reason(
@@ -770,14 +800,33 @@ class LLMPipeline:
         return "".join(game_state.hero.cards or [])
 
     @staticmethod
-    def _format_action_history(game_state: GameState) -> str:
-        """Format recent actions for prompt insertion."""
-        if not game_state.actions_since_last_frame:
-            return "No recent actions."
-        return json.dumps(
-            [action.__dict__ for action in game_state.actions_since_last_frame],
-            ensure_ascii=False,
+    def _format_action_history(
+        game_state: GameState,
+        current_street_actions: list[ActionRecord] | None = None,
+    ) -> str:
+        """Format actions for prompt insertion, preferring full street history."""
+        actions = current_street_actions or (
+            game_state.current_street_actions
+            if hasattr(game_state, "current_street_actions")
+            and game_state.current_street_actions
+            else None
         )
+        if actions:
+            action_dicts = []
+            for action in actions:
+                d = (
+                    action.__dict__
+                    if hasattr(action, "__dict__")
+                    else dict(action)
+                )
+                action_dicts.append(d)
+            return json.dumps(action_dicts, ensure_ascii=False)
+        if game_state.actions_since_last_frame:
+            return json.dumps(
+                [action.__dict__ for action in game_state.actions_since_last_frame],
+                ensure_ascii=False,
+            )
+        return "No recent actions."
 
     @staticmethod
     def _effective_stack(game_state: GameState) -> int:
