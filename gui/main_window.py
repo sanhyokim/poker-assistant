@@ -141,6 +141,42 @@ class MainWindow(QMainWindow):
         color = color_map.get(phase, "#ffffff")
         self._phase_label.setStyleSheet(f"color: {color}; font-weight: bold;")
 
+    def update_recommendation(self, recommendation: Any) -> None:
+        """Update the recommendation display area.
+
+        Args:
+            recommendation: Recommendation object, or None to clear.
+        """
+        if recommendation is None:
+            self._recommendation_display.clear()
+            self._recommendation_display.setPlaceholderText(
+                "推奨アクションがここに表示されます"
+            )
+            return
+
+        try:
+            action = getattr(recommendation, "action", "?")
+            amount = getattr(recommendation, "amount", 0)
+            source = getattr(recommendation, "strategy_source", "?")
+            confidence = getattr(recommendation, "confidence", "?")
+            reason = getattr(recommendation, "reason", "")
+
+            lines = [
+                f"Action: {action} {amount}" if amount > 0 else f"Action: {action}",
+                f"Source: {source}",
+                f"Confidence: {confidence}",
+            ]
+            if reason:
+                lines.append("")
+                lines.append(f"Reason: {reason}")
+
+            self._recommendation_display.setPlainText("\n".join(lines))
+        except Exception:
+            logger.warning(
+                "Failed to format recommendation for display",
+                exc_info=True,
+            )
+
     def update_game_state(self, game_state: GameState) -> None:
         """Update the GameState JSON display.
 
@@ -459,6 +495,27 @@ class MainWindow(QMainWindow):
         splitter.addWidget(self._log_display)
         splitter.setSizes([260, 220])
 
+        self._recommendation_display = QTextEdit()
+        self._recommendation_display.setReadOnly(True)
+        self._recommendation_display.setLineWrapMode(
+            QTextEdit.LineWrapMode.WidgetWidth
+        )
+        self._recommendation_display.setMinimumHeight(90)
+        self._recommendation_display.setMaximumHeight(140)
+        self._recommendation_display.setFont(QFont("Meiryo", 10))
+        self._recommendation_display.setPlaceholderText(
+            "推奨アクションがここに表示されます"
+        )
+        self._recommendation_display.setStyleSheet(
+            "QTextEdit {"
+            "  background-color: #1a1a2e;"
+            "  color: #d4d4d4;"
+            "  border: 1px solid #4a6a8a;"
+            "  border-radius: 4px;"
+            "  padding: 6px;"
+            "}"
+        )
+
         status_bar = QHBoxLayout()
         self._status_label = QLabel("Stopped")
         self._status_label.setStyleSheet("color: #cc3333;")
@@ -473,6 +530,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(summary_group)
         main_layout.addWidget(self._player_table)
         main_layout.addLayout(self._rejoin_button_layout)
+        main_layout.addWidget(self._recommendation_display)
         main_layout.addWidget(splitter)
         main_layout.addLayout(status_bar)
         tab.setLayout(main_layout)

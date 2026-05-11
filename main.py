@@ -138,6 +138,7 @@ class GameLoopWorker(QObject):
     """Worker that runs the game loop in a background thread."""
 
     game_state_ready = pyqtSignal(object)
+    recommendation_ready = pyqtSignal(object)
     phase_changed = pyqtSignal(str)
     hand_saved = pyqtSignal(int)
     log_message = pyqtSignal(str, str)
@@ -171,6 +172,8 @@ class GameLoopWorker(QObject):
                         self.hand_saved.emit(saved_hand_id)
                         self._last_emitted_saved_hand_id = saved_hand_id
                     self._game_loop._handle_strategy(game_state)
+                    recommendation = self._game_loop.current_recommendation
+                    self.recommendation_ready.emit(recommendation)
                     self.game_state_ready.emit(game_state)
                     if game_state.phase:
                         self.phase_changed.emit(game_state.phase)
@@ -245,6 +248,7 @@ def main() -> None:
 
         thread.started.connect(worker.run)
         worker.game_state_ready.connect(main_window.update_game_state)
+        worker.recommendation_ready.connect(main_window.update_recommendation)
         worker.phase_changed.connect(main_window.update_phase)
         worker.hand_saved.connect(main_window.refresh_statistics)
         worker.log_message.connect(main_window.append_log)

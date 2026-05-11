@@ -531,17 +531,52 @@ class ActionEstimator:
         stack_prev_int = int(stack_prev)
         stack_curr_int = int(stack_curr)
 
+        suspicious = self._is_suspicious_bet_amount(
+            bet_curr, stack_prev_int, stack_curr_int, diff.pot_prev,
+        )
+        if suspicious:
+            logger.warning(
+                "Suspicious bet amount detected: seat=%d bet_curr=%d "
+                "scaled10=%d stack_prev=%d stack_curr=%d stack_drop=%d "
+                "pot_prev=%d pot_curr=%d",
+                seat_num,
+                bet_curr,
+                bet_curr // 10,
+                stack_prev_int,
+                stack_curr_int,
+                stack_prev_int - stack_curr_int,
+                diff.pot_prev,
+                diff.pot_curr,
+            )
+
         if stack_prev_int > 0 and stack_curr_int == 0 and bet_changed:
+            confidence = "low" if suspicious else "high"
+            action_type = "ALL_IN"
+            if suspicious:
+                action_type = "BET" if diff.max_bet_prev == 0 else (
+                    "RAISE" if bet_curr > diff.max_bet_prev * self.raise_threshold
+                    else "CALL"
+                )
+                logger.info(
+                    "ALL_IN reclassification skipped for seat %d: "
+                    "suspicious bet amount (bet_curr=%d)",
+                    seat_num,
+                    bet_curr,
+                )
             return ActionRecord(
                 seat=seat_num,
-                action="ALL_IN",
+                action=action_type,
                 amount=bet_curr,
-                confidence="high",
+                confidence=confidence,
             )
 
         if stack_curr_int < stack_prev_int and bet_changed and bet_curr > bet_prev:
             # Reclassify as ALL_IN if the player committed ≥90% of their previous stack
-            if stack_prev_int > 0 and bet_curr >= stack_prev_int * 0.9:
+            if (
+                stack_prev_int > 0
+                and bet_curr >= stack_prev_int * 0.9
+                and not suspicious
+            ):
                 logger.info(
                     "Action reclassified as ALL_IN: seat=%d, amount=%d, "
                     "previous_stack=%d",
@@ -556,25 +591,27 @@ class ActionEstimator:
                     confidence="high",
                 )
 
+            confidence = "low" if suspicious else "high"
+
             if diff.max_bet_prev == 0:
                 return ActionRecord(
                     seat=seat_num,
                     action="BET",
                     amount=bet_curr,
-                    confidence="high",
+                    confidence=confidence,
                 )
             if bet_curr > diff.max_bet_prev * self.raise_threshold:
                 return ActionRecord(
                     seat=seat_num,
                     action="RAISE",
                     amount=bet_curr,
-                    confidence="high",
+                    confidence=confidence,
                 )
             return ActionRecord(
                 seat=seat_num,
                 action="CALL",
                 amount=bet_curr,
-                confidence="high",
+                confidence=confidence,
             )
 
         return None
@@ -645,6 +682,77 @@ class ActionEstimator:
         if player is None:
             return 0
         return player.bet
+
+    def _normalize_bet_amount_text(
+        self,
+        raw_text: str,
+    ) -> tuple[int | None, bool, str]:
+        """Normalize a BET amount OCR string into a safe integer.
+
+        Returns:
+            amount: Normalized amount, or None on failure.
+            suspicious: True when the digit count suggests a decimal was dropped.
+            reason: Short description of the normalization applied.
+        """
+        text = str(raw_text).strip()
+        text = text.replace(",", "")
+
+        if not text:
+            return None, True, "empty"
+
+        if "." in text:
+            integer_part = text.split(".", 1)[0]
+            digits = "".join(ch for ch in integer_part if ch.isdigit())
+            if not digits:
+                return None, True, "decimal_without_integer"
+            return int(digits), False, "decimal_truncated"
+
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if not digits:
+            return None, True, "no_digits"
+
+        return int(digits), False, "integer"
+
+    def _is_suspicious_bet_amount(
+        self,
+        bet_curr: int,
+        stack_prev: int,
+        stack_curr: int,
+        pot_prev: int,
+    ) -> bool:
+        """Return whether a bet amount looks suspiciously large.
+
+        Checks whether the bet is disproportionate to the pot and the player's
+        stack change, suggesting a possible OCR digit misread (e.g., missing
+        decimal point).
+        """
+        if bet_curr <= 0:
+            return False
+
+        stack_drop = stack_prev - stack_curr
+        scaled10 = bet_curr // 10
+
+        # 1. Bet is extremely large relative to the previous pot,
+        #    but only when the player still has chips (genuine all-in
+        #    with stack→0 is not suspicious from this signal alone).
+        if stack_curr > 0 and pot_prev > 0 and bet_curr > pot_prev * 5:
+            return True
+
+        # 2. Bet is much larger than the actual stack decrease
+        if stack_drop > 0 and bet_curr > stack_drop * 3:
+            return True
+
+        # 3. Removing the last digit produces a natural bet size,
+        #    but only when the player still has chips.
+        if (
+            stack_curr > 0
+            and scaled10 > 0
+            and pot_prev > 0
+            and scaled10 <= pot_prev * 2
+        ):
+            return True
+
+        return False
 
     def reset(self) -> None:
         """Reset placeholder internal state."""

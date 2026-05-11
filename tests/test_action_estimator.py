@@ -952,3 +952,92 @@ class TestAllInReclassification:
         result = estimator.estimate(previous, current)
 
         assert action_tuples(result) == [(1, "ALL_IN", 9500, "high")]
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix34: BET amount normalization and suspicious detection tests
+# ---------------------------------------------------------------------------
+
+
+class TestBetAmountNormalization:
+    """Tests for _normalize_bet_amount_text and _is_suspicious_bet_amount."""
+
+    def test_decimal_truncated_to_integer(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Decimal amounts drop fractional part: '1980.4' -> 1980, '595.2' -> 595."""
+        amount, suspicious, reason = estimator._normalize_bet_amount_text("1980.4")
+        assert amount == 1980
+        assert suspicious is False
+        assert reason == "decimal_truncated"
+
+        amount, suspicious, reason = estimator._normalize_bet_amount_text("595.2")
+        assert amount == 595
+        assert suspicious is False
+        assert reason == "decimal_truncated"
+
+    def test_comma_removed_as_thousands_separator(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Commas are stripped as digit-group separators: '1,980' -> 1980."""
+        amount, suspicious, _reason = estimator._normalize_bet_amount_text("1,980")
+        assert amount == 1980
+        assert suspicious is False
+
+    def test_suspicious_when_scaled10_is_natural(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Large integer whose /10 value fits the pot is flagged suspicious."""
+        # 19804 -> 1980 fits pot=1000, flagged suspicious
+        assert estimator._is_suspicious_bet_amount(19804, 5000, 4950, 1000) is True
+
+        # 5952 -> 595 fits pot=500, flagged suspicious
+        assert estimator._is_suspicious_bet_amount(5952, 6000, 5400, 500) is True
+
+
+class TestSuspiciousAllInReclassification:
+    """Tests that suspicious bets skip ALL_IN reclassification."""
+
+    def test_suspicious_bet_skips_all_in_reclassify(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Suspicious bet does NOT get reclassified to ALL_IN, gets confidence=low."""
+        previous = make_state(
+            pot=500,
+            player_values={"2": (6000, 0)},
+        )
+        current = make_state(
+            pot=500,
+            player_values={"2": (5400, 5952)},
+        )
+
+        result = estimator.estimate(previous, current)
+
+        actions = action_tuples(result)
+        # Seat 2 should be BET (not ALL_IN) with low confidence
+        assert len(actions) == 1
+        assert actions[0] == (2, "BET", 5952, "low")
+
+    def test_normal_all_in_still_works(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Normal all-in (stack=0, bet large) is preserved as ALL_IN with high conf."""
+        previous = make_state(
+            pot=1000,
+            player_values={"2": (10000, 0)},
+        )
+        current = make_state(
+            pot=1000,
+            player_values={"2": (0, 9500)},
+        )
+
+        result = estimator.estimate(previous, current)
+
+        actions = action_tuples(result)
+        assert len(actions) == 1
+        assert actions[0] == (2, "ALL_IN", 9500, "high")
