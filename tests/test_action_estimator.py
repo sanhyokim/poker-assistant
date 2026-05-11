@@ -1041,3 +1041,77 @@ class TestSuspiciousAllInReclassification:
         actions = action_tuples(result)
         assert len(actions) == 1
         assert actions[0] == (2, "ALL_IN", 9500, "high")
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix35: Refined suspicious detection tests
+# ---------------------------------------------------------------------------
+
+
+class TestRefinedSuspiciousDetection:
+    """Verify that normal bet amounts are no longer flagged suspicious."""
+
+    def test_small_bets_are_not_suspicious(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Bets ≤ 5 BB are never suspicious."""
+        for amount in (50, 100, 200, 448, 500):
+            assert estimator._is_suspicious_bet_amount(
+                amount, 5000, 5000 - amount, 1000,
+            ) is False, f"bet_curr={amount} should not be suspicious"
+
+    def test_stack_drop_matching_bet_is_not_suspicious(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """When bet matches the actual stack decrease, it is NOT suspicious."""
+        # bet_curr=1100, stack dropped by 1100 — consistent
+        assert estimator._is_suspicious_bet_amount(
+            1100, 5000, 3900, 800,
+        ) is False
+
+        # bet_curr=1600, stack dropped by 1600 — consistent
+        assert estimator._is_suspicious_bet_amount(
+            1600, 5000, 3400, 1200,
+        ) is False
+
+    def test_5952_still_suspicious_with_small_stack_drop(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """5952 with small stack drop (e.g. 600) is still suspicious."""
+        # stack_drop=600, bet_curr=5952 — huge mismatch
+        assert estimator._is_suspicious_bet_amount(
+            5952, 6000, 5400, 500,
+        ) is True
+
+    def test_19804_still_suspicious_with_small_stack_drop(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """19804 with small stack drop (e.g. 50) is still suspicious."""
+        # stack_drop=50, bet_curr=19804 — huge mismatch
+        assert estimator._is_suspicious_bet_amount(
+            19804, 5000, 4950, 1000,
+        ) is True
+
+    def test_suspicious_still_skips_all_in_reclassify(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Suspicious bet → ALL_IN reclassification skipped, confidence=low."""
+        previous = make_state(
+            pot=500,
+            player_values={"2": (6000, 0)},
+        )
+        current = make_state(
+            pot=500,
+            player_values={"2": (5400, 5952)},
+        )
+
+        result = estimator.estimate(previous, current)
+
+        actions = action_tuples(result)
+        assert len(actions) == 1
+        assert actions[0] == (2, "BET", 5952, "low")

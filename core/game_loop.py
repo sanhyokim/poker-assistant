@@ -969,6 +969,9 @@ class GameLoop:
     def request_rejoin_seat(self, seat: int) -> bool:
         """Attempt to rejoin a seat via manual UI request.
 
+        Uses multiple signals before giving up: recent card detection state,
+        confirmed-seat cache, and up to 3 re-scans.
+
         Args:
             seat: Seat number from 2 to 6.
 
@@ -979,29 +982,61 @@ class GameLoop:
             logger.warning("Rejoin request for invalid seat %d", seat)
             return False
 
-        frame = self._capture.get_frame()
-        if frame is None:
-            logger.warning("Rejoin failed for seat %d: capture unavailable", seat)
-            return False
-
-        seat_card_results = self._seat_card_detector.detect_all(frame)
-        if not seat_card_results.get(seat, False):
+        # 1. Recently-sighted state still shows cards → allow
+        if self._last_seat_card_states.get(seat, False):
             logger.info(
-                "Rejoin rejected for seat %d: no card detected on re-scan",
+                "Rejoin allowed for seat %d: card recently sighted",
                 seat,
             )
-            return False
+            return self._promote_rejoin(seat)
 
-        promoted = self._hand_manager.rejoin_seat(seat)
-        if promoted:
-            logger.info("Manual rejoin: seat %d promoted to in_current_hand", seat)
-            return True
+        # 2. Seat was previously confirmed with cards → allow
+        if seat in self._seat_card_confirmed:
+            logger.info(
+                "Rejoin allowed for seat %d: seat was previously confirmed",
+                seat,
+            )
+            return self._promote_rejoin(seat)
+
+        # 3. Re-scan up to 3 times; succeed on the first positive detection
+        for attempt in range(3):
+            frame = self._capture.get_frame()
+            if frame is None:
+                continue
+            results = self._seat_card_detector.detect_all(frame)
+            if results.get(seat, False):
+                logger.info(
+                    "Rejoin allowed for seat %d: card detected on rescan "
+                    "(attempt %d)",
+                    seat,
+                    attempt + 1,
+                )
+                return self._promote_rejoin(seat)
 
         logger.info(
-            "Manual rejoin: seat %d was not promoted (already in hand or folded)",
+            "Rejoin rejected for seat %d: no card detected after retries",
             seat,
         )
         return False
+
+    def _promote_rejoin(self, seat: int) -> bool:
+        """Promote a seat back into the current hand via HandManager.
+
+        Returns:
+            True if the seat was promoted, False if already in hand or folded.
+        """
+        promoted = self._hand_manager.rejoin_seat(seat)
+        if promoted:
+            logger.info(
+                "Manual rejoin: seat %d promoted to in_current_hand", seat,
+            )
+        else:
+            logger.info(
+                "Manual rejoin: seat %d was not promoted "
+                "(already in hand or folded)",
+                seat,
+            )
+        return promoted
 
     @staticmethod
     def _recommendation_generate_accepts_keywords(generate_method: Any) -> bool:

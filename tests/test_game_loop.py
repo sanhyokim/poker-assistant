@@ -2439,3 +2439,98 @@ def test_new_hand_allowed_with_clean_state(
         state, state.hero.cards
     )
     assert can_start is True
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix35: Rejoin resilience tests
+# ---------------------------------------------------------------------------
+
+
+def test_rejoin_allowed_from_last_seat_card_state(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejoin succeeds when the last known seat-card state was True."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager.rejoin_seat = MagicMock(return_value=True)
+
+    loop._last_seat_card_states = {3: True}
+
+    result = loop.request_rejoin_seat(3)
+
+    assert result is True
+    loop._hand_manager.rejoin_seat.assert_called_once_with(3)
+
+
+def test_rejoin_allowed_from_confirmed_cache(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejoin succeeds when the seat is in the confirmed cache."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager.rejoin_seat = MagicMock(return_value=True)
+
+    loop._last_seat_card_states = {}
+    loop._seat_card_confirmed = {3}
+
+    result = loop.request_rejoin_seat(3)
+
+    assert result is True
+    loop._hand_manager.rejoin_seat.assert_called_once_with(3)
+
+
+def test_rejoin_succeeds_on_retry(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejoin retries up to 3 times; one positive detection succeeds."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager.rejoin_seat = MagicMock(return_value=True)
+    loop._last_seat_card_states = {}
+    loop._seat_card_confirmed = set()
+
+    # First two attempts fail, third succeeds
+    call_count = [0]
+
+    def detect_all_side_effect(_frame: Any) -> dict[int, bool]:
+        call_count[0] += 1
+        if call_count[0] >= 3:
+            return {3: True}
+        return {3: False}
+
+    frame_mock = object()
+    capture_mock = MagicMock()
+    capture_mock.get_frame.return_value = frame_mock
+    loop._capture = capture_mock
+    loop._seat_card_detector.detect_all = MagicMock(
+        side_effect=detect_all_side_effect,
+    )
+
+    result = loop.request_rejoin_seat(3)
+
+    assert result is True
+    assert call_count[0] == 3
+    loop._hand_manager.rejoin_seat.assert_called_once_with(3)
+
+
+def test_rejoin_rejected_after_all_retries_fail(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rejoin is rejected when no card is detected after 3 retries."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._last_seat_card_states = {}
+    loop._seat_card_confirmed = set()
+
+    frame_mock = object()
+    capture_mock = MagicMock()
+    capture_mock.get_frame.return_value = frame_mock
+    loop._capture = capture_mock
+    loop._seat_card_detector.detect_all = MagicMock(
+        return_value={3: False},
+    )
+
+    result = loop.request_rejoin_seat(3)
+
+    assert result is False
+    assert loop._seat_card_detector.detect_all.call_count == 3

@@ -722,33 +722,42 @@ class ActionEstimator:
     ) -> bool:
         """Return whether a bet amount looks suspiciously large.
 
-        Checks whether the bet is disproportionate to the pot and the player's
-        stack change, suggesting a possible OCR digit misread (e.g., missing
-        decimal point).
+        Only flags amounts where a missing-decimal OCR misread is the most
+        plausible explanation. Small bets, bets that match the stack decrease,
+        and genuine all-ins are excluded.
         """
         if bet_curr <= 0:
+            return False
+
+        # Small and normal-sized bets are never suspicious
+        if bet_curr <= self.blind_bb * 5:
             return False
 
         stack_drop = stack_prev - stack_curr
         scaled10 = bet_curr // 10
 
-        # 1. Bet is extremely large relative to the previous pot,
-        #    but only when the player still has chips (genuine all-in
-        #    with stack→0 is not suspicious from this signal alone).
-        if stack_curr > 0 and pot_prev > 0 and bet_curr > pot_prev * 5:
-            return True
+        # If the bet amount closely matches the actual stack decrease,
+        # the OCR reading is consistent and not suspicious.
+        if stack_drop > 0 and abs(bet_curr - stack_drop) <= max(2, int(self.blind_bb * 0.1)):
+            return False
 
-        # 2. Bet is much larger than the actual stack decrease
-        if stack_drop > 0 and bet_curr > stack_drop * 3:
-            return True
-
-        # 3. Removing the last digit produces a natural bet size,
-        #    but only when the player still has chips.
+        # 1. Bet is extremely large vs pot AND scaled10 is a natural pot-sized bet.
         if (
             stack_curr > 0
-            and scaled10 > 0
             and pot_prev > 0
+            and bet_curr > pot_prev * 5
+            and scaled10 > 0
             and scaled10 <= pot_prev * 2
+        ):
+            return True
+
+        # 2. Bet is much larger than the stack decrease AND scaled10
+        #    falls close to the actual stack drop — suggesting a missing
+        #    decimal point.
+        if (
+            stack_drop > 0
+            and bet_curr > stack_drop * 3
+            and abs(scaled10 - stack_drop) <= max(5, int(stack_drop * 0.2))
         ):
             return True
 
