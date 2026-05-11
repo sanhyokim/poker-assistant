@@ -2348,3 +2348,94 @@ def test_hand_end_gets_empty_players_in_hand(
 
     hm._phase = "river"
     assert hm.get_players_in_hand() == {1, 2, 3}
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix33: New hand start guard tests
+# ---------------------------------------------------------------------------
+
+
+def test_new_hand_suppressed_when_board_visible_in_waiting(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """New hand is not started when board cards are still visible in waiting."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "waiting"
+
+    state = create_empty_game_state()
+    state.phase = "waiting"
+    state.hero.cards = ["Th", "Ts"]
+    state.hero.cards_visible = True
+    state.board_card_count = 5
+    state.pot = 0
+
+    can_start = loop._can_start_new_hand_from_waiting(
+        state, state.hero.cards
+    )
+    assert can_start is False
+
+
+def test_new_hand_suppressed_when_same_hero_cards(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """New hand is not started when hero cards match last ended hand."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "waiting"
+    loop._last_ended_hero_cards = ["Th", "Ts"]
+
+    state = create_empty_game_state()
+    state.phase = "waiting"
+    state.hero.cards = ["Th", "Ts"]
+    state.hero.cards_visible = True
+    state.board_card_count = 0
+    state.pot = 80
+
+    can_start = loop._can_start_new_hand_from_waiting(
+        state, state.hero.cards
+    )
+    assert can_start is False
+
+
+def test_new_hand_suppressed_when_pot_too_large(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """New hand is not started when pot exceeds 10 BB during waiting."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "waiting"
+
+    state = create_empty_game_state()
+    state.phase = "waiting"
+    state.hero.cards = ["7d", "Qd"]
+    state.hero.cards_visible = True
+    state.board_card_count = 0
+    state.pot = 20336  # >> 10 BB (1000)
+
+    can_start = loop._can_start_new_hand_from_waiting(
+        state, state.hero.cards
+    )
+    assert can_start is False
+
+
+def test_new_hand_allowed_with_clean_state(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normal new hand with different cards, no board, and reasonable pot starts."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "waiting"
+    loop._last_ended_hero_cards = ["Th", "Ts"]
+
+    state = create_empty_game_state()
+    state.phase = "waiting"
+    state.hero.cards = ["7d", "Qd"]
+    state.hero.cards_visible = True
+    state.board_card_count = 0
+    state.pot = 80
+
+    can_start = loop._can_start_new_hand_from_waiting(
+        state, state.hero.cards
+    )
+    assert can_start is True

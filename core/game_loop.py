@@ -116,6 +116,7 @@ class GameLoop:
         self._hero_cards_missing_since_hand_end = False
         self._last_ended_hero_cards: list[str | None] | None = None
         self._stale_suppression_start_time: float | None = None
+        self._stale_suppression_bypassed: bool = False
         self._last_hand_manager_phase: str | None = None
         self._previous_recommendation: Recommendation | None = None
         self._last_strategy_phase: str | None = None
@@ -324,6 +325,7 @@ class GameLoop:
         self._hero_cards_missing_since_hand_end = False
         self._last_ended_hero_cards = None
         self._stale_suppression_start_time = None
+        self._stale_suppression_bypassed = False
         self._last_hand_manager_phase = None
         self._previous_recommendation = None
         self._last_strategy_phase = None
@@ -1241,6 +1243,54 @@ class GameLoop:
         players_in_hand = self._hand_manager.get_players_in_hand()
         return len(players_in_hand) >= 2
 
+    def _can_start_new_hand_from_waiting(
+        self,
+        game_state: GameState,
+        hero_cards: list[str],
+    ) -> bool:
+        """Return whether a new hand can start from the waiting phase.
+
+        Prevents false hand starts caused by stale hero cards, residual board
+        cards, or inflated pot displays lingering from the previous hand's
+        showdown/payout animations.
+        """
+        if game_state.board_card_count >= 5:
+            logger.info(
+                "New hand start suppressed: board still visible in waiting "
+                "(board_count=%d, hero_cards=%s, pot=%d)",
+                game_state.board_card_count,
+                hero_cards,
+                game_state.pot,
+            )
+            return False
+
+        if (
+            self._last_ended_hero_cards
+            and hero_cards == self._last_ended_hero_cards
+            and not self._hero_cards_missing_since_hand_end
+            and not self._stale_suppression_bypassed
+        ):
+            logger.info(
+                "New hand start suppressed: same as last ended hero cards "
+                "(hero_cards=%s)",
+                hero_cards,
+            )
+            return False
+
+        bb = int(self._config.get("game", {}).get("blind_bb", 100))
+        max_start_pot = bb * 10
+        if game_state.pot > max_start_pot:
+            logger.info(
+                "New hand start suppressed: pot too large for waiting start "
+                "(pot=%d, max_start_pot=%d, hero_cards=%s)",
+                game_state.pot,
+                max_start_pot,
+                hero_cards,
+            )
+            return False
+
+        return True
+
     def _previous_player_cards_visible(
         self,
         game_state: GameState,
@@ -1596,6 +1646,24 @@ class GameLoop:
             self._clear_players_for_inactive_table(game_state)
         self._populate_position(game_state)
 
+        if (
+            game_state.phase == "waiting"
+            and not self._hero_cards_missing(game_state.hero.cards)
+            and not self._can_start_new_hand_from_waiting(
+                game_state,
+                game_state.hero.cards or [],
+            )
+        ):
+            logger.info(
+                "Waiting hero cards suppressed by new-hand guard: "
+                "hero_cards=%s, board_count=%d, pot=%d",
+                game_state.hero.cards,
+                game_state.board_card_count,
+                game_state.pot,
+            )
+            game_state.hero.cards = None
+            game_state.hero.cards_visible = False
+
         game_state.hero.seat = 1
         return game_state
 
@@ -1608,6 +1676,7 @@ class GameLoop:
             self._hero_cards_missing_since_hand_end = False
             self._waiting_for_card_clear = True
             self._stale_suppression_start_time = time.monotonic()
+            self._stale_suppression_bypassed = False
             self._clear_hero_card_cache("phase transition to waiting")
         self._last_hand_manager_phase = current_phase
 
@@ -1647,6 +1716,7 @@ class GameLoop:
                 hero_cards,
             )
             self._stale_suppression_start_time = None
+            self._stale_suppression_bypassed = True
             return False
         return True
 
