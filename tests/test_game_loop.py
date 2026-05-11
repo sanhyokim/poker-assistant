@@ -2217,3 +2217,134 @@ def test_current_street_actions_empty_when_no_street(
     loop._sync_game_state_with_hand_manager(state)
 
     assert state.current_street_actions == []
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix32: Showdown guard tests
+# ---------------------------------------------------------------------------
+
+
+def _make_river_state_with_players(
+    loop: GameLoop,
+    players_in_hand: set[int],
+) -> Any:
+    """Create a river GameState with 5 board cards and given players."""
+    state = create_empty_game_state()
+    state.phase = "river"
+    state.table_visible = True
+    state.board = ["Ah", "Kh", "Qh", "Jh", "Th"]
+    state.board_card_count = 5
+    state.hero.cards = ["As", "Ks"]
+    state.hero.in_current_hand = 1 in players_in_hand
+
+    for seat in range(2, 7):
+        if seat in players_in_hand:
+            state.players[str(seat)].is_seated = True
+            state.players[str(seat)].in_current_hand = True
+            state.players[str(seat)].cards_visible = True
+            state.players[str(seat)].stack = 5000
+
+    return state
+
+
+def test_showdown_guard_ignores_fold_badge_river_board5(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fold badge for opponent is ignored during river showdown with 5 board cards."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    hm = loop._hand_manager
+    hm._phase = "river"
+    hm._players_in_hand = {"1": True, "2": True, "3": True}
+    hm._folded_seats = set()
+
+    state = _make_river_state_with_players(loop, {1, 2, 3})
+    state.actions_since_last_frame = []
+
+    fold_results = {2: True, 3: False, 4: False, 5: False, 6: False}
+    loop._process_fold_badge_detection(state, fold_results)
+
+    # No FOLD action should have been added for seat 2
+    fold_actions = [
+        a for a in state.actions_since_last_frame if a.action == "FOLD"
+    ]
+    assert len(fold_actions) == 0, (
+        f"Expected 0 FOLD actions during showdown guard, got {len(fold_actions)}"
+    )
+
+
+def test_showdown_guard_prevents_in_current_hand_drop_on_no_card(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seat card NO_CARD does not drop active player during river showdown."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    hm = loop._hand_manager
+    hm._phase = "river"
+    hm._players_in_hand = {"1": True, "2": True, "3": True}
+    hm._folded_seats = set()
+    loop._seat_card_confirmed = set()
+
+    state = _make_river_state_with_players(loop, {1, 2, 3})
+    # Seat 2: not folded, not confirmed, NO_CARD detected
+    state.players["2"].cards_visible = False
+
+    seat_card_results = {2: False, 3: True, 4: False, 5: False, 6: False}
+    loop._apply_seat_card_visibility(state, seat_card_results)
+
+    # Seat 2 should remain in hand despite NO_CARD
+    assert state.players["2"].in_current_hand is True, (
+        "Seat 2 should remain in_current_hand during showdown guard"
+    )
+
+
+def test_fold_badge_still_effective_on_flop(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fold badge detection works normally on flop (no showdown guard interference)."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    hm = loop._hand_manager
+    hm._phase = "flop"
+    hm._players_in_hand = {"1": True, "2": True, "3": True}
+    hm._folded_seats = set()
+
+    state = create_empty_game_state()
+    state.phase = "flop"
+    state.table_visible = True
+    state.board = ["Ah", "Kh", "Qh"]
+    state.board_card_count = 3
+    state.hero.cards = ["As", "Ks"]
+    state.hero.in_current_hand = True
+    state.players["2"].is_seated = True
+    state.players["2"].in_current_hand = True
+    state.actions_since_last_frame = []
+
+    fold_results = {2: True, 3: False, 4: False, 5: False, 6: False}
+    loop._process_fold_badge_detection(state, fold_results)
+
+    # FOLD action should be generated normally on flop
+    fold_actions = [
+        a for a in state.actions_since_last_frame if a.action == "FOLD"
+    ]
+    assert len(fold_actions) == 1
+    assert fold_actions[0].seat == 2
+
+
+def test_hand_end_gets_empty_players_in_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_players_in_hand() returns empty set for hand_end and waiting phases."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    hm = loop._hand_manager
+    hm._players_in_hand = {"1": True, "2": True, "3": True}
+
+    hm._phase = "hand_end"
+    assert hm.get_players_in_hand() == set()
+
+    hm._phase = "waiting"
+    assert hm.get_players_in_hand() == set()
+
+    hm._phase = "river"
+    assert hm.get_players_in_hand() == {1, 2, 3}

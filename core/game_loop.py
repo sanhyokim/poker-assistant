@@ -1088,6 +1088,16 @@ class GameLoop:
             if not fold_results.get(seat, False):
                 continue
 
+            if self._is_showdown_or_payout_guard_active(game_state):
+                logger.info(
+                    "Fold badge ignored during showdown guard: seat=%d "
+                    "phase=%s board_count=%d",
+                    seat,
+                    self._hand_manager.phase,
+                    len(game_state.board or []),
+                )
+                continue
+
             logger.info("FOLD detected via badge for seat %d", seat)
             game_state.actions_since_last_frame.append(
                 ActionRecord(
@@ -1153,6 +1163,7 @@ class GameLoop:
         # Force in_current_hand=False for seats with no visible cards
         # that are not folded and not confirmed
         if self._hand_manager.phase in {"preflop", "flop", "turn", "river"}:
+            showdown_guard = self._is_showdown_or_payout_guard_active(game_state)
             for seat in range(2, 7):
                 seat_key = str(seat)
                 player = game_state.players.get(seat_key)
@@ -1166,6 +1177,15 @@ class GameLoop:
                     and str(seat) not in folded_seats
                     and seat not in self._seat_card_confirmed
                 ):
+                    if showdown_guard:
+                        logger.info(
+                            "Seat card NO_CARD ignored during showdown guard: "
+                            "seat=%d phase=%s board_count=%d",
+                            seat,
+                            self._hand_manager.phase,
+                            len(game_state.board or []),
+                        )
+                        continue
                     player.in_current_hand = False
                     logger.info(
                         "Forced in_current_hand=False for seat %d: "
@@ -1204,6 +1224,22 @@ class GameLoop:
             return True
         self._visual_obstruction_active = False
         return False
+
+    def _is_showdown_or_payout_guard_active(self, game_state: GameState) -> bool:
+        """Return whether showdown/payout guard should protect active players.
+
+        During river with 5 board cards and multiple active players, visual
+        noise from showdown animations can cause false fold-badge detection
+        and transient seat-card failures. This guard prevents premature
+        removal of players who still have a claim to the pot.
+        """
+        phase = self._hand_manager.phase
+        if phase != "river":
+            return False
+        if len(game_state.board or []) < 5:
+            return False
+        players_in_hand = self._hand_manager.get_players_in_hand()
+        return len(players_in_hand) >= 2
 
     def _previous_player_cards_visible(
         self,
