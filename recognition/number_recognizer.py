@@ -293,14 +293,24 @@ class NumberRecognizer(BaseRecognizer):
             return None
 
     def _clean_token(self, text: str) -> str:
-        normalized = text.upper()
+        raw = text.strip()
+        normalized = raw.upper()
         for value in ("USDT", "USD", "CHP"):
             normalized = normalized.replace(value, "")
         normalized = normalized.replace("$", "")
         normalized = normalized.replace(",", "")
-        normalized = normalized.replace(".", "")
+
+        if "." in normalized:
+            normalized = normalized.split(".", 1)[0]
+            logger.debug(
+                "Decimal truncated: raw=%r normalized=%r", raw, normalized
+            )
+
         normalized = normalized.replace(" ", "")
-        return re.sub(r"\D", "", normalized)
+        result = re.sub(r"\D", "", normalized)
+        if result != raw:
+            logger.debug("Token cleaned: raw=%r cleaned=%r", raw, result)
+        return result
 
     def _token_x_position(self, bbox: Any) -> float:
         try:

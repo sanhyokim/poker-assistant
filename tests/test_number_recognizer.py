@@ -324,6 +324,57 @@ class TestEmptyRegions:
         }
 
 
+class TestCleanTokenNormalization:
+    """Decimal point and comma handling tests for _clean_token."""
+
+    @pytest.mark.parametrize(
+        "raw, expected",
+        [
+            ("631.04", "631"),
+            ("1,234.56", "1234"),
+            ("9.99", "9"),
+            ("595.2", "595"),
+            ("1,234", "1234"),
+            ("63104", "63104"),
+            ("1,234.56", "1234"),
+            ("$12,345.67", "12345"),
+            (".04", ""),
+            ("0.99", "0"),
+            ("1234", "1234"),
+        ],
+    )
+    def test_clean_token_normalization(
+        self,
+        number_recognizer: NumberRecognizer,
+        raw: str,
+        expected: str,
+    ) -> None:
+        """_clean_token truncates decimals and strips commas correctly."""
+        assert number_recognizer._clean_token(raw) == expected
+
+    def test_clean_token_split_tokens(
+        self,
+        number_recognizer: NumberRecognizer,
+    ) -> None:
+        """Fractional part tokens (starting with dot) are dropped."""
+        assert number_recognizer._clean_token("631") == "631"
+        assert number_recognizer._clean_token(".04") == ""
+
+    def test_clean_token_comma_vs_dot_distinction(
+        self,
+        number_recognizer: NumberRecognizer,
+    ) -> None:
+        """Comma and dot are NOT treated the same."""
+        # Comma: removed (thousands separator)
+        assert number_recognizer._clean_token("1,234") == "1234"
+        # Dot: truncates (decimal point)
+        assert number_recognizer._clean_token("631.04") == "631"
+        # Both combined
+        assert number_recognizer._clean_token("1,234.56") == "1234"
+        # Large number without decimal must not be altered
+        assert number_recognizer._clean_token("63104") == "63104"
+
+
 class TestRecognizeAll:
     """Batch recognition tests."""
 
