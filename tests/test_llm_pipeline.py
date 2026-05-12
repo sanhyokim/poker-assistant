@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -481,6 +482,136 @@ def test_format_stats_fold_to_cbet_default_na() -> None:
     stats = make_pipeline()._format_opponent_stats({"total_hands": 20, "vpip": 28.0})
 
     assert stats["fold_to_cbet"] == "N/A"
+
+
+class TestLLMLatencyLogging:
+    """Tests for LLM latency tracking logs."""
+
+    @patch("strategy.llm_pipeline.requests.post")
+    def test_call_api_logs_request_start(self, mock_post: MagicMock, caplog) -> None:
+        """_call_api logs request start with task_name, model, prompt_chars, max_tokens."""
+        mock_post.return_value = make_response("ok")
+        pipeline = make_pipeline()
+
+        with caplog.at_level(logging.INFO):
+            pipeline._call_api("test prompt here", max_tokens=100, task_name="test_task")
+
+        assert "LLM request start:" in caplog.text
+        assert "task=test_task" in caplog.text
+        assert "model=default-model" in caplog.text
+        assert "prompt_chars=16" in caplog.text
+        assert "max_tokens=100" in caplog.text
+
+    @patch("strategy.llm_pipeline.requests.post")
+    def test_call_api_does_not_log_prompt_body(self, mock_post: MagicMock, caplog) -> None:
+        """_call_api never logs the prompt text itself."""
+        mock_post.return_value = make_response("ok")
+        pipeline = make_pipeline()
+        secret_prompt = "SECRET_STRATEGY_DETAILS_12345"
+
+        with caplog.at_level(logging.INFO):
+            pipeline._call_api(secret_prompt, max_tokens=10, task_name="test_task")
+
+        assert secret_prompt not in caplog.text
+
+    @patch("strategy.llm_pipeline.requests.post")
+    def test_call_api_does_not_log_api_key(self, mock_post: MagicMock, caplog) -> None:
+        """_call_api never logs the API key."""
+        mock_post.return_value = make_response("ok")
+        pipeline = make_pipeline()
+
+        with caplog.at_level(logging.INFO):
+            pipeline._call_api("prompt", max_tokens=10, task_name="test_task")
+
+        assert "test-key" not in caplog.text
+
+    @patch("strategy.llm_pipeline.requests.post")
+    def test_call_api_logs_response_with_elapsed(self, mock_post: MagicMock, caplog) -> None:
+        """_call_api logs API response with elapsed_ms and status code."""
+        mock_post.return_value = make_response("ok")
+        pipeline = make_pipeline()
+
+        with caplog.at_level(logging.INFO):
+            pipeline._call_api("prompt", max_tokens=10, task_name="test_task")
+
+        assert "LLM API response:" in caplog.text
+        assert "task=test_task" in caplog.text
+        assert "model=default-model" in caplog.text
+        assert "elapsed_ms=" in caplog.text
+        assert "status=200" in caplog.text
+
+    @patch("strategy.llm_pipeline.requests.post")
+    def test_call_api_failure_logs_elapsed(self, mock_post: MagicMock, caplog) -> None:
+        """_call_api failure includes elapsed_ms in the warning log."""
+        mock_post.side_effect = requests.RequestException("boom")
+        pipeline = make_pipeline()
+
+        with caplog.at_level(logging.WARNING):
+            pipeline._call_api("prompt", max_tokens=10, task_name="test_task")
+
+        assert "LLM API failed:" in caplog.text
+        assert "task=test_task" in caplog.text
+        assert "elapsed_ms=" in caplog.text
+        assert "error=boom" in caplog.text
+
+    @patch("strategy.llm_pipeline.requests.post")
+    def test_decide_multiway_logs_task_complete(self, mock_post: MagicMock, caplog) -> None:
+        """decide_multiway emits LLM task complete log with timing."""
+        mock_post.return_value = make_response(
+            '{"action":"check","size":null,"confidence":"medium",'
+            '"reasoning":"Pot control."}'
+        )
+        pipeline = make_pipeline()
+
+        with caplog.at_level(logging.INFO):
+            pipeline.decide_multiway(make_state(), 0.45, [{"vpip": 30}])
+
+        assert "LLM task complete:" in caplog.text
+        assert "task=multiway_decision" in caplog.text
+        assert "total_ms=" in caplog.text
+        assert "parsed=" in caplog.text
+        assert "validated=" in caplog.text
+        assert "fallback=" in caplog.text
+
+    def test_decide_multiway_fallback_behavior_unchanged(self) -> None:
+        """decide_multiway fallback still returns safe check when API fails."""
+        pipeline = make_pipeline()
+        with patch.object(pipeline, "_call_api", return_value=None):
+            result = pipeline.decide_multiway(make_state(), 0.45, [])
+
+        assert result["action"] == "check"
+        assert result["confidence"] == "low"
+        assert "LLM利用不可" in result["reasoning"]
+
+    @patch("strategy.llm_pipeline.requests.post")
+    def test_estimate_ranges_logs_task_complete(self, mock_post: MagicMock, caplog) -> None:
+        """estimate_ranges emits LLM task complete log."""
+        mock_post.return_value = make_response(
+            '{"range_oop":"AA","range_ip":"KK","adjustments_made":"none"}'
+        )
+        pipeline = make_pipeline()
+
+        with caplog.at_level(logging.INFO):
+            pipeline.estimate_ranges(make_state(), {"total_hands": 50}, "AA", "KK")
+
+        assert "LLM task complete:" in caplog.text
+        assert "task=range_estimation" in caplog.text
+        assert "total_ms=" in caplog.text
+
+    @patch("strategy.llm_pipeline.requests.post")
+    def test_validation_logs_elapsed(self, mock_post: MagicMock, caplog) -> None:
+        """_validate_llm_response logs elapsed_ms on success."""
+        mock_post.return_value = make_response(
+            '{"action":"check","size":null,"confidence":"medium",'
+            '"reasoning":"Pot control."}'
+        )
+        pipeline = make_pipeline()
+
+        with caplog.at_level(logging.INFO):
+            pipeline.decide_multiway(make_state(), 0.45, [{"vpip": 30}])
+
+        assert "LLM validation passed (multiway_decision):" in caplog.text
+        assert "elapsed_ms=" in caplog.text
 
 
 def make_response(content: str | None) -> MagicMock:

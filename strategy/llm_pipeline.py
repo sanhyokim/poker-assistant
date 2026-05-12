@@ -244,6 +244,7 @@ class LLMPipeline:
         Returns:
             Dictionary with range_oop, range_ip, adjustments_made, and source.
         """
+        method_start = time.perf_counter()
         safe_stats = self._anonymize_stats(opponent_stats)
         stats = self._format_opponent_stats(safe_stats)
         effective_stack = self._effective_stack(game_state)
@@ -263,9 +264,18 @@ class LLMPipeline:
             **stats,
         )
 
-        text = self._call_api(prompt, max_tokens=400, model=self._select_model(game_state))
+        text = self._call_api(
+            prompt, max_tokens=400, model=self._select_model(game_state),
+            task_name="range_estimation",
+        )
         parsed = self._parse_json_response(text) if text is not None else None
         if parsed is None:
+            total_ms = int((time.perf_counter() - method_start) * 1000)
+            self._logger.info(
+                "LLM task complete: task=range_estimation total_ms=%d "
+                "parsed=false validated=false fallback=true",
+                total_ms,
+            )
             return self._range_fallback(baseline_range_oop, baseline_range_ip)
 
         validated = self._validate_llm_response(
@@ -285,8 +295,20 @@ class LLMPipeline:
         range_oop = str(parsed.get("range_oop", ""))
         range_ip = str(parsed.get("range_ip", ""))
         if not self._validate_range(range_oop) or not self._validate_range(range_ip):
+            total_ms = int((time.perf_counter() - method_start) * 1000)
+            self._logger.info(
+                "LLM task complete: task=range_estimation total_ms=%d "
+                "parsed=true validated=false fallback=true",
+                total_ms,
+            )
             return self._range_fallback(baseline_range_oop, baseline_range_ip)
 
+        total_ms = int((time.perf_counter() - method_start) * 1000)
+        self._logger.info(
+            "LLM task complete: task=range_estimation total_ms=%d "
+            "parsed=true validated=true fallback=false",
+            total_ms,
+        )
         return {
             "range_oop": range_oop,
             "range_ip": range_ip,
@@ -317,6 +339,7 @@ class LLMPipeline:
         if not isinstance(root_strategy, dict):
             return self._no_solver_output_response()
 
+        method_start = time.perf_counter()
         safe_stats = self._anonymize_stats(opponent_stats)
         stats = self._format_opponent_stats(safe_stats)
         prompt = EXPLOIT_ADJUSTMENT_PROMPT.format(
@@ -331,9 +354,18 @@ class LLMPipeline:
             reason_jp_instruction=REASON_JP_INSTRUCTION,
             **stats,
         )
-        text = self._call_api(prompt, max_tokens=250, model=self._select_model(game_state))
+        text = self._call_api(
+            prompt, max_tokens=250, model=self._select_model(game_state),
+            task_name="exploit_adjustment",
+        )
         parsed = self._parse_json_response(text) if text is not None else None
         if parsed is None:
+            total_ms = int((time.perf_counter() - method_start) * 1000)
+            self._logger.info(
+                "LLM task complete: task=exploit_adjustment total_ms=%d "
+                "parsed=false validated=false fallback=true",
+                total_ms,
+            )
             return self._no_solver_output_response()
 
         validated = self._validate_llm_response(
@@ -349,6 +381,13 @@ class LLMPipeline:
                 "reasoning": validated.reasoning,
             }
 
+        total_ms = int((time.perf_counter() - method_start) * 1000)
+        self._logger.info(
+            "LLM task complete: task=exploit_adjustment total_ms=%d "
+            "parsed=true validated=%s fallback=false",
+            total_ms,
+            str(validated is not None).lower(),
+        )
         return {
             "adjusted_action": parsed.get("adjusted_action"),
             "adjusted_size": parsed.get("adjusted_size"),
@@ -382,6 +421,7 @@ class LLMPipeline:
         Returns:
             Action recommendation dictionary.
         """
+        method_start = time.perf_counter()
         prompt = MULTIWAY_DECISION_PROMPT.format(
             board=self._board_to_str(game_state),
             street=game_state.phase,
@@ -406,9 +446,22 @@ class LLMPipeline:
             ),
             reason_jp_instruction=REASON_JP_INSTRUCTION,
         )
-        text = self._call_api(prompt, max_tokens=250, model=self._select_model(game_state))
+        text = self._call_api(
+            prompt,
+            max_tokens=250,
+            model=self._select_model(game_state),
+            task_name="multiway_decision",
+        )
         parsed = self._parse_json_response(text) if text is not None else None
         if parsed is None:
+            total_ms = int((time.perf_counter() - method_start) * 1000)
+            self._logger.info(
+                "LLM task complete: task=multiway_decision phase=%s active=%d "
+                "total_ms=%d parsed=false validated=false fallback=true",
+                game_state.phase,
+                game_state.active_player_count,
+                total_ms,
+            )
             return {
                 "action": "check",
                 "size": None,
@@ -422,6 +475,7 @@ class LLMPipeline:
             MultiwayDecisionResponse,
             parsed,
         )
+        parsed_valid = validated is not None
         if validated is not None:
             parsed = {
                 "action": parsed.get("action"),
@@ -430,6 +484,15 @@ class LLMPipeline:
                 "reasoning": parsed.get("reasoning", parsed.get("reason", "")),
             }
 
+        total_ms = int((time.perf_counter() - method_start) * 1000)
+        self._logger.info(
+            "LLM task complete: task=multiway_decision phase=%s active=%d "
+            "total_ms=%d parsed=true validated=%s fallback=false",
+            game_state.phase,
+            game_state.active_player_count,
+            total_ms,
+            str(parsed_valid).lower(),
+        )
         return {
             "action": parsed.get("action"),
             "size": parsed.get("size"),
@@ -456,14 +519,21 @@ class LLMPipeline:
         Returns:
             Japanese sentence for HUD display, or a fallback string.
         """
+        method_start = time.perf_counter()
         prompt = REASON_GENERATION_PROMPT.format(
             action=action,
             reasoning=reasoning,
             hero_hand=hero_hand,
             board=board,
         )
-        text = self._call_api(prompt, max_tokens=80)
+        text = self._call_api(prompt, max_tokens=80, task_name="reason_generation")
         if text is None or not text.strip():
+            total_ms = int((time.perf_counter() - method_start) * 1000)
+            self._logger.info(
+                "LLM task complete: task=reason_generation total_ms=%d "
+                "parsed=false fallback=true",
+                total_ms,
+            )
             return f"GTO推奨: {action}"
 
         reason = text.strip().splitlines()[0][:40]
@@ -472,22 +542,43 @@ class LLMPipeline:
             ReasonGenerationResponse,
             {"reason": reason},
         )
+        total_ms = int((time.perf_counter() - method_start) * 1000)
+        self._logger.info(
+            "LLM task complete: task=reason_generation total_ms=%d "
+            "parsed=true validated=%s fallback=false",
+            total_ms,
+            str(validated is not None).lower(),
+        )
         if validated is not None:
             return validated.reason[:40]
         return reason
 
     def request_preflop_delta(self, request: JsonDict) -> JsonDict | None:
         """Request preflop delta adjustment from the LLM."""
+        method_start = time.perf_counter()
         prompt = self._build_delta_prompt(request)
-        text = self._call_api(prompt, max_tokens=250)
+        text = self._call_api(prompt, max_tokens=250, task_name="preflop_delta")
         parsed = self._parse_json_response(text) if text is not None else None
         if parsed is None:
+            total_ms = int((time.perf_counter() - method_start) * 1000)
+            self._logger.info(
+                "LLM task complete: task=preflop_delta total_ms=%d "
+                "parsed=false fallback=true",
+                total_ms,
+            )
             return None
 
         validated = self._validate_llm_response(
             "preflop_delta",
             PreflopDeltaResponse,
             parsed,
+        )
+        total_ms = int((time.perf_counter() - method_start) * 1000)
+        self._logger.info(
+            "LLM task complete: task=preflop_delta total_ms=%d "
+            "parsed=true validated=%s fallback=false",
+            total_ms,
+            str(validated is not None).lower(),
         )
         if validated is not None and isinstance(validated, PreflopDeltaResponse):
             return validated.model_dump()
@@ -517,22 +608,27 @@ class LLMPipeline:
     ) -> BaseModel | None:
         """Validate parsed LLM output and preserve existing behavior on failure."""
         self._validation_total += 1
+        val_start = time.perf_counter()
         try:
             validated = model.model_validate(raw_result)
         except ValidationError as exc:
+            elapsed_ms = int((time.perf_counter() - val_start) * 1000)
             self._logger.warning(
-                "LLM validation failed (%s): %s - using raw result",
+                "LLM validation failed (%s): %s elapsed_ms=%d - using raw result",
                 task_name,
                 str(exc)[:200],
+                elapsed_ms,
             )
             return None
 
         self._validation_success += 1
+        elapsed_ms = int((time.perf_counter() - val_start) * 1000)
         self._logger.info(
-            "LLM validation passed (%s): %d/%d",
+            "LLM validation passed (%s): %d/%d elapsed_ms=%d",
             task_name,
             self._validation_success,
             self._validation_total,
+            elapsed_ms,
         )
         return validated
 
@@ -541,6 +637,7 @@ class LLMPipeline:
         prompt: str,
         max_tokens: int,
         model: str | None = None,
+        task_name: str = "unknown",
     ) -> str | None:
         """Call the OpenRouter chat completions API.
 
@@ -548,6 +645,7 @@ class LLMPipeline:
             prompt: Prompt text.
             max_tokens: Maximum response tokens.
             model: Model name. Uses default model when None.
+            task_name: Human-readable task label for logging.
 
         Returns:
             Response content text, or None on failure.
@@ -556,12 +654,22 @@ class LLMPipeline:
             self._logger.warning("OpenRouter API key is not configured")
             return None
 
+        selected_model = model or self.model_default
+        self._logger.info(
+            "LLM request start: task=%s model=%s prompt_chars=%d max_tokens=%d timeout=%ss",
+            task_name,
+            selected_model,
+            len(prompt),
+            max_tokens,
+            self.timeout_sec,
+        )
+
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
         payload = {
-            "model": model or self.model_default,
+            "model": selected_model,
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": 0.3,
@@ -580,10 +688,13 @@ class LLMPipeline:
                 timeout=(5, self.timeout_sec),
             )
             elapsed = time.perf_counter() - call_start
-            self._logger.debug(
-                "OpenRouter API responded in %.1fs (timeout=%ss)",
-                elapsed,
-                self.timeout_sec,
+            elapsed_ms = int(elapsed * 1000)
+            self._logger.info(
+                "LLM API response: task=%s model=%s elapsed_ms=%d status=%d",
+                task_name,
+                selected_model,
+                elapsed_ms,
+                response.status_code,
             )
             response.raise_for_status()
             data = response.json()
@@ -604,9 +715,12 @@ class LLMPipeline:
             ValueError,
         ) as error:
             elapsed = time.perf_counter() - call_start
+            elapsed_ms = int(elapsed * 1000)
             self._logger.warning(
-                "OpenRouter API call failed after %.1fs: %s",
-                elapsed,
+                "LLM API failed: task=%s model=%s elapsed_ms=%d error=%s",
+                task_name,
+                selected_model,
+                elapsed_ms,
                 error,
             )
             return None
