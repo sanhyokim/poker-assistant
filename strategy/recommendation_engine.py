@@ -305,10 +305,37 @@ class RecommendationEngine:
                 started_at,
             )
 
+        timeout_ms = int(request.get("timeout_ms", 12000))
+        bridge_timeout_sec = max(timeout_ms / 1000.0 + 2.0, 12.0)
+        effective_stack = int(request.get("effective_stack") or 0)
+        starting_pot = int(request.get("starting_pot") or 0)
+        spr = effective_stack / max(starting_pot, 1)
+        logger.info(
+            "HU solver request: phase=%s timeout_ms=%d bridge_timeout_sec=%.1f "
+            "pot=%d effective_stack=%d spr=%.1f board_count=%d actions_played=%d",
+            game_state.phase,
+            timeout_ms,
+            bridge_timeout_sec,
+            game_state.pot,
+            effective_stack,
+            spr,
+            len(game_state.board or []),
+            len(request.get("actions_played") or []),
+        )
+
         solve_started = time.perf_counter()
-        solver_output = self.solver_bridge.solve(request)
+        solver_output = self.solver_bridge.solve(request, timeout=bridge_timeout_sec)
         latency["solver_ms"] = self._elapsed_ms(solve_started)
         if not solver_output.get("success"):
+            logger.info(
+                "HU solver failed: phase=%s elapsed_ms=%.0f timeout_ms=%d "
+                "bridge_timeout_sec=%.1f error=%s",
+                game_state.phase,
+                latency["solver_ms"],
+                timeout_ms,
+                bridge_timeout_sec,
+                solver_output.get("error", "Solver failed"),
+            )
             return self._llm_headsup_fallback(
                 game_state,
                 opponent_stats,
@@ -316,6 +343,15 @@ class RecommendationEngine:
                 latency,
                 started_at,
             )
+
+        logger.info(
+            "HU solver success: phase=%s elapsed_ms=%.0f timeout_ms=%d "
+            "bridge_timeout_sec=%.1f",
+            game_state.phase,
+            latency["solver_ms"],
+            timeout_ms,
+            bridge_timeout_sec,
+        )
 
         parse_started = time.perf_counter()
         action, amount, probabilities = self._parse_solver_strategy(

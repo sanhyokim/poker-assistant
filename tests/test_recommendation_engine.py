@@ -1054,6 +1054,105 @@ def test_generate_postflop_headsup_solver_success() -> None:
     engine.llm_pipeline.generate_reason.assert_not_called()
 
 
+def test_headsup_solver_timeout_from_request(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """solve() is called with timeout derived from request timeout_ms."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {
+        "board": "Td7c2h",
+        "timeout_ms": 20000,
+        "effective_stack": 4000,
+        "starting_pot": 600,
+        "actions_played": ["BET 300"],
+    }
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
+        },
+    }
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(
+            state,
+            {"2": {"vpip": 30, "total_hands": 49}},
+        )
+
+    assert recommendation.strategy_source == "solver"
+    engine.solver_bridge.solve.assert_called_once()
+    call_kwargs = engine.solver_bridge.solve.call_args[1]
+    assert call_kwargs["timeout"] == 22.0
+    assert "timeout_ms=20000" in caplog.text
+    assert "bridge_timeout_sec=22.0" in caplog.text
+    assert "HU solver success" in caplog.text
+
+
+def test_headsup_solver_timeout_default_when_missing(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """When timeout_ms is missing from request, default 12000ms → 14.0s."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {"board": "Td7c2h"}
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
+        },
+    }
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(
+            state,
+            {"2": {"vpip": 30, "total_hands": 49}},
+        )
+
+    assert recommendation.strategy_source == "solver"
+    engine.solver_bridge.solve.assert_called_once()
+    call_kwargs = engine.solver_bridge.solve.call_args[1]
+    assert call_kwargs["timeout"] == pytest.approx(14.0)
+    assert call_kwargs["timeout"] >= 12.0
+    assert "timeout_ms=12000" in caplog.text
+    assert "bridge_timeout_sec=14.0" in caplog.text
+
+
+def test_headsup_solver_failure_uses_correct_timeout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Solver failure fallback still passes the correct bridge timeout."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {
+        "board": "Td7c2h",
+        "timeout_ms": 20000,
+    }
+    engine.solver_bridge.solve.return_value = {
+        "success": False,
+        "error": "Solver timeout (no response within 22.0s)",
+    }
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(
+            state,
+            {"2": {"vpip": 30, "total_hands": 49}},
+        )
+
+    engine.solver_bridge.solve.assert_called_once()
+    call_kwargs = engine.solver_bridge.solve.call_args[1]
+    assert call_kwargs["timeout"] == 22.0
+    assert "timeout_ms=20000" in caplog.text
+    assert "bridge_timeout_sec=22.0" in caplog.text
+    assert "HU solver failed" in caplog.text
+    assert "Solver timeout" in caplog.text
+
+
 def test_generate_postflop_headsup_uses_exploit_only_with_usable_stats() -> None:
     """Heads-up postflop calls only suggest_exploit when stats meet threshold."""
     engine = make_engine()
