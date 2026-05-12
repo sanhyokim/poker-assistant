@@ -47,7 +47,7 @@ class GameLoop:
         on_game_state: Callable[[GameState], None] | None = None,
         enable_strategy: bool = True,
         hud_callback: Callable[[Recommendation | None], None] | None = None,
-        hud_computing_callback: Callable[[], None] | None = None,
+        hud_computing_callback: Callable[[str], None] | None = None,
     ) -> None:
         self._capture = capture
         self._config = config
@@ -87,6 +87,8 @@ class GameLoop:
         self._visual_obstruction_active = False
         self._visual_obstruction_until = 0.0
         self._visual_obstruction_hold_sec = 1.0
+        self._visual_obstruction_recovery_until = 0.0
+        self._visual_obstruction_recovery_sec = 1.5
         self._last_seat_card_states: dict[int, bool] = {}
         self._seat_card_confirmed: set[int] = set()
 
@@ -284,6 +286,7 @@ class GameLoop:
             self._seat_card_fold_latched.clear()
             self._visual_obstruction_active = False
             self._visual_obstruction_until = 0.0
+            self._visual_obstruction_recovery_until = 0.0
             self._last_seat_card_states.clear()
             self._seat_card_confirmed.clear()
             self._hero_cards_missing_since_hand_end = False
@@ -340,6 +343,7 @@ class GameLoop:
         self._table_active_streak = 0
         self._visual_obstruction_active = False
         self._visual_obstruction_until = 0.0
+        self._visual_obstruction_recovery_until = 0.0
         self._last_seat_card_states.clear()
         self._seat_card_confirmed.clear()
         logger.info("Game loop reset")
@@ -580,7 +584,7 @@ class GameLoop:
                     )
                 self._notify_hud(self._previous_recommendation)
             else:
-                self._notify_hud_computing()
+                self._notify_hud_computing("CHART CHECKING...")
                 self._revalidate_seat_cards_before_strategy(game_state)
                 recommendation = self._generate_recommendation(
                     game_state,
@@ -626,7 +630,12 @@ class GameLoop:
                 self._notify_hud(self._previous_recommendation)
             else:
                 # 初回計算（自分のターンが来た最初のフレーム）
-                self._notify_hud_computing()
+                if game_state.active_player_count >= 3:
+                    self._notify_hud_computing("LLM ANALYZING...")
+                elif game_state.active_player_count == 2:
+                    self._notify_hud_computing("SOLVER THINKING...")
+                else:
+                    self._notify_hud_computing("Computing...")
                 self._revalidate_seat_cards_before_strategy(game_state)
                 recommendation = self._generate_recommendation(game_state)
                 guarded = self._guard_postflop_recommendation_source(
@@ -864,12 +873,16 @@ class GameLoop:
         except Exception:
             logger.warning("HUD callback failed", exc_info=True)
 
-    def _notify_hud_computing(self) -> None:
-        """Notify the HUD callback that computation is in progress."""
+    def _notify_hud_computing(self, message: str = "Computing...") -> None:
+        """Notify the HUD callback that computation is in progress.
+
+        Args:
+            message: Processing status text to display.
+        """
         if self._hud_computing_callback is None:
             return
         try:
-            self._hud_computing_callback()
+            self._hud_computing_callback(message)
         except Exception:
             logger.warning("HUD computing callback failed", exc_info=True)
 
@@ -1098,11 +1111,12 @@ class GameLoop:
         """
         players_in_hand = self._hand_manager.get_players_in_hand()
 
-        if self._is_visual_obstruction_active():
+        if self._is_visual_obstruction_protected():
             for seat, detected in fold_results.items():
                 if detected:
                     logger.info(
-                        "Fold badge ignored during visual obstruction: seat=%s",
+                        "Fold badge ignored during visual obstruction "
+                        "or recovery: seat=%s",
                         seat,
                     )
             return
@@ -1198,22 +1212,59 @@ class GameLoop:
             player.cards_visible = bool(detected_visible)
 
         # Force in_current_hand=False for seats with no visible cards
-        # that are not folded and not confirmed
+        # that are not folded and not confirmed.
+        #
+        # cards_visible is an observation; in_current_hand is participation
+        # state. A transient NO_CARD must not drop participation. Only force
+        # in_current_hand=False when there is strong evidence the player is
+        # truly gone.
         if self._hand_manager.phase in {"preflop", "flop", "turn", "river"}:
             showdown_guard = self._is_showdown_or_payout_guard_active(game_state)
+            obstruction_protected = self._is_visual_obstruction_protected()
+            hm_participant_observed = getattr(
+                self._hand_manager, "_participant_observed_seats", set()
+            )
+            hm_participated = getattr(
+                self._hand_manager, "_participated_seats", set()
+            )
             for seat in range(2, 7):
                 seat_key = str(seat)
                 player = game_state.players.get(seat_key)
                 if player is None:
                     continue
-                if (
-                    not player.cards_visible
-                    and player.in_current_hand
-                    and seat not in folded_seats
-                    and int(seat) not in folded_seats
-                    and str(seat) not in folded_seats
-                    and seat not in self._seat_card_confirmed
-                ):
+                if not player.cards_visible and player.in_current_hand:
+                    if (
+                        seat in folded_seats
+                        or int(seat) in folded_seats
+                        or str(seat) in folded_seats
+                    ):
+                        continue
+                    if seat in self._seat_card_confirmed:
+                        continue
+                    if obstruction_protected:
+                        logger.debug(
+                            "in_current_hand=False suppressed for seat %d: "
+                            "visual obstruction protected",
+                            seat,
+                        )
+                        continue
+                    if seat in players_in_hand_seats:
+                        logger.debug(
+                            "in_current_hand=False suppressed for seat %d: "
+                            "players_in_hand=True",
+                            seat,
+                        )
+                        continue
+                    if (
+                        seat_key in hm_participant_observed
+                        or seat_key in hm_participated
+                    ):
+                        logger.debug(
+                            "in_current_hand=False suppressed for seat %d: "
+                            "participant observed",
+                            seat,
+                        )
+                        continue
                     if showdown_guard:
                         logger.info(
                             "Seat card NO_CARD ignored during showdown guard: "
@@ -1246,11 +1297,17 @@ class GameLoop:
             self._visual_obstruction_until = (
                 time.monotonic() + self._visual_obstruction_hold_sec
             )
+            self._visual_obstruction_recovery_until = (
+                time.monotonic()
+                + self._visual_obstruction_hold_sec
+                + self._visual_obstruction_recovery_sec
+            )
             logger.info(
                 "Visual obstruction detected: simultaneous seat card changes=%s "
-                "hold=%.1fs",
+                "hold=%.1fs recovery=%.1fs",
                 changed_seats,
                 self._visual_obstruction_hold_sec,
+                self._visual_obstruction_recovery_sec,
             )
 
     def _is_visual_obstruction_active(self) -> bool:
@@ -1261,6 +1318,16 @@ class GameLoop:
             return True
         self._visual_obstruction_active = False
         return False
+
+    def _is_visual_obstruction_protected(self) -> bool:
+        """Return whether visual obstruction protection or recovery window is active.
+
+        During the recovery window after obstruction ends, NO_CARD readings
+        are still likely as the display stabilizes.
+        """
+        if self._is_visual_obstruction_active():
+            return True
+        return time.monotonic() < self._visual_obstruction_recovery_until
 
     def _is_showdown_or_payout_guard_active(self, game_state: GameState) -> bool:
         """Return whether showdown/payout guard should protect active players.

@@ -2106,11 +2106,14 @@ def test_cards_invisible_forces_not_in_hand(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """cards_visible=False, in_current_hand=True, not folded, not confirmed -> NO."""
+    """cards_visible=False, in_current_hand=True, not in players_in_hand -> NO."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "flop"
-    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    # Seat 3 is NOT in players_in_hand, NOT participant, NOT confirmed
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
     loop._hand_manager._folded_seats = set()
+    loop._hand_manager._participated_seats = set()
+    loop._hand_manager._participant_observed_seats = set()
     loop._seat_card_confirmed = set()
     state = create_empty_game_state()
     state.players["3"].is_seated = True
@@ -2534,3 +2537,238 @@ def test_rejoin_rejected_after_all_retries_fail(
 
     assert result is False
     assert loop._seat_card_detector.detect_all.call_count == 3
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix39: Visual obstruction recovery window & in_current_hand guards
+# ---------------------------------------------------------------------------
+
+
+def test_obstruction_active_keeps_in_current_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visual obstruction active: in_current_hand=True is preserved for active seat."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = set()
+    loop._visual_obstruction_active = True
+    loop._visual_obstruction_until = time.monotonic() + 10.0
+
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is True
+
+
+def test_recovery_window_keeps_in_current_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery window after obstruction: in_current_hand=True is preserved."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = set()
+    loop._visual_obstruction_active = False
+    loop._visual_obstruction_until = 0.0
+    loop._visual_obstruction_recovery_until = time.monotonic() + 10.0
+
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is True
+
+
+def test_players_in_hand_true_keeps_in_current_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seat in hand_manager.players_in_hand=True keeps in_current_hand despite NO_CARD."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = set()
+
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is True
+
+
+def test_participant_observed_keeps_in_current_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seat in participant_observed_seats keeps in_current_hand despite NO_CARD."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = set()
+    loop._hand_manager._participant_observed_seats = {"3"}
+
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is True
+
+
+def test_participated_seats_keeps_in_current_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seat in participated_seats keeps in_current_hand despite NO_CARD."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = set()
+    loop._hand_manager._participated_seats = {"3"}
+
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is True
+
+
+def test_obstruction_fold_badge_ignored(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FoldBadge is ignored during visual obstruction protection (active + recovery)."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._visual_obstruction_active = True
+    loop._visual_obstruction_until = time.monotonic() + 10.0
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    game_state = _state_with_player("3")
+
+    loop._process_fold_badge_detection(game_state, {3: True})
+
+    assert game_state.actions_since_last_frame == []
+
+
+def test_recovery_window_fold_badge_ignored(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FoldBadge is ignored during recovery window after obstruction."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._visual_obstruction_active = False
+    loop._visual_obstruction_until = 0.0
+    loop._visual_obstruction_recovery_until = time.monotonic() + 10.0
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    game_state = _state_with_player("3")
+
+    loop._process_fold_badge_detection(game_state, {3: True})
+
+    assert game_state.actions_since_last_frame == []
+
+
+def test_normal_fold_badge_still_works(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normal FoldBadge (no obstruction) still generates FOLD action."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True, "3": True}
+    game_state = _state_with_player("3")
+
+    loop._process_fold_badge_detection(game_state, {3: True})
+
+    assert len(game_state.actions_since_last_frame) == 1
+    assert game_state.actions_since_last_frame[0].seat == 3
+    assert game_state.actions_since_last_frame[0].action == "FOLD"
+
+
+def test_hand_end_phase_no_force(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """hand_end phase: in_current_hand forcing is not applied."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "hand_end"
+    loop._hand_manager._players_in_hand = {}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = set()
+
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is True
+
+
+def test_waiting_phase_no_force(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """waiting phase: in_current_hand forcing is not applied."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "waiting"
+    loop._hand_manager._players_in_hand = set()
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = set()
+
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is True
+
+
+def test_unprotected_no_card_still_forces_in_current_hand_false(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Unprotected seat (not in hand, not participant, no obstruction) still forced NO."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    loop._hand_manager._folded_seats = set()
+    loop._seat_card_confirmed = set()
+    # Seat 3 is NOT in players_in_hand, NOT participant, NOT confirmed
+    loop._hand_manager._participated_seats = set()
+    loop._hand_manager._participant_observed_seats = set()
+
+    state = create_empty_game_state()
+    state.players["3"].is_seated = True
+    state.players["3"].in_current_hand = True
+    state.players["3"].cards_visible = False
+
+    loop._apply_seat_card_visibility(state, {3: False})
+
+    assert state.players["3"].in_current_hand is False
