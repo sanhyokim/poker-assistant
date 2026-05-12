@@ -49,16 +49,32 @@ def _make_loop_for_postflop(
         side_effect=lambda rec, gs, ph, ctx: rec
     )
     loop._apply_action_constraints_to_recommendation = MagicMock(return_value=False)
+    # Async solver mocks
+    loop._start_async_postflop_recommendation = MagicMock()
+    loop._is_pending_recommendation_alive = MagicMock(return_value=False)
+    loop._poll_async_recommendation_result = MagicMock(return_value=None)
+    loop._clear_pending_state = MagicMock()
+    loop._run_recommendation_worker = MagicMock()
     return loop
 
 
-def _state(phase: str = "preflop", is_my_turn: bool = True) -> GameState:
-    """Return a strategy-ready GameState."""
+def _state(
+    phase: str = "preflop",
+    is_my_turn: bool = True,
+    active: int = 3,
+) -> GameState:
+    """Return a strategy-ready GameState.
+
+    Args:
+        phase: Game phase (preflop/flop/turn/river).
+        is_my_turn: Whether it is hero's turn.
+        active: Active player count (default 3 for synchronous multiway path).
+    """
     state = create_empty_game_state()
     state.phase = phase
     state.hero.is_my_turn = is_my_turn
     state.hero.in_current_hand = True
-    state.active_player_count = 2
+    state.active_player_count = active
     return state
 
 
@@ -644,3 +660,222 @@ def test_cached_recommendation_invalid_logged(
         loop._handle_strategy(state)
 
     assert "Cached recommendation discarded" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Async HU postflop solver worker tests
+# ---------------------------------------------------------------------------
+
+
+def test_async_hu_postflop_starts_worker_thread() -> None:
+    """HU postflop (active=2) starts an async solver worker."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "flop"
+    hand_manager.get_players_in_hand.return_value = {1, 2}
+
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    loop._poll_async_recommendation_result.return_value = None
+    loop._is_pending_recommendation_alive.return_value = False
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._handle_strategy(state)
+
+    loop._start_async_postflop_recommendation.assert_called_once()
+
+
+def test_async_hu_returns_without_saving() -> None:
+    """Async HU path returns without saving or HUD update when no result ready."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "flop"
+    hand_manager.get_players_in_hand.return_value = {1, 2}
+
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    loop._poll_async_recommendation_result.return_value = None
+    loop._is_pending_recommendation_alive.return_value = False
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._handle_strategy(state)
+
+    loop._save_recommendation_to_hand_manager.assert_not_called()
+    loop._notify_hud.assert_not_called()
+    assert loop._previous_recommendation is None
+
+
+def test_async_poll_accepts_valid_result() -> None:
+    """Valid async result is saved, HUD-notified, and stored as previous."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "flop"
+    hand_manager.get_players_in_hand.return_value = {1, 2}
+
+    recommendation = Recommendation(
+        action="CHECK", amount=0, strategy_source="solver"
+    )
+
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    # Set up completed pending state with valid context
+    completed_thread = MagicMock()
+    completed_thread.is_alive.return_value = False
+    loop._pending_recommendation_thread = completed_thread
+    loop._pending_recommendation_result = recommendation
+    loop._pending_recommendation_error = None
+    loop._pending_recommendation_context = {
+        "phase": "flop", "board_count": 3,
+    }
+    loop._pending_recommendation_active_id = 1
+    del loop._poll_async_recommendation_result  # Use real method
+    loop._is_recommendation_context_still_valid = MagicMock(return_value=True)
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._handle_strategy(state)
+
+    loop._save_recommendation_to_hand_manager.assert_called_once()
+    assert loop._previous_recommendation is recommendation
+
+
+def test_async_poll_discards_stale_result() -> None:
+    """Async result is discarded when the context became stale during solve."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "flop"
+    hand_manager.get_players_in_hand.return_value = {1, 2}
+
+    recommendation = Recommendation(
+        action="CHECK", amount=0, strategy_source="fallback"
+    )
+
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    # Set up completed pending state with stale context
+    completed_thread = MagicMock()
+    completed_thread.is_alive.return_value = False
+    loop._pending_recommendation_thread = completed_thread
+    loop._pending_recommendation_result = recommendation
+    loop._pending_recommendation_error = None
+    loop._pending_recommendation_context = {
+        "phase": "flop", "board_count": 3,
+    }
+    loop._pending_recommendation_active_id = 1
+    del loop._poll_async_recommendation_result  # Use real method
+    # Freshness returns False → stale discard
+    loop._is_recommendation_context_still_valid = MagicMock(return_value=False)
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._handle_strategy(state)
+
+    loop._save_recommendation_to_hand_manager.assert_not_called()
+    loop._notify_hud.assert_not_called()
+    assert loop._previous_recommendation is None
+
+
+def test_async_no_second_thread_when_pending() -> None:
+    """No second solver thread is started when one is already pending."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "flop"
+    hand_manager.get_players_in_hand.return_value = {1, 2}
+
+    loop = _make_loop_for_postflop(hand_manager)
+    loop._poll_async_recommendation_result.return_value = None
+    loop._is_pending_recommendation_alive.return_value = True  # Already running
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._handle_strategy(state)
+
+    loop._start_async_postflop_recommendation.assert_not_called()
+
+
+def test_async_cleared_on_new_hand() -> None:
+    """Pending async state is cleared on NEW_HAND."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "flop"
+    hand_manager.get_players_in_hand.return_value = {1, 2}
+
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+    state.game_event = "NEW_HAND"
+
+    loop._handle_strategy(state)
+
+    loop._clear_pending_state.assert_called()
+
+
+def test_async_cleared_on_not_my_turn() -> None:
+    """Pending async state is cleared when hero turn ends."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "flop"
+    hand_manager.get_players_in_hand.return_value = {1, 2}
+
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    loop._last_strategy_is_my_turn = True
+
+    state = _state(phase="flop", is_my_turn=False, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._handle_strategy(state)
+
+    loop._clear_pending_state.assert_called()
+
+
+def test_multiway_remains_synchronous() -> None:
+    """Multiway (active>=3) still calls generate synchronously."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "flop"
+    hand_manager.get_players_in_hand.return_value = {1, 2, 3}
+
+    recommendation_engine = MagicMock()
+    recommendation_engine.generate.return_value = Recommendation(
+        action="CHECK", amount=0, strategy_source="llm_multiway"
+    )
+
+    loop = _make_loop_for_postflop(hand_manager, recommendation_engine)
+    loop._is_recommendation_context_still_valid = MagicMock(return_value=True)
+    loop._build_recommendation_context_snapshot = MagicMock(
+        return_value={"phase": "flop", "board_count": 3}
+    )
+
+    state = _state(phase="flop", is_my_turn=True, active=3)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._handle_strategy(state)
+
+    # Synchronous: generate was called and result saved
+    recommendation_engine.generate.assert_called_once()
+    loop._save_recommendation_to_hand_manager.assert_called_once()
+    # Async: NOT started
+    loop._start_async_postflop_recommendation.assert_not_called()
+
+
+def test_preflop_remains_synchronous() -> None:
+    """Preflop still computes synchronously (active count doesn't matter)."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "preflop"
+    hand_manager.get_players_in_hand.return_value = {1, 2}
+
+    recommendation_engine = MagicMock()
+    recommendation_engine.generate.return_value = Recommendation(
+        action="RAISE", amount=300, strategy_source="preflop_chart"
+    )
+
+    loop = _make_loop(hand_manager, recommendation_engine)
+    loop._revalidate_seat_cards_before_strategy = MagicMock()
+    loop._save_recommendation_to_hand_manager = MagicMock()
+    loop._is_recommendation_context_still_valid = MagicMock(return_value=True)
+    loop._build_recommendation_context_snapshot = MagicMock(
+        return_value={"phase": "preflop", "board_count": 0}
+    )
+
+    state = _state(phase="preflop", is_my_turn=True, active=2)
+
+    loop._handle_strategy(state)
+
+    recommendation_engine.generate.assert_called_once()
+    loop._save_recommendation_to_hand_manager.assert_called_once()

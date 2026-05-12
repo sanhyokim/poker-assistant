@@ -1,7 +1,9 @@
 """Main polling loop that builds GameState objects from captured frames."""
 
+import copy
 import inspect
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
@@ -124,6 +126,14 @@ class GameLoop:
         self._previous_recommendation_context: dict[str, object] | None = None
         self._last_strategy_phase: str | None = None
 
+        # Async HU postflop solver worker state
+        self._pending_recommendation_thread: threading.Thread | None = None
+        self._pending_recommendation_result: Recommendation | None = None
+        self._pending_recommendation_error: Exception | None = None
+        self._pending_recommendation_context: dict[str, object] | None = None
+        self._pending_recommendation_id: int = 0
+        self._pending_recommendation_active_id: int | None = None
+
         if enable_strategy:
             self._init_strategy_modules()
 
@@ -159,6 +169,7 @@ class GameLoop:
         self._cached_hand_id = None
         self._previous_recommendation = None
         self._previous_recommendation_context = None
+        self._clear_pending_state()
         self._last_recommendation_log = None
         self._last_strategy_is_my_turn = False
         self._notify_hud(None)
@@ -350,6 +361,7 @@ class GameLoop:
         self._last_hand_manager_phase = None
         self._previous_recommendation = None
         self._previous_recommendation_context = None
+        self._clear_pending_state()
         self._last_strategy_phase = None
         self._diff_detector.reset()
         self._action_estimator.reset()
@@ -562,10 +574,12 @@ class GameLoop:
             self._last_recommendation_log = None
             self._previous_recommendation = None
             self._previous_recommendation_context = None
+            self._clear_pending_state()
 
         if phase == "preflop" and self._last_strategy_phase != "preflop":
             self._previous_recommendation = None
             self._previous_recommendation_context = None
+            self._clear_pending_state()
 
         if game_state.game_event == "NEW_STREET":
             self._last_recommendation_log = None
@@ -579,6 +593,7 @@ class GameLoop:
                 self._last_recommendation_log = None
                 self._previous_recommendation = None
                 self._previous_recommendation_context = None
+                self._clear_pending_state()
                 self._notify_hud(None)
             self._save_human_action_to_hand_manager(game_state)
             self._last_strategy_phase = phase
@@ -714,49 +729,151 @@ class GameLoop:
                     self._last_strategy_is_my_turn = True
                     return
 
-                if game_state.active_player_count >= 3:
-                    self._notify_hud_computing("LLM ANALYZING...")
-                elif game_state.active_player_count == 2:
-                    self._notify_hud_computing("SOLVER THINKING...")
-                else:
-                    self._notify_hud_computing("Computing...")
                 self._revalidate_seat_cards_before_strategy(game_state)
-                snapshot = self._build_recommendation_context_snapshot(game_state)
-                recommendation = self._generate_recommendation(game_state)
-                if not self._is_recommendation_context_still_valid(
-                    snapshot, game_state
-                ):
-                    logger.info(
-                        "Stale recommendation discarded: "
-                        "phase=%s board_count=%d actions=%d "
-                        "hero_is_my_turn=%s hero_in_hand=%s",
-                        phase,
-                        len(game_state.board or []),
-                        len(game_state.current_street_actions or []),
-                        game_state.hero.is_my_turn,
-                        game_state.hero.in_current_hand,
+
+                if game_state.active_player_count == 2:
+                    # --- Heads-up: async solver via worker thread ---
+                    self._notify_hud_computing("SOLVER THINKING...")
+
+                    # Poll for a completed async result
+                    recommendation = self._poll_async_recommendation_result(
+                        game_state,
                     )
-                    self._save_human_action_to_hand_manager(game_state)
-                    self._last_strategy_phase = phase
-                    self._last_strategy_is_my_turn = True
-                    return
-                guarded = self._guard_postflop_recommendation_source(
-                    recommendation, game_state, phase, "Synchronous"
-                )
-                if guarded is None:
-                    self._save_human_action_to_hand_manager(game_state)
-                    self._last_strategy_phase = phase
-                    self._last_strategy_is_my_turn = True
-                    return
-                recommendation = guarded
-                self._log_recommendation("Postflop recommendation", recommendation)
-                self._log_recommendation_change(recommendation)
-                self._save_recommendation_to_hand_manager(
-                    recommendation, strategy_started_at
-                )
-                self._previous_recommendation = recommendation
-                self._previous_recommendation_context = snapshot
-                self._notify_hud(recommendation)
+                    if recommendation is not None:
+                        guarded = self._guard_postflop_recommendation_source(
+                            recommendation, game_state, phase, "Async",
+                        )
+                        if guarded is None:
+                            self._save_human_action_to_hand_manager(
+                                game_state,
+                            )
+                            self._last_strategy_phase = phase
+                            self._last_strategy_is_my_turn = True
+                            return
+                        recommendation = guarded
+                        self._log_recommendation(
+                            "Postflop recommendation", recommendation,
+                        )
+                        self._log_recommendation_change(recommendation)
+                        self._save_recommendation_to_hand_manager(
+                            recommendation, strategy_started_at,
+                        )
+                        self._previous_recommendation = recommendation
+                        self._previous_recommendation_context = (
+                            self._build_recommendation_context_snapshot(
+                                game_state,
+                            )
+                        )
+                        self._notify_hud(recommendation)
+                    else:
+                        # No result yet: start solver if not already running
+                        if not self._is_pending_recommendation_alive():
+                            snapshot = (
+                                self._build_recommendation_context_snapshot(
+                                    game_state,
+                                )
+                            )
+                            self._start_async_postflop_recommendation(
+                                game_state, snapshot,
+                            )
+                        else:
+                            logger.debug(
+                                "Async recommendation already pending: "
+                                "request_id=%d",
+                                self._pending_recommendation_active_id,
+                            )
+                        self._save_human_action_to_hand_manager(game_state)
+                        self._last_strategy_phase = phase
+                        self._last_strategy_is_my_turn = True
+                        return
+
+                elif game_state.active_player_count >= 3:
+                    # --- Multiway: synchronous LLM (unchanged) ---
+                    self._notify_hud_computing("LLM ANALYZING...")
+                    snapshot = self._build_recommendation_context_snapshot(
+                        game_state,
+                    )
+                    recommendation = self._generate_recommendation(game_state)
+                    if not self._is_recommendation_context_still_valid(
+                        snapshot, game_state
+                    ):
+                        logger.info(
+                            "Stale recommendation discarded: "
+                            "phase=%s board_count=%d actions=%d "
+                            "hero_is_my_turn=%s hero_in_hand=%s",
+                            phase,
+                            len(game_state.board or []),
+                            len(game_state.current_street_actions or []),
+                            game_state.hero.is_my_turn,
+                            game_state.hero.in_current_hand,
+                        )
+                        self._save_human_action_to_hand_manager(game_state)
+                        self._last_strategy_phase = phase
+                        self._last_strategy_is_my_turn = True
+                        return
+                    guarded = self._guard_postflop_recommendation_source(
+                        recommendation, game_state, phase, "Synchronous",
+                    )
+                    if guarded is None:
+                        self._save_human_action_to_hand_manager(game_state)
+                        self._last_strategy_phase = phase
+                        self._last_strategy_is_my_turn = True
+                        return
+                    recommendation = guarded
+                    self._log_recommendation(
+                        "Postflop recommendation", recommendation,
+                    )
+                    self._log_recommendation_change(recommendation)
+                    self._save_recommendation_to_hand_manager(
+                        recommendation, strategy_started_at,
+                    )
+                    self._previous_recommendation = recommendation
+                    self._previous_recommendation_context = snapshot
+                    self._notify_hud(recommendation)
+
+                else:
+                    # --- Fallback (active < 2): synchronous (unchanged) ---
+                    self._notify_hud_computing("Computing...")
+                    snapshot = self._build_recommendation_context_snapshot(
+                        game_state,
+                    )
+                    recommendation = self._generate_recommendation(game_state)
+                    if not self._is_recommendation_context_still_valid(
+                        snapshot, game_state
+                    ):
+                        logger.info(
+                            "Stale recommendation discarded: "
+                            "phase=%s board_count=%d actions=%d "
+                            "hero_is_my_turn=%s hero_in_hand=%s",
+                            phase,
+                            len(game_state.board or []),
+                            len(game_state.current_street_actions or []),
+                            game_state.hero.is_my_turn,
+                            game_state.hero.in_current_hand,
+                        )
+                        self._save_human_action_to_hand_manager(game_state)
+                        self._last_strategy_phase = phase
+                        self._last_strategy_is_my_turn = True
+                        return
+                    guarded = self._guard_postflop_recommendation_source(
+                        recommendation, game_state, phase, "Synchronous",
+                    )
+                    if guarded is None:
+                        self._save_human_action_to_hand_manager(game_state)
+                        self._last_strategy_phase = phase
+                        self._last_strategy_is_my_turn = True
+                        return
+                    recommendation = guarded
+                    self._log_recommendation(
+                        "Postflop recommendation", recommendation,
+                    )
+                    self._log_recommendation_change(recommendation)
+                    self._save_recommendation_to_hand_manager(
+                        recommendation, strategy_started_at,
+                    )
+                    self._previous_recommendation = recommendation
+                    self._previous_recommendation_context = snapshot
+                    self._notify_hud(recommendation)
 
         self._save_human_action_to_hand_manager(game_state)
         self._last_strategy_phase = phase
@@ -1244,6 +1361,160 @@ class GameLoop:
         if current_state.phase in {"waiting", "hand_end"}:
             return False
         return True
+
+    # ------------------------------------------------------------------
+    # Async HU postflop solver worker
+    # ------------------------------------------------------------------
+
+    def _clear_pending_state(self) -> None:
+        """Reset all pending recommendation fields.
+
+        Does not touch _pending_recommendation_id (monotonically
+        incrementing) or _previous_recommendation (separate lifecycle).
+        """
+        self._pending_recommendation_thread = None
+        self._pending_recommendation_result = None
+        self._pending_recommendation_error = None
+        self._pending_recommendation_context = None
+        self._pending_recommendation_active_id = None
+
+    def _is_pending_recommendation_alive(self) -> bool:
+        """Return True when a background solver thread is still running."""
+        return (
+            self._pending_recommendation_thread is not None
+            and self._pending_recommendation_thread.is_alive()
+        )
+
+    def _start_async_postflop_recommendation(
+        self,
+        game_state: GameState,
+        snapshot: dict[str, object],
+    ) -> None:
+        """Start a daemon worker thread for HU postflop solver computation.
+
+        Args:
+            game_state: Current GameState to deep-copy for the worker.
+            snapshot: Decision-point snapshot for later freshness checks.
+        """
+        self._pending_recommendation_id += 1
+        request_id = self._pending_recommendation_id
+
+        game_state_copy = copy.deepcopy(game_state)
+
+        self._pending_recommendation_context = snapshot
+        self._pending_recommendation_active_id = request_id
+        self._pending_recommendation_result = None
+        self._pending_recommendation_error = None
+
+        thread = threading.Thread(
+            target=self._run_recommendation_worker,
+            args=(request_id, game_state_copy),
+            daemon=True,
+        )
+        self._pending_recommendation_thread = thread
+        thread.start()
+
+        logger.info(
+            "Async HU postflop solver started: request_id=%d phase=%s",
+            request_id,
+            snapshot.get("phase", "unknown"),
+        )
+
+    def _run_recommendation_worker(
+        self,
+        request_id: int,
+        game_state_copy: GameState,
+    ) -> None:
+        """Target for the daemon thread: run solver and store result.
+
+        The worker only produces a Recommendation.  It does NOT update
+        HUD, hand_manager, or _previous_recommendation -- those decisions
+        belong to the main polling thread after freshness validation.
+        """
+        logger.debug(
+            "Solver worker starting: request_id=%d phase=%s",
+            request_id,
+            game_state_copy.phase,
+        )
+        try:
+            result = self._generate_recommendation(game_state_copy)
+            self._pending_recommendation_result = result
+            logger.debug(
+                "Solver worker completed: request_id=%d action=%s amount=%d",
+                request_id,
+                result.action,
+                result.amount,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Solver worker failed: request_id=%d error=%s",
+                request_id,
+                exc,
+            )
+            self._pending_recommendation_error = exc
+
+    def _poll_async_recommendation_result(
+        self,
+        current_state: GameState,
+    ) -> Recommendation | None:
+        """Check whether the worker thread finished with a valid result.
+
+        Returns:
+            The Recommendation if the worker completed and the context
+            is still valid; None when no result is available yet, the
+            context is stale, or an error occurred.
+        """
+        # 1. No pending work
+        if self._pending_recommendation_thread is None:
+            return None
+
+        # 2. Thread still running
+        if self._pending_recommendation_thread.is_alive():
+            return None
+
+        # 3. Thread has exited -- check for error
+        if self._pending_recommendation_error is not None:
+            logger.warning(
+                "Async recommendation failed: request_id=%d error=%s",
+                self._pending_recommendation_active_id,
+                self._pending_recommendation_error,
+            )
+            self._clear_pending_state()
+            return None
+
+        # 4. Read the result
+        result = self._pending_recommendation_result
+        if result is None:
+            self._clear_pending_state()
+            return None
+
+        # 5. Freshness check
+        pending_ctx = self._pending_recommendation_context
+        if pending_ctx is not None and not self._is_recommendation_context_still_valid(
+            pending_ctx, current_state
+        ):
+            logger.info(
+                "Async recommendation discarded: context changed during solve "
+                "(phase=%s board_count=%d actions=%d "
+                "hero_is_my_turn=%s hero_in_hand=%s)",
+                current_state.phase,
+                len(current_state.board or []),
+                len(current_state.current_street_actions or []),
+                current_state.hero.is_my_turn,
+                current_state.hero.in_current_hand,
+            )
+            self._clear_pending_state()
+            return None
+
+        # 6. Valid result
+        logger.info(
+            "Async recommendation accepted: request_id=%d action=%s source=%s",
+            self._pending_recommendation_active_id,
+            result.action,
+            result.strategy_source,
+        )
+        self._clear_pending_state()
+        return result
 
     def _get_opponent_stats_for_strategy(self, game_state: GameState) -> dict[str, Any]:
         """Fetch seat-keyed opponent stats for strategy generation."""

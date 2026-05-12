@@ -141,7 +141,7 @@ def _state(
     state.hero.is_my_turn = is_my_turn
     state.hero.in_current_hand = True
     state.game_event = game_event
-    state.active_player_count = 2
+    state.active_player_count = 3  # Default to multiway (synchronous path)
     # Set board cards matching the phase for postflop freshness guard
     if phase == "flop":
         state.board = ["2h", "3d", "5c"]
@@ -173,7 +173,7 @@ def test_hud_computing_callback_called_on_postflop_hero_turn(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Postflop hero turn notifies computing state with SOLVER THINKING."""
+    """Postflop hero turn notifies computing state (multiway default)."""
     hud_computing_callback = MagicMock()
     loop = _make_loop(
         workspace_tmp,
@@ -186,7 +186,7 @@ def test_hud_computing_callback_called_on_postflop_hero_turn(
 
     loop._handle_strategy(_state(is_my_turn=True))
 
-    hud_computing_callback.assert_called_once_with("SOLVER THINKING...")
+    hud_computing_callback.assert_called_once_with("LLM ANALYZING...")
 
 
 def test_hud_notified_when_continued_turn_uses_cached_recommendation(

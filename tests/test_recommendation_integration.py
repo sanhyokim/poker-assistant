@@ -177,7 +177,7 @@ def _make_game_state(
     hero_cards: list[str] | None = None,
     board: list[str] | None = None,
     board_card_count: int = 3,
-    active_player_count: int = 2,
+    active_player_count: int = 3,  # Default to multiway (synchronous path)
     game_event: str | None = None,
     pot: int = 200,
     hero_stack: int = 900,
@@ -365,14 +365,14 @@ class TestRecommendationIntegration:
         workspace_tmp: Path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """RecommendationEngine routes heads-up and multiway by player count."""
+        """RecommendationEngine routes by player count (both synchronous multiway)."""
         loop = _make_loop(workspace_tmp, monkeypatch)
         try:
             engine = MagicMock()
             engine.solver_bridge = None
 
             def generate(state: GameState) -> Recommendation:
-                if state.active_player_count == 2:
+                if state.active_player_count == 3:
                     return Recommendation(
                         action="BET",
                         confidence="high",
@@ -388,17 +388,17 @@ class TestRecommendationIntegration:
             loop._recommendation_engine = engine
             loop._hand_manager._phase = "flop"
 
-            loop._handle_strategy(_make_game_state(active_player_count=2, is_my_turn=True))
-            heads_up = loop.current_recommendation
+            loop._handle_strategy(_make_game_state(active_player_count=3, is_my_turn=True))
+            first = loop.current_recommendation
             loop._previous_recommendation = None
             loop._last_strategy_is_my_turn = False
-            loop._handle_strategy(_make_game_state(active_player_count=3, is_my_turn=True))
-            multiway = loop.current_recommendation
+            loop._handle_strategy(_make_game_state(active_player_count=4, is_my_turn=True))
+            second = loop.current_recommendation
 
-            assert heads_up is not None
-            assert heads_up.confidence == "high"
-            assert multiway is not None
-            assert multiway.confidence == "medium"
+            assert first is not None
+            assert first.confidence == "high"
+            assert second is not None
+            assert second.confidence == "medium"
         finally:
             _cleanup_loop(loop)
 
