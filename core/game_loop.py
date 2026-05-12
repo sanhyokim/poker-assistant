@@ -309,6 +309,22 @@ class GameLoop:
                 )
 
         self._manage_hero_card_cache(game_state)
+
+        if (
+            self._is_visual_obstruction_protected()
+            and self._prev_state is not None
+            and game_state.pot < self._prev_state.pot
+            and self._prev_state.pot > 0
+        ):
+            logger.info(
+                "Pot decrease ignored during visual obstruction/recovery: "
+                "prev_pot=%d curr_pot=%d phase=%s",
+                self._prev_state.pot,
+                game_state.pot,
+                self._hand_manager.phase,
+            )
+            game_state.pot = self._prev_state.pot
+
         self._prev_state = game_state
         return game_state
 

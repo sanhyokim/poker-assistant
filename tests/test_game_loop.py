@@ -2223,6 +2223,91 @@ def test_current_street_actions_empty_when_no_street(
 
 
 # ---------------------------------------------------------------------------
+# Phase 30-Fix41: Pot preservation during visual obstruction
+# ---------------------------------------------------------------------------
+
+
+def test_obstruction_active_pot_decrease_preserved(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pot decrease is ignored while visual obstruction is active."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._prev_state = create_empty_game_state()
+    loop._prev_state.pot = 314
+    loop._visual_obstruction_active = True
+    loop._visual_obstruction_until = time.monotonic() + 10.0
+    loop._action_estimator = MagicMock()
+    loop._action_estimator.estimate.return_value = {
+        "game_event": None,
+        "actions": [],
+        "filtered_pot": 0,
+    }
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        state = loop.process_one_frame()
+
+    assert state is not None
+    assert state.pot == 314
+    assert "Pot decrease ignored during visual obstruction/recovery" in caplog.text
+
+
+def test_obstruction_recovery_pot_decrease_preserved(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pot decrease is ignored during visual obstruction recovery window."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._prev_state = create_empty_game_state()
+    loop._prev_state.pot = 314
+    loop._visual_obstruction_active = False
+    loop._visual_obstruction_until = 0.0
+    loop._visual_obstruction_recovery_until = time.monotonic() + 10.0
+    loop._action_estimator = MagicMock()
+    loop._action_estimator.estimate.return_value = {
+        "game_event": None,
+        "actions": [],
+        "filtered_pot": 0,
+    }
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        state = loop.process_one_frame()
+
+    assert state is not None
+    assert state.pot == 314
+    assert "Pot decrease ignored during visual obstruction/recovery" in caplog.text
+
+
+def test_no_obstruction_pot_decrease_not_preserved(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pot decrease is NOT blocked when there is no visual obstruction."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._prev_state = create_empty_game_state()
+    loop._prev_state.pot = 314
+    loop._visual_obstruction_active = False
+    loop._visual_obstruction_until = 0.0
+    loop._visual_obstruction_recovery_until = 0.0
+    loop._action_estimator = MagicMock()
+    loop._action_estimator.estimate.return_value = {
+        "game_event": None,
+        "actions": [],
+        "filtered_pot": 0,
+    }
+
+    state = loop.process_one_frame()
+
+    assert state is not None
+    assert state.pot == 0
+
+
+# ---------------------------------------------------------------------------
 # Phase 30-Fix32: Showdown guard tests
 # ---------------------------------------------------------------------------
 
