@@ -121,6 +121,7 @@ class GameLoop:
         self._stale_suppression_bypassed: bool = False
         self._last_hand_manager_phase: str | None = None
         self._previous_recommendation: Recommendation | None = None
+        self._previous_recommendation_context: dict[str, object] | None = None
         self._last_strategy_phase: str | None = None
 
         if enable_strategy:
@@ -157,6 +158,7 @@ class GameLoop:
         self._cached_hero_cards = None
         self._cached_hand_id = None
         self._previous_recommendation = None
+        self._previous_recommendation_context = None
         self._last_recommendation_log = None
         self._last_strategy_is_my_turn = False
         self._notify_hud(None)
@@ -347,6 +349,7 @@ class GameLoop:
         self._stale_suppression_bypassed = False
         self._last_hand_manager_phase = None
         self._previous_recommendation = None
+        self._previous_recommendation_context = None
         self._last_strategy_phase = None
         self._diff_detector.reset()
         self._action_estimator.reset()
@@ -521,6 +524,7 @@ class GameLoop:
         if phase in (None, "waiting", "hand_end"):
             self._last_recommendation_log = None
             self._previous_recommendation = None
+            self._previous_recommendation_context = None
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = False
             self._notify_hud(None)
@@ -547,6 +551,7 @@ class GameLoop:
                 logger.info("Strategy skipped: hero is no longer in current hand")
             self._last_recommendation_log = None
             self._previous_recommendation = None
+            self._previous_recommendation_context = None
             self._last_strategy_is_my_turn = False
             self._notify_hud(None)
             self._save_human_action_to_hand_manager(game_state)
@@ -556,9 +561,11 @@ class GameLoop:
         if game_state.game_event == "NEW_HAND":
             self._last_recommendation_log = None
             self._previous_recommendation = None
+            self._previous_recommendation_context = None
 
         if phase == "preflop" and self._last_strategy_phase != "preflop":
             self._previous_recommendation = None
+            self._previous_recommendation_context = None
 
         if game_state.game_event == "NEW_STREET":
             self._last_recommendation_log = None
@@ -571,6 +578,7 @@ class GameLoop:
             if self._last_strategy_is_my_turn:
                 self._last_recommendation_log = None
                 self._previous_recommendation = None
+                self._previous_recommendation_context = None
                 self._notify_hud(None)
             self._save_human_action_to_hand_manager(game_state)
             self._last_strategy_phase = phase
@@ -578,6 +586,26 @@ class GameLoop:
             return
 
         # === ここから is_my_turn=True のみ ===
+
+        # Cached recommendation freshness guard
+        if (
+            self._last_strategy_is_my_turn
+            and self._previous_recommendation is not None
+            and self._previous_recommendation_context is not None
+            and not self._is_recommendation_context_still_valid(
+                self._previous_recommendation_context, game_state
+            )
+        ):
+            logger.info(
+                "Cached recommendation discarded: context no longer valid "
+                "(phase=%s board_count=%d hand_id=%s)",
+                phase,
+                len(game_state.board or []),
+                game_state.hand_id,
+            )
+            self._previous_recommendation = None
+            self._previous_recommendation_context = None
+            self._notify_hud(None)
 
         # プリフロップ
         if phase == "preflop":
@@ -602,16 +630,35 @@ class GameLoop:
             else:
                 self._notify_hud_computing("CHART CHECKING...")
                 self._revalidate_seat_cards_before_strategy(game_state)
+                snapshot = self._build_recommendation_context_snapshot(game_state)
                 recommendation = self._generate_recommendation(
                     game_state,
                     preflop_actions=self._get_preflop_actions_for_strategy(),
                 )
+                if not self._is_recommendation_context_still_valid(
+                    snapshot, game_state
+                ):
+                    logger.info(
+                        "Stale recommendation discarded: "
+                        "phase=%s board_count=%d actions=%d "
+                        "hero_is_my_turn=%s hero_in_hand=%s",
+                        phase,
+                        len(game_state.board or []),
+                        len(game_state.current_street_actions or []),
+                        game_state.hero.is_my_turn,
+                        game_state.hero.in_current_hand,
+                    )
+                    self._save_human_action_to_hand_manager(game_state)
+                    self._last_strategy_phase = phase
+                    self._last_strategy_is_my_turn = True
+                    return
                 self._log_recommendation("Preflop recommendation", recommendation)
                 self._log_recommendation_change(recommendation)
                 self._save_recommendation_to_hand_manager(
                     recommendation, strategy_started_at
                 )
                 self._previous_recommendation = recommendation
+                self._previous_recommendation_context = snapshot
                 self._notify_hud(recommendation)
 
         # ポストフロップ（flop / turn / river）
@@ -646,6 +693,27 @@ class GameLoop:
                 self._notify_hud(self._previous_recommendation)
             else:
                 # 初回計算（自分のターンが来た最初のフレーム）
+
+                # Guard: skip strategy when board count does not match the phase
+                expected_board_counts: dict[str, int] = {
+                    "flop": 3,
+                    "turn": 4,
+                    "river": 5,
+                }
+                expected_bc = expected_board_counts.get(phase)
+                if expected_bc is not None and len(game_state.board or []) != expected_bc:
+                    logger.warning(
+                        "Strategy skipped: phase/board_count mismatch "
+                        "phase=%s board_count=%s expected=%s",
+                        phase,
+                        len(game_state.board or []),
+                        expected_bc,
+                    )
+                    self._save_human_action_to_hand_manager(game_state)
+                    self._last_strategy_phase = phase
+                    self._last_strategy_is_my_turn = True
+                    return
+
                 if game_state.active_player_count >= 3:
                     self._notify_hud_computing("LLM ANALYZING...")
                 elif game_state.active_player_count == 2:
@@ -653,7 +721,25 @@ class GameLoop:
                 else:
                     self._notify_hud_computing("Computing...")
                 self._revalidate_seat_cards_before_strategy(game_state)
+                snapshot = self._build_recommendation_context_snapshot(game_state)
                 recommendation = self._generate_recommendation(game_state)
+                if not self._is_recommendation_context_still_valid(
+                    snapshot, game_state
+                ):
+                    logger.info(
+                        "Stale recommendation discarded: "
+                        "phase=%s board_count=%d actions=%d "
+                        "hero_is_my_turn=%s hero_in_hand=%s",
+                        phase,
+                        len(game_state.board or []),
+                        len(game_state.current_street_actions or []),
+                        game_state.hero.is_my_turn,
+                        game_state.hero.in_current_hand,
+                    )
+                    self._save_human_action_to_hand_manager(game_state)
+                    self._last_strategy_phase = phase
+                    self._last_strategy_is_my_turn = True
+                    return
                 guarded = self._guard_postflop_recommendation_source(
                     recommendation, game_state, phase, "Synchronous"
                 )
@@ -669,6 +755,7 @@ class GameLoop:
                     recommendation, strategy_started_at
                 )
                 self._previous_recommendation = recommendation
+                self._previous_recommendation_context = snapshot
                 self._notify_hud(recommendation)
 
         self._save_human_action_to_hand_manager(game_state)
@@ -1096,6 +1183,67 @@ class GameLoop:
             if "preflop_actions" not in str(exc):
                 raise
             return self._recommendation_engine.generate(game_state)
+
+    @staticmethod
+    def _build_recommendation_context_snapshot(game_state: GameState) -> dict[str, object]:
+        """Build a lightweight snapshot of the decision point for freshness checks.
+
+        Captured before calling the recommendation engine so the caller can
+        detect whether the game state changed while the recommendation was
+        being computed (e.g. Solver timeout).
+
+        Returns:
+            Snapshot dictionary with enough fields to detect a stale result.
+        """
+        board = tuple(game_state.board or [])
+        return {
+            "hand_id": game_state.hand_id,
+            "phase": game_state.phase,
+            "board": board,
+            "board_count": len(board),
+            "pot": game_state.pot,
+            "active_player_count": game_state.active_player_count,
+            "current_street_actions_count": len(
+                game_state.current_street_actions or []
+            ),
+            "hero_is_my_turn": bool(game_state.hero.is_my_turn),
+            "hero_in_current_hand": bool(game_state.hero.in_current_hand),
+        }
+
+    @staticmethod
+    def _is_recommendation_context_still_valid(
+        snapshot: dict[str, object],
+        current_state: GameState,
+    ) -> bool:
+        """Return whether the decision-point snapshot is still valid.
+
+        A stale recommendation is one where the hand, street, board, or hero
+        situation has changed since the solver/fallback request was made.
+        Pot is intentionally not checked because OCR noise and pot-spike
+        hold logic can cause false mismatches.
+        """
+        current_board = tuple(current_state.board or [])
+        if snapshot.get("hand_id") != current_state.hand_id:
+            return False
+        if snapshot.get("phase") != current_state.phase:
+            return False
+        if snapshot.get("board") != current_board:
+            return False
+        if snapshot.get("board_count") != len(current_board):
+            return False
+        if snapshot.get("active_player_count") != current_state.active_player_count:
+            return False
+        if snapshot.get("current_street_actions_count") != len(
+            current_state.current_street_actions or []
+        ):
+            return False
+        if not bool(current_state.hero.is_my_turn):
+            return False
+        if not bool(current_state.hero.in_current_hand):
+            return False
+        if current_state.phase in {"waiting", "hand_end"}:
+            return False
+        return True
 
     def _get_opponent_stats_for_strategy(self, game_state: GameState) -> dict[str, Any]:
         """Fetch seat-keyed opponent stats for strategy generation."""

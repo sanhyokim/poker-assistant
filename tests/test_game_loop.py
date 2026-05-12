@@ -1508,6 +1508,7 @@ def test_strategy_preflop_immediate_computation(
     state = create_empty_game_state()
     state.phase = "preflop"
     state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
 
     loop._handle_strategy(state)
 
@@ -1610,6 +1611,7 @@ def test_recommendation_generated_on_next_frame(
     state = create_empty_game_state()
     state.phase = "preflop"
     state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
 
     loop._handle_strategy(state)
 
@@ -1747,6 +1749,8 @@ def test_strategy_postflop_hero_turn_computes_synchronously(
     state = create_empty_game_state()
     state.phase = "flop"
     state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+    state.board = ["2h", "3d", "5c"]
 
     loop._handle_strategy(state)
 
@@ -1770,6 +1774,8 @@ def test_strategy_recommendation_cleared_on_turn_end(
     state_on = create_empty_game_state()
     state_on.phase = "flop"
     state_on.hero.is_my_turn = True
+    state_on.hero.in_current_hand = True
+    state_on.board = ["2h", "3d", "5c"]
 
     loop._handle_strategy(state_on)
     assert loop.current_recommendation is not None
@@ -1777,6 +1783,8 @@ def test_strategy_recommendation_cleared_on_turn_end(
     state_off = create_empty_game_state()
     state_off.phase = "flop"
     state_off.hero.is_my_turn = False
+    state_off.hero.in_current_hand = True
+    state_off.board = ["2h", "3d", "5c"]
 
     loop._handle_strategy(state_off)
     assert loop.current_recommendation is None
@@ -1803,6 +1811,8 @@ def test_strategy_continued_turn_reuses_recommendation(
     state = create_empty_game_state()
     state.phase = "flop"
     state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+    state.board = ["2h", "3d", "5c"]
 
     loop._handle_strategy(state)
     loop._handle_strategy(state)
@@ -1832,6 +1842,8 @@ def test_sync_postflop_preflop_result_uses_fallback(
     state = create_empty_game_state()
     state.phase = "flop"
     state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+    state.board = ["2h", "3d", "5c"]
 
     loop._handle_strategy(state)
 
@@ -1859,6 +1871,8 @@ def test_strategy_decision_point_logs_info_only_on_turn_start(
     state = create_empty_game_state()
     state.phase = "flop"
     state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+    state.board = ["2h", "3d", "5c"]
 
     with caplog.at_level(logging.INFO, logger="core.game_loop"):
         loop._handle_strategy(state)

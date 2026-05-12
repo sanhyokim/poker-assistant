@@ -139,8 +139,16 @@ def _state(
     state = create_empty_game_state()
     state.phase = phase
     state.hero.is_my_turn = is_my_turn
+    state.hero.in_current_hand = True
     state.game_event = game_event
     state.active_player_count = 2
+    # Set board cards matching the phase for postflop freshness guard
+    if phase == "flop":
+        state.board = ["2h", "3d", "5c"]
+    elif phase == "turn":
+        state.board = ["2h", "3d", "5c", "7s"]
+    elif phase == "river":
+        state.board = ["2h", "3d", "5c", "7s", "9d"]
     return state
 
 
@@ -165,7 +173,7 @@ def test_hud_computing_callback_called_on_postflop_hero_turn(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Postflop hero turn notifies computing state before calculation."""
+    """Postflop hero turn notifies computing state with SOLVER THINKING."""
     hud_computing_callback = MagicMock()
     loop = _make_loop(
         workspace_tmp,
@@ -178,7 +186,7 @@ def test_hud_computing_callback_called_on_postflop_hero_turn(
 
     loop._handle_strategy(_state(is_my_turn=True))
 
-    hud_computing_callback.assert_called_once()
+    hud_computing_callback.assert_called_once_with("SOLVER THINKING...")
 
 
 def test_hud_notified_when_continued_turn_uses_cached_recommendation(
@@ -370,7 +378,7 @@ def test_missing_hud_callbacks_are_safe(
     loop = _make_loop(workspace_tmp, monkeypatch)
 
     loop._notify_hud(_recommendation())
-    loop._notify_hud_computing()
+    loop._notify_hud_computing("CHART CHECKING...")
 
 
 def test_hud_callback_exception_is_logged(
@@ -402,6 +410,98 @@ def test_hud_computing_callback_exception_is_logged(
     )
 
     with caplog.at_level(logging.WARNING):
-        loop._notify_hud_computing()
+        loop._notify_hud_computing("SOLVER THINKING...")
 
     assert "HUD computing callback failed" in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# Phase 30-Fix38: Route-specific computing status messages
+# ---------------------------------------------------------------------------
+
+
+def test_preflop_computing_shows_chart_checking(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preflop first computation shows CHART CHECKING..."""
+    hud_computing_callback = MagicMock()
+    loop = _make_loop(
+        workspace_tmp,
+        monkeypatch,
+        hud_computing_callback=hud_computing_callback,
+    )
+    loop._recommendation_engine = MagicMock()
+    loop._recommendation_engine.generate.return_value = _recommendation()
+    loop._hand_manager._phase = "preflop"
+
+    loop._handle_strategy(_state(phase="preflop", is_my_turn=True))
+
+    hud_computing_callback.assert_called_once_with("CHART CHECKING...")
+
+
+def test_postflop_heads_up_computing_shows_solver_thinking(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Postflop HU (2 players) first computation shows SOLVER THINKING..."""
+    hud_computing_callback = MagicMock()
+    loop = _make_loop(
+        workspace_tmp,
+        monkeypatch,
+        hud_computing_callback=hud_computing_callback,
+    )
+    loop._recommendation_engine = MagicMock()
+    loop._recommendation_engine.generate.return_value = _recommendation()
+    loop._hand_manager._phase = "flop"
+
+    state = _state(is_my_turn=True)
+    state.active_player_count = 2
+    loop._handle_strategy(state)
+
+    hud_computing_callback.assert_called_once_with("SOLVER THINKING...")
+
+
+def test_postflop_multiway_computing_shows_llm_analyzing(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Postflop multiway (3+ players) first computation shows LLM ANALYZING..."""
+    hud_computing_callback = MagicMock()
+    loop = _make_loop(
+        workspace_tmp,
+        monkeypatch,
+        hud_computing_callback=hud_computing_callback,
+    )
+    loop._recommendation_engine = MagicMock()
+    loop._recommendation_engine.generate.return_value = _recommendation()
+    loop._hand_manager._phase = "flop"
+
+    state = _state(is_my_turn=True)
+    state.active_player_count = 3
+    loop._handle_strategy(state)
+
+    hud_computing_callback.assert_called_once_with("LLM ANALYZING...")
+
+
+def test_continued_turn_does_not_show_computing(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Continued hero turn shows cached recommendation, not computing status."""
+    hud_computing_callback = MagicMock()
+    loop = _make_loop(
+        workspace_tmp,
+        monkeypatch,
+        hud_computing_callback=hud_computing_callback,
+    )
+    recommendation = _recommendation()
+    loop._recommendation_engine = MagicMock()
+    loop._recommendation_engine.apply_action_constraints.return_value = recommendation
+    loop._previous_recommendation = recommendation
+    loop._last_strategy_is_my_turn = True
+    loop._hand_manager._phase = "flop"
+
+    loop._handle_strategy(_state(is_my_turn=True))
+
+    hud_computing_callback.assert_not_called()

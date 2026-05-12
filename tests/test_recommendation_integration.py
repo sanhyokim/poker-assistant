@@ -209,6 +209,7 @@ def _make_game_state(
             stack=hero_stack,
             bet=hero_bet,
             is_my_turn=is_my_turn,
+            in_current_hand=True,
         ),
         board=board or ["Td", "7c", "2h"],
         board_card_count=board_card_count,
