@@ -5,6 +5,7 @@ import inspect
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Callable
 
@@ -27,6 +28,15 @@ from recognition.seat_card_detector import SeatCardDetector
 from strategy.recommendation_engine import Recommendation, RecommendationEngine
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _AsyncRecommendationResult:
+    """Completed async solver result keyed by request id."""
+
+    request_id: int
+    recommendation: Recommendation | None = None
+    error: Exception | None = None
 
 
 class GameLoop:
@@ -127,12 +137,15 @@ class GameLoop:
         self._last_strategy_phase: str | None = None
 
         # Async HU postflop solver worker state
+        self._pending_recommendation_lock = threading.Lock()
         self._pending_recommendation_thread: threading.Thread | None = None
-        self._pending_recommendation_result: Recommendation | None = None
-        self._pending_recommendation_error: Exception | None = None
         self._pending_recommendation_context: dict[str, object] | None = None
         self._pending_recommendation_id: int = 0
         self._pending_recommendation_active_id: int | None = None
+        self._pending_recommendation_completed: dict[
+            int, _AsyncRecommendationResult
+        ] = {}
+        self._pending_recommendation_cancelled_ids: set[int] = set()
 
         if enable_strategy:
             self._init_strategy_modules()
@@ -537,6 +550,7 @@ class GameLoop:
             self._last_recommendation_log = None
             self._previous_recommendation = None
             self._previous_recommendation_context = None
+            self._clear_pending_state()
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = False
             self._notify_hud(None)
@@ -564,6 +578,7 @@ class GameLoop:
             self._last_recommendation_log = None
             self._previous_recommendation = None
             self._previous_recommendation_context = None
+            self._clear_pending_state()
             self._last_strategy_is_my_turn = False
             self._notify_hud(None)
             self._save_human_action_to_hand_manager(game_state)
@@ -583,6 +598,7 @@ class GameLoop:
 
         if game_state.game_event == "NEW_STREET":
             self._last_recommendation_log = None
+            self._clear_pending_state()
             if self._hand_manager is not None:
                 game_state.phase = self._hand_manager.phase
 
@@ -777,10 +793,12 @@ class GameLoop:
                                 game_state, snapshot,
                             )
                         else:
+                            with self._pending_recommendation_lock:
+                                request_id = self._pending_recommendation_active_id
                             logger.debug(
-                                "Async recommendation already pending: "
-                                "request_id=%d",
-                                self._pending_recommendation_active_id,
+                                "Async recommendation already pending/alive: "
+                                "request_id=%s",
+                                request_id,
                             )
                         self._save_human_action_to_hand_manager(game_state)
                         self._last_strategy_phase = phase
@@ -1366,24 +1384,62 @@ class GameLoop:
     # Async HU postflop solver worker
     # ------------------------------------------------------------------
 
-    def _clear_pending_state(self) -> None:
-        """Reset all pending recommendation fields.
+    def _cancel_pending_recommendation(self, reason: str) -> None:
+        """Mark the active async recommendation request as cancelled.
 
-        Does not touch _pending_recommendation_id (monotonically
-        incrementing) or _previous_recommendation (separate lifecycle).
+        Args:
+            reason: Human-readable cancellation reason for diagnostics.
         """
-        self._pending_recommendation_thread = None
-        self._pending_recommendation_result = None
-        self._pending_recommendation_error = None
-        self._pending_recommendation_context = None
-        self._pending_recommendation_active_id = None
+        with self._pending_recommendation_lock:
+            self._cancel_pending_recommendation_locked(reason)
+
+    def _cancel_pending_recommendation_locked(self, reason: str) -> None:
+        """Mark the active request cancelled while holding the pending lock."""
+        active_id = self._pending_recommendation_active_id
+        if active_id is None:
+            return
+        self._pending_recommendation_cancelled_ids.add(active_id)
+        logger.info(
+            "Async recommendation cancelled: request_id=%d reason=%s",
+            active_id,
+            reason,
+        )
+
+    def _clear_pending_state(self) -> None:
+        """Clear active pending metadata without stopping the worker thread."""
+        with self._pending_recommendation_lock:
+            active_id = self._pending_recommendation_active_id
+            if active_id is not None:
+                self._cancel_pending_recommendation_locked("pending_cleared")
+            thread = self._pending_recommendation_thread
+            if thread is not None and not thread.is_alive():
+                self._pending_recommendation_thread = None
+            self._pending_recommendation_context = None
+            self._pending_recommendation_active_id = None
+            self._cleanup_async_recommendation_state_locked()
 
     def _is_pending_recommendation_alive(self) -> bool:
         """Return True when a background solver thread is still running."""
-        return (
-            self._pending_recommendation_thread is not None
-            and self._pending_recommendation_thread.is_alive()
-        )
+        with self._pending_recommendation_lock:
+            thread = self._pending_recommendation_thread
+            return thread is not None and thread.is_alive()
+
+    def _cleanup_async_recommendation_state_locked(
+        self,
+        request_id: int | None = None,
+    ) -> None:
+        """Bound completed and cancelled async request bookkeeping.
+
+        The caller must hold _pending_recommendation_lock.
+        """
+        newest_id = self._pending_recommendation_id
+        min_keep_id = max(0, newest_id - 16)
+        for completed_id in list(self._pending_recommendation_completed):
+            if completed_id < min_keep_id or completed_id == request_id:
+                self._pending_recommendation_completed.pop(completed_id, None)
+        for cancelled_id in list(self._pending_recommendation_cancelled_ids):
+            if cancelled_id < min_keep_id or cancelled_id == request_id:
+                self._pending_recommendation_cancelled_ids.discard(cancelled_id)
 
     def _start_async_postflop_recommendation(
         self,
@@ -1396,26 +1452,33 @@ class GameLoop:
             game_state: Current GameState to deep-copy for the worker.
             snapshot: Decision-point snapshot for later freshness checks.
         """
-        self._pending_recommendation_id += 1
-        request_id = self._pending_recommendation_id
-
         game_state_copy = copy.deepcopy(game_state)
 
-        self._pending_recommendation_context = snapshot
-        self._pending_recommendation_active_id = request_id
-        self._pending_recommendation_result = None
-        self._pending_recommendation_error = None
+        with self._pending_recommendation_lock:
+            existing_thread = self._pending_recommendation_thread
+            if existing_thread is not None and existing_thread.is_alive():
+                logger.info(
+                    "Async recommendation already pending/alive: request_id=%s",
+                    self._pending_recommendation_active_id,
+                )
+                return
+            self._pending_recommendation_id += 1
+            request_id = self._pending_recommendation_id
+            self._pending_recommendation_context = snapshot
+            self._pending_recommendation_active_id = request_id
+            self._pending_recommendation_cancelled_ids.discard(request_id)
+            self._pending_recommendation_completed.pop(request_id, None)
 
-        thread = threading.Thread(
-            target=self._run_recommendation_worker,
-            args=(request_id, game_state_copy),
-            daemon=True,
-        )
-        self._pending_recommendation_thread = thread
+            thread = threading.Thread(
+                target=self._run_recommendation_worker,
+                args=(request_id, game_state_copy),
+                daemon=True,
+            )
+            self._pending_recommendation_thread = thread
         thread.start()
 
         logger.info(
-            "Async HU postflop solver started: request_id=%d phase=%s",
+            "Async recommendation started: request_id=%d phase=%s",
             request_id,
             snapshot.get("phase", "unknown"),
         )
@@ -1436,22 +1499,27 @@ class GameLoop:
             request_id,
             game_state_copy.phase,
         )
+        recommendation: Recommendation | None = None
+        error: Exception | None = None
         try:
-            result = self._generate_recommendation(game_state_copy)
-            self._pending_recommendation_result = result
+            recommendation = self._generate_recommendation(game_state_copy)
             logger.debug(
                 "Solver worker completed: request_id=%d action=%s amount=%d",
                 request_id,
-                result.action,
-                result.amount,
+                recommendation.action,
+                recommendation.amount,
             )
         except Exception as exc:
-            logger.warning(
-                "Solver worker failed: request_id=%d error=%s",
-                request_id,
-                exc,
+            error = exc
+        with self._pending_recommendation_lock:
+            self._pending_recommendation_completed[request_id] = (
+                _AsyncRecommendationResult(
+                    request_id=request_id,
+                    recommendation=recommendation,
+                    error=error,
+                )
             )
-            self._pending_recommendation_error = exc
+        logger.info("Async recommendation completed: request_id=%d", request_id)
 
     def _poll_async_recommendation_result(
         self,
@@ -1464,57 +1532,96 @@ class GameLoop:
             is still valid; None when no result is available yet, the
             context is stale, or an error occurred.
         """
-        # 1. No pending work
-        if self._pending_recommendation_thread is None:
-            return None
+        with self._pending_recommendation_lock:
+            active_id = self._pending_recommendation_active_id
+            if active_id is None:
+                for completed_id in list(self._pending_recommendation_completed):
+                    logger.info(
+                        "Async recommendation discarded: request_id=%d "
+                        "reason=inactive_request",
+                        completed_id,
+                    )
+                    self._pending_recommendation_completed.pop(completed_id, None)
+                    self._pending_recommendation_cancelled_ids.discard(completed_id)
+                return None
+            for completed_id in list(self._pending_recommendation_completed):
+                if completed_id != active_id:
+                    logger.info(
+                        "Async recommendation discarded: request_id=%d "
+                        "reason=inactive_request",
+                        completed_id,
+                    )
+                    self._pending_recommendation_completed.pop(completed_id, None)
+                    self._pending_recommendation_cancelled_ids.discard(completed_id)
+            completed = self._pending_recommendation_completed.get(active_id)
+            if completed is None:
+                return None
+            cancelled = active_id in self._pending_recommendation_cancelled_ids
+            pending_ctx = self._pending_recommendation_context
 
-        # 2. Thread still running
-        if self._pending_recommendation_thread.is_alive():
-            return None
-
-        # 3. Thread has exited -- check for error
-        if self._pending_recommendation_error is not None:
-            logger.warning(
-                "Async recommendation failed: request_id=%d error=%s",
-                self._pending_recommendation_active_id,
-                self._pending_recommendation_error,
+        if cancelled:
+            logger.info(
+                "Async recommendation discarded: request_id=%d reason=cancelled",
+                active_id,
             )
-            self._clear_pending_state()
+            self._finish_async_request(active_id)
             return None
 
-        # 4. Read the result
-        result = self._pending_recommendation_result
-        if result is None:
-            self._clear_pending_state()
+        if pending_ctx is None:
+            logger.info(
+                "Async recommendation discarded: request_id=%d reason=inactive_request",
+                active_id,
+            )
+            self._finish_async_request(active_id)
             return None
 
-        # 5. Freshness check
-        pending_ctx = self._pending_recommendation_context
-        if pending_ctx is not None and not self._is_recommendation_context_still_valid(
+        if not self._is_recommendation_context_still_valid(
             pending_ctx, current_state
         ):
             logger.info(
-                "Async recommendation discarded: context changed during solve "
-                "(phase=%s board_count=%d actions=%d "
-                "hero_is_my_turn=%s hero_in_hand=%s)",
-                current_state.phase,
-                len(current_state.board or []),
-                len(current_state.current_street_actions or []),
-                current_state.hero.is_my_turn,
-                current_state.hero.in_current_hand,
+                "Async recommendation discarded: request_id=%d reason=stale",
+                active_id,
             )
-            self._clear_pending_state()
+            self._finish_async_request(active_id)
             return None
 
-        # 6. Valid result
+        if completed.error is not None:
+            logger.error(
+                "Async recommendation failed: request_id=%d error=%s",
+                active_id,
+                completed.error,
+            )
+            self._finish_async_request(active_id)
+            return None
+
+        result = completed.recommendation
+        if result is None:
+            logger.info(
+                "Async recommendation discarded: request_id=%d reason=empty_result",
+                active_id,
+            )
+            self._finish_async_request(active_id)
+            return None
+
         logger.info(
             "Async recommendation accepted: request_id=%d action=%s source=%s",
-            self._pending_recommendation_active_id,
+            active_id,
             result.action,
             result.strategy_source,
         )
-        self._clear_pending_state()
+        self._finish_async_request(active_id)
         return result
+
+    def _finish_async_request(self, request_id: int) -> None:
+        """Clear a completed async request after poll has handled it."""
+        with self._pending_recommendation_lock:
+            if self._pending_recommendation_active_id == request_id:
+                self._pending_recommendation_active_id = None
+                self._pending_recommendation_context = None
+            thread = self._pending_recommendation_thread
+            if thread is not None and not thread.is_alive():
+                self._pending_recommendation_thread = None
+            self._cleanup_async_recommendation_state_locked(request_id)
 
     def _get_opponent_stats_for_strategy(self, game_state: GameState) -> dict[str, Any]:
         """Fetch seat-keyed opponent stats for strategy generation."""

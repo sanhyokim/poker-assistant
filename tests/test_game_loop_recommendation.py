@@ -1,13 +1,14 @@
 """Tests for GameLoop recommendation replay persistence."""
 
 import logging
+import threading
 from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
-from core.game_loop import GameLoop
+from core.game_loop import GameLoop, _AsyncRecommendationResult
 from core.game_state import ActionRecord, GameState, create_empty_game_state
 from core.hand_manager import HandManager, StreetActions
 from strategy.recommendation_engine import Recommendation
@@ -26,6 +27,13 @@ def _make_loop(hand_manager: Any, recommendation_engine: Any = None) -> GameLoop
     loop._last_strategy_is_my_turn = False
     loop._hud_callback = MagicMock()
     loop._hud_computing_callback = None
+    loop._pending_recommendation_lock = threading.Lock()
+    loop._pending_recommendation_thread = None
+    loop._pending_recommendation_context = None
+    loop._pending_recommendation_id = 0
+    loop._pending_recommendation_active_id = None
+    loop._pending_recommendation_completed = {}
+    loop._pending_recommendation_cancelled_ids = set()
     return loop
 
 
@@ -525,6 +533,7 @@ def test_valid_turn_recommendation_proceeds() -> None:
 
     loop._save_recommendation_to_hand_manager.assert_called_once()
     assert loop._previous_recommendation is recommendation
+    assert loop._previous_recommendation_context is not None
 
 
 def test_valid_river_recommendation_proceeds() -> None:
@@ -720,12 +729,14 @@ def test_async_poll_accepts_valid_result() -> None:
     completed_thread = MagicMock()
     completed_thread.is_alive.return_value = False
     loop._pending_recommendation_thread = completed_thread
-    loop._pending_recommendation_result = recommendation
-    loop._pending_recommendation_error = None
     loop._pending_recommendation_context = {
         "phase": "flop", "board_count": 3,
     }
     loop._pending_recommendation_active_id = 1
+    loop._pending_recommendation_completed[1] = _AsyncRecommendationResult(
+        request_id=1,
+        recommendation=recommendation,
+    )
     del loop._poll_async_recommendation_result  # Use real method
     loop._is_recommendation_context_still_valid = MagicMock(return_value=True)
 
@@ -753,12 +764,14 @@ def test_async_poll_discards_stale_result() -> None:
     completed_thread = MagicMock()
     completed_thread.is_alive.return_value = False
     loop._pending_recommendation_thread = completed_thread
-    loop._pending_recommendation_result = recommendation
-    loop._pending_recommendation_error = None
     loop._pending_recommendation_context = {
         "phase": "flop", "board_count": 3,
     }
     loop._pending_recommendation_active_id = 1
+    loop._pending_recommendation_completed[1] = _AsyncRecommendationResult(
+        request_id=1,
+        recommendation=recommendation,
+    )
     del loop._poll_async_recommendation_result  # Use real method
     # Freshness returns False → stale discard
     loop._is_recommendation_context_still_valid = MagicMock(return_value=False)
@@ -768,6 +781,89 @@ def test_async_poll_discards_stale_result() -> None:
 
     loop._handle_strategy(state)
 
+    loop._save_recommendation_to_hand_manager.assert_not_called()
+    loop._notify_hud.assert_not_called()
+    assert loop._previous_recommendation is None
+
+
+def test_async_old_request_result_does_not_overwrite_new_request() -> None:
+    """A late old request result is not adopted for a newer active request."""
+    hand_manager = MagicMock()
+    hand_manager.phase = "flop"
+    hand_manager.get_players_in_hand.return_value = {1, 2}
+
+    old_recommendation = Recommendation(
+        action="BET", amount=100, strategy_source="solver"
+    )
+
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    loop._pending_recommendation_active_id = 2
+    loop._pending_recommendation_context = {"phase": "flop", "board_count": 3}
+    loop._pending_recommendation_completed[1] = _AsyncRecommendationResult(
+        request_id=1,
+        recommendation=old_recommendation,
+    )
+    del loop._poll_async_recommendation_result
+    loop._is_pending_recommendation_alive.return_value = True
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._handle_strategy(state)
+
+    loop._save_recommendation_to_hand_manager.assert_not_called()
+    loop._notify_hud.assert_not_called()
+    assert loop._previous_recommendation is None
+    assert 1 not in loop._pending_recommendation_completed
+
+
+def test_async_poll_ignores_completed_result_for_different_active_id() -> None:
+    """Completed results whose request id differs from active_id are ignored."""
+    hand_manager = MagicMock()
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    recommendation = Recommendation(
+        action="CHECK", amount=0, strategy_source="solver"
+    )
+    loop._pending_recommendation_active_id = 2
+    loop._pending_recommendation_context = {"phase": "flop", "board_count": 3}
+    loop._pending_recommendation_completed[1] = _AsyncRecommendationResult(
+        request_id=1,
+        recommendation=recommendation,
+    )
+    del loop._poll_async_recommendation_result
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    assert loop._poll_async_recommendation_result(state) is None
+    assert 1 not in loop._pending_recommendation_completed
+
+
+def test_async_poll_discards_cancelled_active_request(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A completed request marked cancelled is never adopted."""
+    hand_manager = MagicMock()
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    recommendation = Recommendation(
+        action="CALL", amount=50, strategy_source="solver"
+    )
+    loop._pending_recommendation_active_id = 3
+    loop._pending_recommendation_context = {"phase": "flop", "board_count": 3}
+    loop._pending_recommendation_cancelled_ids = {3}
+    loop._pending_recommendation_completed[3] = _AsyncRecommendationResult(
+        request_id=3,
+        recommendation=recommendation,
+    )
+    del loop._poll_async_recommendation_result
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        assert loop._poll_async_recommendation_result(state) is None
+
+    assert "reason=cancelled" in caplog.text
     loop._save_recommendation_to_hand_manager.assert_not_called()
     loop._notify_hud.assert_not_called()
     assert loop._previous_recommendation is None
@@ -789,6 +885,55 @@ def test_async_no_second_thread_when_pending() -> None:
     loop._handle_strategy(state)
 
     loop._start_async_postflop_recommendation.assert_not_called()
+
+
+def test_async_start_does_not_create_second_worker_while_thread_alive() -> None:
+    """A live solver thread prevents another async request from starting."""
+    hand_manager = MagicMock()
+    loop = _make_loop(hand_manager, MagicMock())
+    live_thread = MagicMock()
+    live_thread.is_alive.return_value = True
+    loop._pending_recommendation_thread = live_thread
+    loop._pending_recommendation_active_id = 7
+    loop._run_recommendation_worker = MagicMock()
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._start_async_postflop_recommendation(
+        state,
+        {"phase": "flop", "board_count": 3},
+    )
+
+    assert loop._pending_recommendation_active_id == 7
+    assert loop._pending_recommendation_id == 0
+    loop._run_recommendation_worker.assert_not_called()
+
+
+def test_async_worker_exception_is_stored_and_polled_by_request_id(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Worker exceptions are recorded by request id and discarded in poll."""
+    hand_manager = MagicMock()
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    loop._generate_recommendation = MagicMock(side_effect=RuntimeError("boom"))
+    loop._is_recommendation_context_still_valid = MagicMock(return_value=True)
+    loop._pending_recommendation_active_id = 5
+    loop._pending_recommendation_context = {"phase": "flop", "board_count": 3}
+    del loop._run_recommendation_worker
+    del loop._poll_async_recommendation_result
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    loop._run_recommendation_worker(5, state)
+
+    with caplog.at_level(logging.ERROR, logger="core.game_loop"):
+        assert loop._poll_async_recommendation_result(state) is None
+
+    assert "Async recommendation failed: request_id=5" in caplog.text
+    loop._save_recommendation_to_hand_manager.assert_not_called()
+    loop._notify_hud.assert_not_called()
 
 
 def test_async_cleared_on_new_hand() -> None:
