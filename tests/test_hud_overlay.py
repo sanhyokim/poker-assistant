@@ -155,6 +155,25 @@ def test_hud_overlay_waiting_and_computing_states(qapp: QApplication) -> None:
     assert overlay._probabilities_label.isHidden() is True
 
 
+@pytest.mark.parametrize(
+    "message",
+    ["CHART CHECKING...", "LLM ANALYZING...", "SOLVER THINKING..."],
+)
+def test_hud_overlay_computing_uses_message(
+    qapp: QApplication,
+    message: str,
+) -> None:
+    """show_computing accepts and displays caller-provided messages."""
+    _ = qapp
+    overlay = HudOverlay()
+
+    overlay.show_computing(message)
+
+    assert overlay._status_label.text() == message
+    assert overlay._status_label.isHidden() is False
+    assert overlay._action_label.isHidden() is True
+
+
 def test_hud_overlay_color_helpers() -> None:
     """Action and confidence color helpers map required values."""
     assert HudOverlay._action_color("FOLD").name() == QColor(255, 80, 80).name()

@@ -79,10 +79,14 @@ class HudOverlay(QWidget):
         """
         self._update_signal.emit(recommendation)
 
-    def show_computing(self) -> None:
-        """Show the computing status message."""
+    def show_computing(self, message: str = "Computing...") -> None:
+        """Show the computing status message.
+
+        Args:
+            message: Status text to display while recommendation work is running.
+        """
         self._hide_recommendation_labels()
-        self._status_label.setText("Computing...")
+        self._status_label.setText(message)
         self._set_label_color(self._status_label, QColor(255, 200, 50))
         self._status_label.show()
         self.show()
