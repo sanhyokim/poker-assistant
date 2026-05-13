@@ -322,8 +322,11 @@ class GameLoop:
             self._seat_card_confirmed.clear()
             self._last_hero_non_fold_action_time = None
             self._last_hero_non_fold_action_name = None
+            self._waiting_for_card_clear = False
             self._hero_cards_missing_since_hand_end = False
             self._last_ended_hero_cards = None
+            self._stale_suppression_start_time = None
+            self._stale_suppression_bypassed = False
             logger.debug(
                 "Fold badge and seat-card states cleared on hand start (hand_id=%s)",
                 self._hand_manager.hand_id,
@@ -2252,10 +2255,31 @@ class GameLoop:
                         logger.debug("Waiting for card clear: cards cleared")
                         self._waiting_for_card_clear = False
                         self._hero_cards_missing_since_hand_end = True
-                    else:
+                    elif self._hero_cards_missing(self._last_ended_hero_cards):
                         self._log_stale_waiting_cards(hero_cards)
-                    game_state.hero.cards = None
-                    game_state.hero.cards_visible = False
+                        game_state.hero.cards = None
+                        game_state.hero.cards_visible = False
+                    elif self._hero_cards_match_last_ended(game_state.hero.cards):
+                        self._log_stale_waiting_cards(hero_cards)
+                        game_state.hero.cards = None
+                        game_state.hero.cards_visible = False
+                    else:
+                        logger.info(
+                            "Stale hero card suppression cleared: new hero "
+                            "cards differ from last ended hand current=%s "
+                            "last=%s",
+                            game_state.hero.cards,
+                            self._last_ended_hero_cards,
+                        )
+                        self._waiting_for_card_clear = False
+                        self._hero_cards_missing_since_hand_end = True
+                        self._stale_suppression_start_time = None
+                        self._stale_suppression_bypassed = False
+                        logger.info(
+                            "Waiting: hero cards recognized - %s, starting hand",
+                            hero_cards,
+                        )
+                        self._last_waiting_log = None
                 elif self._hero_cards_missing(hero_cards):
                     self._hero_cards_missing_since_hand_end = True
                     current_log_key = str(hero_cards)
@@ -2410,9 +2434,7 @@ class GameLoop:
         hero_cards: list[str | None] | None,
     ) -> bool:
         """Return whether waiting-state hero cards are stale from the last hand."""
-        if self._last_ended_hero_cards is None:
-            return False
-        if hero_cards != self._last_ended_hero_cards:
+        if not self._hero_cards_match_last_ended(hero_cards):
             return False
         if self._hero_cards_missing_since_hand_end:
             return False
@@ -2429,6 +2451,17 @@ class GameLoop:
             self._stale_suppression_bypassed = True
             return False
         return True
+
+    def _hero_cards_match_last_ended(
+        self,
+        current_cards: list[str | None] | None,
+    ) -> bool:
+        """Return True when current hero cards match the last ended hand cards."""
+        if self._hero_cards_missing(current_cards):
+            return False
+        if self._hero_cards_missing(self._last_ended_hero_cards):
+            return False
+        return list(current_cards or []) == list(self._last_ended_hero_cards or [])
 
     def _log_stale_waiting_cards(self, hero_cards: Any) -> None:
         """Log stale waiting cards that are suppressed as a false hand start."""

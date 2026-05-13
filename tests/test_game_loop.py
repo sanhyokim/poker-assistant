@@ -2146,6 +2146,95 @@ def test_waiting_different_hero_cards_can_start_hand(
     assert loop._hand_manager.phase == "preflop"
 
 
+def test_waiting_different_hero_cards_clear_card_wait_suppression(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Different cards clear stale suppression immediately after hand end."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._last_hand_manager_phase = "preflop"
+    loop._hand_manager._phase = "waiting"
+    loop._cached_hero_cards = ["As", "2s"]
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["7c", "6d"]
+    )
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        state = loop.process_one_frame()
+        assert state is not None
+        loop._hand_manager.process_frame(state)
+
+    assert state.hero.cards == ["7c", "6d"]
+    assert loop._hand_manager.phase == "preflop"
+    assert loop._waiting_for_card_clear is False
+    assert loop._hero_cards_missing_since_hand_end is True
+    assert (
+        "Stale hero card suppression cleared: new hero cards differ from "
+        "last ended hand current=['7c', '6d'] last=['As', '2s']"
+    ) in caplog.text
+
+
+def test_waiting_different_hero_cards_still_respect_pot_guard(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Different cards are not stale, but pot guard can still block hand start."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._last_hand_manager_phase = "preflop"
+    loop._hand_manager._phase = "waiting"
+    loop._cached_hero_cards = ["As", "2s"]
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["7c", "6d"]
+    )
+    loop._number_recognizer.recognize_all = MagicMock(
+        return_value={
+            "pot": 5000,
+            "hero_stack": 5000,
+            "hero_bet": 0,
+            "player_stacks": {},
+            "player_bets": {},
+        }
+    )
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        state = loop.process_one_frame()
+        assert state is not None
+        loop._hand_manager.process_frame(state)
+
+    assert state.hero.cards is None
+    assert loop._hand_manager.phase == "waiting"
+    assert "Stale hero card suppression cleared" in caplog.text
+    assert "New hand start suppressed: pot too large" in caplog.text
+
+
+def test_hand_start_clears_stale_card_suppression_state(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hand-start cleanup clears stale-card suppression bookkeeping."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_just_started = True
+    loop._waiting_for_card_clear = True
+    loop._hero_cards_missing_since_hand_end = True
+    loop._last_ended_hero_cards = ["As", "2s"]
+    loop._stale_suppression_start_time = time.monotonic()
+    loop._stale_suppression_bypassed = True
+
+    state = loop.process_one_frame()
+
+    assert state is not None
+    assert loop._waiting_for_card_clear is False
+    assert loop._hero_cards_missing_since_hand_end is False
+    assert loop._last_ended_hero_cards is None
+    assert loop._stale_suppression_start_time is None
+    assert loop._stale_suppression_bypassed is False
+
+
 def create_test_game_state(phase: str = "waiting") -> Any:
     """Create a test GameState with basic hero configuration."""
     state = create_empty_game_state()
