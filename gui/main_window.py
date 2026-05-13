@@ -110,6 +110,7 @@ class MainWindow(QMainWindow):
         self._config = config or {}
         self._is_running = False
         self._opponents_data: list[dict[str, Any]] = []
+        self._last_displayed_hand_id: int | None = None
         self._stats_db_path = str(
             self._config.get("db", {}).get("path", "data/poker_assistant.db")
         )
@@ -195,6 +196,7 @@ class MainWindow(QMainWindow):
 
     def clear_live_state(self) -> None:
         """Clear live game state displays after polling stops."""
+        self._last_displayed_hand_id = None
         for key in self._summary_labels:
             self._set_summary_value(key, "-")
         self.update_phase("waiting")
@@ -553,7 +555,12 @@ class MainWindow(QMainWindow):
         table_text = "VISIBLE" if game_state.table_visible else "CLOSED"
         table_color = "#33cc66" if game_state.table_visible else "#cc6666"
         self._set_summary_value("Table", table_text, table_color)
-        self._set_summary_value("Hand ID", self._display_value(game_state.hand_id))
+        display_hand_id = game_state.hand_id
+        if display_hand_id is not None:
+            self._last_displayed_hand_id = display_hand_id
+        elif game_state.phase in {"hand_end", "waiting"}:
+            display_hand_id = self._last_displayed_hand_id
+        self._set_summary_value("Hand ID", self._display_value(display_hand_id))
         self._set_summary_value("Frame", str(game_state.frame_number))
         self._set_summary_value("Pot", str(game_state.pot))
         self._set_summary_value("Board", board_text)

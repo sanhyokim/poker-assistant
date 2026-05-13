@@ -141,6 +141,33 @@ def test_update_game_state_updates_summary_panel(qapp: QApplication) -> None:
     assert window._summary_labels["Turn"].text() == "YES"
 
 
+def test_summary_keeps_recent_hand_id_during_waiting(qapp: QApplication) -> None:
+    """Hand ID remains visible after hand_end/waiting frames clear GameState id."""
+    _ = qapp
+    window = MainWindow()
+
+    hand_four = create_empty_game_state()
+    hand_four.phase = "river"
+    hand_four.hand_id = 4
+    window.update_game_state(hand_four)
+    assert window._summary_labels["Hand ID"].text() == "4"
+
+    waiting = create_empty_game_state()
+    waiting.phase = "waiting"
+    waiting.hand_id = None
+    window.update_game_state(waiting)
+    assert window._summary_labels["Hand ID"].text() == "4"
+
+    hand_five = create_empty_game_state()
+    hand_five.phase = "preflop"
+    hand_five.hand_id = 5
+    window.update_game_state(hand_five)
+    assert window._summary_labels["Hand ID"].text() == "5"
+
+    window.clear_live_state()
+    assert window._summary_labels["Hand ID"].text() == "-"
+
+
 def test_update_game_state_updates_player_table(qapp: QApplication) -> None:
     """update_game_state updates seat rows in the operation player table."""
     _ = qapp
