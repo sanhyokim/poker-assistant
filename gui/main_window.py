@@ -594,8 +594,9 @@ class MainWindow(QMainWindow):
                 stack = self._display_value(player.stack if player is not None else None)
                 bet = str(player.bet if player is not None else 0)
                 is_seated = bool(player is not None and player.is_seated)
-                cards_visible = bool(player is not None and player.cards_visible)
+                raw_cards_visible = bool(player is not None and player.cards_visible)
                 in_hand = bool(player is not None and player.in_current_hand)
+                cards_visible = bool(is_seated and in_hand and raw_cards_visible)
                 status = self._player_status(
                     is_seated, cards_visible, in_hand, phase=game_state.phase,
                 )

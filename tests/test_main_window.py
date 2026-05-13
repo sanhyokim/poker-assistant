@@ -198,6 +198,66 @@ def test_update_game_state_table_closed_summary_and_players(
     assert window._player_table.item(0, 7).text() == "TABLE CLOSED"
 
 
+def test_player_table_empty_seat_cards_display_no(qapp: QApplication) -> None:
+    """Empty seats display Cards=NO even if raw cards_visible is True."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.table_visible = True
+    game_state.phase = "flop"
+    player = game_state.players["2"]
+    player.is_seated = False
+    player.cards_visible = True
+    player.in_current_hand = False
+
+    window.update_game_state(game_state)
+
+    assert window._player_table.item(0, 5).text() == "NO"
+    assert window._player_table.item(0, 7).text() == "EMPTY"
+    assert game_state.players["2"].cards_visible is True
+
+
+def test_player_table_out_of_hand_cards_display_no(qapp: QApplication) -> None:
+    """Out-of-hand seats display Cards=NO even if raw cards_visible is True."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.table_visible = True
+    game_state.phase = "flop"
+    player = game_state.players["2"]
+    player.is_seated = True
+    player.cards_visible = True
+    player.in_current_hand = False
+
+    window.update_game_state(game_state)
+
+    assert window._player_table.item(0, 4).text() == "YES"
+    assert window._player_table.item(0, 5).text() == "NO"
+    assert window._player_table.item(0, 6).text() == "NO"
+    assert window._player_table.item(0, 7).text() == "WAITING"
+    assert game_state.players["2"].cards_visible is True
+
+
+def test_player_table_active_cards_display_yes(qapp: QApplication) -> None:
+    """Active seated players still display Cards=YES when cards are visible."""
+    _ = qapp
+    window = MainWindow()
+    game_state = create_empty_game_state()
+    game_state.table_visible = True
+    game_state.phase = "flop"
+    player = game_state.players["2"]
+    player.is_seated = True
+    player.cards_visible = True
+    player.in_current_hand = True
+
+    window.update_game_state(game_state)
+
+    assert window._player_table.item(0, 4).text() == "YES"
+    assert window._player_table.item(0, 5).text() == "YES"
+    assert window._player_table.item(0, 6).text() == "YES"
+    assert window._player_table.item(0, 7).text() == "ACTIVE"
+
+
 def test_clear_live_state_resets_summary(qapp: QApplication) -> None:
     """clear_live_state resets summary labels and phase display."""
     _ = qapp
