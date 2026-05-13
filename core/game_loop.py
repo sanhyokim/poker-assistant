@@ -140,6 +140,8 @@ class GameLoop:
         self._last_strategy_phase: str | None = None
         self._last_hero_non_fold_action_time: float | None = None
         self._last_hero_non_fold_action_name: str | None = None
+        self._hero_fold_badge_ignored_for_hand: bool = False
+        self._hero_fold_badge_ignored_reason: str | None = None
 
         # Async HU postflop solver worker state
         self._pending_recommendation_lock = threading.Lock()
@@ -190,6 +192,8 @@ class GameLoop:
         self._clear_pending_state()
         self._last_recommendation_log = None
         self._last_strategy_is_my_turn = False
+        self._hero_fold_badge_ignored_for_hand = False
+        self._hero_fold_badge_ignored_reason = None
         self._notify_hud(None)
 
         if self._recommendation_engine is not None:
@@ -322,6 +326,8 @@ class GameLoop:
             self._seat_card_confirmed.clear()
             self._last_hero_non_fold_action_time = None
             self._last_hero_non_fold_action_name = None
+            self._hero_fold_badge_ignored_for_hand = False
+            self._hero_fold_badge_ignored_reason = None
             self._waiting_for_card_clear = False
             self._hero_cards_missing_since_hand_end = False
             self._last_ended_hero_cards = None
@@ -388,6 +394,8 @@ class GameLoop:
         self._last_strategy_phase = None
         self._last_hero_non_fold_action_time = None
         self._last_hero_non_fold_action_name = None
+        self._hero_fold_badge_ignored_for_hand = False
+        self._hero_fold_badge_ignored_reason = None
         self._diff_detector.reset()
         self._action_estimator.reset()
         self._fold_badge_detector.reset()
@@ -1692,10 +1700,20 @@ class GameLoop:
             return
 
         if 1 in players_in_hand and fold_results.get(1, False):
-            if hero_non_fold_action is not None:
+            if self._hero_fold_badge_ignored_for_hand:
+                logger.debug(
+                    "Hero fold badge ignored due to prior non-fold action in "
+                    "this hand: reason=%s",
+                    self._hero_fold_badge_ignored_reason,
+                )
+            elif hero_non_fold_action is not None:
                 logger.info(
                     "Hero fold badge ignored because non-fold hero action was "
                     "detected: action=%s",
+                    hero_non_fold_action.action,
+                )
+                self._latch_hero_fold_badge_ignore(
+                    "non_fold_action",
                     hero_non_fold_action.action,
                 )
             elif self._has_recent_hero_non_fold_action():
@@ -1711,6 +1729,10 @@ class GameLoop:
                     "action was detected: action=%s age=%.2fs",
                     action_name,
                     age,
+                )
+                self._latch_hero_fold_badge_ignore(
+                    "recent_non_fold_action",
+                    action_name,
                 )
             else:
                 logger.info("Hero FOLD detected via badge for seat 1")
@@ -1749,6 +1771,16 @@ class GameLoop:
                     confidence="high",
                 )
             )
+
+    def _latch_hero_fold_badge_ignore(self, reason: str, action: str) -> None:
+        """Ignore subsequent hero fold-badge latch results for this hand."""
+        self._hero_fold_badge_ignored_for_hand = True
+        self._hero_fold_badge_ignored_reason = reason
+        logger.info(
+            "Hero fold badge ignore latched for hand: reason=%s action=%s",
+            reason,
+            action,
+        )
 
     @staticmethod
     def _get_hero_non_fold_action(

@@ -488,6 +488,45 @@ def test_fold_badge_detection_ignores_hero_badge_with_non_fold_action(
         "Hero fold badge ignored because non-fold hero action was detected: "
         f"action={action_name}"
     ) in caplog.text
+    assert loop._hero_fold_badge_ignored_for_hand is True
+    assert loop._hero_fold_badge_ignored_reason == "non_fold_action"
+    assert (
+        "Hero fold badge ignore latched for hand: "
+        f"reason=non_fold_action action={action_name}"
+    ) in caplog.text
+    assert "Hero FOLD detected via badge for seat 1" not in caplog.text
+
+
+def test_fold_badge_detection_latched_hero_ignore_survives_recent_guard(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A contradictory hero fold-badge latch is ignored after the time guard."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    first_state = create_empty_game_state()
+    first_state.actions_since_last_frame = [
+        ActionRecord(seat=1, action="CHECK", amount=0, confidence="high")
+    ]
+
+    loop._process_fold_badge_detection(first_state, {1: True})
+    assert loop._hero_fold_badge_ignored_for_hand is True
+
+    loop._last_hero_non_fold_action_time = time.monotonic() - 2.0
+    second_state = create_empty_game_state()
+
+    with caplog.at_level(logging.DEBUG, logger="core.game_loop"):
+        loop._process_fold_badge_detection(second_state, {1: True})
+
+    assert second_state.actions_since_last_frame == []
+    assert loop._cached_hero_cards == ["Ah", "Kd"]
+    assert (
+        "Hero fold badge ignored due to prior non-fold action in this hand: "
+        "reason=non_fold_action"
+    ) in caplog.text
     assert "Hero FOLD detected via badge for seat 1" not in caplog.text
 
 
@@ -542,10 +581,33 @@ def test_fold_badge_detection_ignores_recent_hero_non_fold_action(
 
     assert game_state.actions_since_last_frame == []
     assert loop._cached_hero_cards == ["Ah", "Kd"]
+    assert loop._hero_fold_badge_ignored_for_hand is True
+    assert loop._hero_fold_badge_ignored_reason == "recent_non_fold_action"
     assert (
         "Hero fold badge ignored because recent non-fold hero action was "
         "detected: action=CHECK"
     ) in caplog.text
+
+
+def test_fold_badge_detection_latched_hero_ignore_still_processes_opponents(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Hero ignore latch does not suppress opponent fold badges."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    loop._hero_fold_badge_ignored_for_hand = True
+    loop._hero_fold_badge_ignored_reason = "non_fold_action"
+    game_state = _state_with_player("3")
+
+    loop._process_fold_badge_detection(game_state, {1: True, 3: True})
+
+    assert game_state.actions_since_last_frame == [
+        ActionRecord(seat=3, action="FOLD", amount=0, confidence="high")
+    ]
+    assert loop._cached_hero_cards == ["Ah", "Kd"]
 
 
 def test_fold_badge_detection_ignores_hero_outside_hand(
@@ -563,6 +625,24 @@ def test_fold_badge_detection_ignores_hero_outside_hand(
 
     assert game_state.actions_since_last_frame == []
     assert loop._cached_hero_cards == ["Ah", "Kd"]
+
+
+def test_fold_badge_detection_hero_ignore_latch_clears_on_hand_start(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A new hand clears the hero fold-badge ignore latch."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_just_started = True
+    loop._hero_fold_badge_ignored_for_hand = True
+    loop._hero_fold_badge_ignored_reason = "non_fold_action"
+
+    state = loop.process_one_frame()
+
+    assert state is not None
+    assert loop._hero_fold_badge_ignored_for_hand is False
+    assert loop._hero_fold_badge_ignored_reason is None
 
 
 def test_fold_badge_detection_ignores_nonparticipants(
