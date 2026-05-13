@@ -2587,6 +2587,32 @@ def test_phase_fast_forward_river(hand_manager_env: HandManager) -> None:
     assert hm.phase == "river"
 
 
+@pytest.mark.parametrize("board_count", [3, 5])
+def test_phase_fast_forward_suppressed_at_hand_start(
+    hand_manager_env: HandManager,
+    caplog: pytest.LogCaptureFixture,
+    board_count: int,
+) -> None:
+    """Fast-forward is skipped when GameLoop marks the board as residual."""
+    hm = hand_manager_env
+    gs = create_test_game_state(phase="waiting")
+    gs.hero.cards = ["Ah", "Kh"]
+    gs.board = ["Qs", "Jh", "2h", "Tc", "9d"][:board_count]
+    gs.board_card_count = board_count
+    gs.suppress_phase_fast_forward = True
+    gs.players["2"].is_seated = True
+    gs.players["2"].cards_visible = True
+
+    with caplog.at_level(logging.INFO, logger="core.hand_manager"):
+        hm.process_frame(gs)
+
+    assert hm.phase == "preflop"
+    assert (
+        "Phase fast-forward suppressed at hand start: "
+        f"board_count={board_count} reason=recent_hand_end_or_stale_clear"
+    ) in caplog.text
+
+
 # ---------------------------------------------------------------------------
 # Phase 30-Fix36: Street action recording tests
 # ---------------------------------------------------------------------------

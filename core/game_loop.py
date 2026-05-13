@@ -1967,7 +1967,10 @@ class GameLoop:
         cards, or inflated pot displays lingering from the previous hand's
         showdown/payout animations.
         """
-        if game_state.board_card_count >= 5:
+        if (
+            game_state.board_card_count >= 5
+            and not game_state.suppress_phase_fast_forward
+        ):
             logger.info(
                 "New hand start suppressed: board still visible in waiting "
                 "(board_count=%d, hero_cards=%s, pot=%d)",
@@ -2250,6 +2253,9 @@ class GameLoop:
                 game_state.hero.cards
             )
             if game_state.phase == "waiting":
+                self._mark_phase_fast_forward_suppression_if_recent_hand_end(
+                    game_state
+                )
                 if self._waiting_for_card_clear:
                     if self._hero_cards_missing(hero_cards):
                         logger.debug("Waiting for card clear: cards cleared")
@@ -2400,6 +2406,17 @@ class GameLoop:
 
         game_state.hero.seat = 1
         return game_state
+
+    def _mark_phase_fast_forward_suppression_if_recent_hand_end(
+        self,
+        game_state: GameState,
+    ) -> None:
+        """Mark hand-start phase fast-forward unsafe after a recent hand end."""
+        if self._last_ended_hero_cards is None:
+            return
+        if self._hero_cards_missing(game_state.hero.cards):
+            return
+        game_state.suppress_phase_fast_forward = True
 
     def _update_card_clear_wait_state(self, current_phase: str) -> None:
         if (

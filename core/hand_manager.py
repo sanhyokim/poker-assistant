@@ -554,7 +554,16 @@ class HandManager:
 
         # If board cards are already visible at hand start, advance phase
         board_count = game_state.board_card_count
-        if board_count >= 5:
+        suppress_fast_forward = bool(
+            getattr(game_state, "suppress_phase_fast_forward", False)
+        )
+        if suppress_fast_forward and board_count >= 3:
+            logger.info(
+                "Phase fast-forward suppressed at hand start: "
+                "board_count=%d reason=recent_hand_end_or_stale_clear",
+                board_count,
+            )
+        elif board_count >= 5:
             self._transition_phase("flop", game_state)
             self._transition_phase("turn", game_state)
             self._transition_phase("river", game_state)

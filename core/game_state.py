@@ -108,6 +108,8 @@ class GameState:
         current_street_actions: Cumulative actions on the current street.
         hero_action: Hero action after execution, otherwise None.
         game_event: Game lifecycle event, or None.
+        suppress_phase_fast_forward: Whether hand-start phase fast-forward
+            should be skipped for this frame.
     """
 
     timestamp: str = ""
@@ -130,6 +132,7 @@ class GameState:
     current_street_actions: list[ActionRecord] = field(default_factory=list)
     hero_action: ActionRecord | None = None
     game_event: str | None = None
+    suppress_phase_fast_forward: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the GameState to a JSON-serializable dictionary.

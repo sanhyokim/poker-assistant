@@ -2211,6 +2211,73 @@ def test_waiting_different_hero_cards_still_respect_pot_guard(
     assert "New hand start suppressed: pot too large" in caplog.text
 
 
+@pytest.mark.parametrize("board_count", [3, 5])
+def test_recent_hand_end_suppresses_phase_fast_forward(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    board_count: int,
+) -> None:
+    """Previous-hand context makes visible board cards residual at hand start."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._last_hand_manager_phase = "waiting"
+    loop._hand_manager._phase = "waiting"
+    loop._last_ended_hero_cards = ["As", "2s"]
+    loop._hero_cards_missing_since_hand_end = True
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["7c", "6d"]
+    )
+    board = ["Ah", "Kd", "Qs", "Jh", "Tc"][:board_count]
+    loop._card_recognizer.recognize_board_cards = MagicMock(return_value=board)
+    loop._card_recognizer.count_board_cards = MagicMock(return_value=board_count)
+
+    with caplog.at_level(logging.INFO):
+        state = loop.process_one_frame()
+        assert state is not None
+        loop._hand_manager.process_frame(state)
+
+    assert state.suppress_phase_fast_forward is True
+    assert loop._hand_manager.phase == "preflop"
+    assert (
+        "Phase fast-forward suppressed at hand start: "
+        f"board_count={board_count} reason=recent_hand_end_or_stale_clear"
+    ) in caplog.text
+
+
+def test_stale_clear_suppresses_phase_fast_forward(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Stale suppression clear starts preflop despite residual flop cards."""
+    image_path = Path("tests/fixtures/screenshots/coinpoker/cp_01_preflop_my_turnb.png")
+    loop = make_loop(workspace_tmp, monkeypatch, FileCapture(image_path))
+    loop._last_hand_manager_phase = "preflop"
+    loop._hand_manager._phase = "waiting"
+    loop._cached_hero_cards = ["As", "2s"]
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["7c", "6d"]
+    )
+    loop._card_recognizer.recognize_board_cards = MagicMock(
+        return_value=["Ah", "Kd", "Qs"]
+    )
+    loop._card_recognizer.count_board_cards = MagicMock(return_value=3)
+
+    with caplog.at_level(logging.INFO):
+        state = loop.process_one_frame()
+        assert state is not None
+        loop._hand_manager.process_frame(state)
+
+    assert state.suppress_phase_fast_forward is True
+    assert loop._hand_manager.phase == "preflop"
+    assert "Stale hero card suppression cleared" in caplog.text
+    assert (
+        "Phase fast-forward suppressed at hand start: "
+        "board_count=3 reason=recent_hand_end_or_stale_clear"
+    ) in caplog.text
+
+
 def test_hand_start_clears_stale_card_suppression_state(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
