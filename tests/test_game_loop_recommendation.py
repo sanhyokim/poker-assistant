@@ -936,6 +936,91 @@ def test_async_worker_exception_is_stored_and_polled_by_request_id(
     loop._notify_hud.assert_not_called()
 
 
+def test_async_poll_completed_active_request_returns_without_deadlock() -> None:
+    """Polling a completed active request returns the valid recommendation."""
+    hand_manager = MagicMock()
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    recommendation = Recommendation(
+        action="CHECK", amount=0, strategy_source="solver"
+    )
+    loop._pending_recommendation_active_id = 11
+    loop._pending_recommendation_context = {"phase": "flop", "board_count": 3}
+    loop._pending_recommendation_completed[11] = _AsyncRecommendationResult(
+        request_id=11,
+        recommendation=recommendation,
+    )
+    loop._is_recommendation_context_still_valid = MagicMock(return_value=True)
+    del loop._poll_async_recommendation_result
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    assert loop._poll_async_recommendation_result(state) is recommendation
+
+
+def test_async_poll_cancelled_active_request_returns_without_deadlock() -> None:
+    """Polling a cancelled active request returns None."""
+    hand_manager = MagicMock()
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    recommendation = Recommendation(
+        action="BET", amount=100, strategy_source="solver"
+    )
+    loop._pending_recommendation_active_id = 12
+    loop._pending_recommendation_context = {"phase": "flop", "board_count": 3}
+    loop._pending_recommendation_cancelled_ids = {12}
+    loop._pending_recommendation_completed[12] = _AsyncRecommendationResult(
+        request_id=12,
+        recommendation=recommendation,
+    )
+    del loop._poll_async_recommendation_result
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    assert loop._poll_async_recommendation_result(state) is None
+
+
+def test_async_poll_stale_active_request_returns_without_deadlock() -> None:
+    """Polling a stale active request returns None."""
+    hand_manager = MagicMock()
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    recommendation = Recommendation(
+        action="CALL", amount=50, strategy_source="solver"
+    )
+    loop._pending_recommendation_active_id = 13
+    loop._pending_recommendation_context = {"phase": "flop", "board_count": 3}
+    loop._pending_recommendation_completed[13] = _AsyncRecommendationResult(
+        request_id=13,
+        recommendation=recommendation,
+    )
+    loop._is_recommendation_context_still_valid = MagicMock(return_value=False)
+    del loop._poll_async_recommendation_result
+
+    state = _state(phase="turn", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c", "7s"]
+
+    assert loop._poll_async_recommendation_result(state) is None
+
+
+def test_async_poll_worker_error_returns_without_deadlock() -> None:
+    """Polling a completed worker error returns None."""
+    hand_manager = MagicMock()
+    loop = _make_loop_for_postflop(hand_manager, MagicMock())
+    loop._pending_recommendation_active_id = 14
+    loop._pending_recommendation_context = {"phase": "flop", "board_count": 3}
+    loop._pending_recommendation_completed[14] = _AsyncRecommendationResult(
+        request_id=14,
+        error=RuntimeError("solver failed"),
+    )
+    loop._is_recommendation_context_still_valid = MagicMock(return_value=True)
+    del loop._poll_async_recommendation_result
+
+    state = _state(phase="flop", is_my_turn=True, active=2)
+    state.board = ["2h", "3d", "5c"]
+
+    assert loop._poll_async_recommendation_result(state) is None
+
+
 def test_async_cleared_on_new_hand() -> None:
     """Pending async state is cleared on NEW_HAND."""
     hand_manager = MagicMock()

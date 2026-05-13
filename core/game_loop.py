@@ -1564,7 +1564,8 @@ class GameLoop:
                 "Async recommendation discarded: request_id=%d reason=cancelled",
                 active_id,
             )
-            self._finish_async_request(active_id)
+            with self._pending_recommendation_lock:
+                self._finish_async_request_locked(active_id)
             return None
 
         if pending_ctx is None:
@@ -1572,7 +1573,8 @@ class GameLoop:
                 "Async recommendation discarded: request_id=%d reason=inactive_request",
                 active_id,
             )
-            self._finish_async_request(active_id)
+            with self._pending_recommendation_lock:
+                self._finish_async_request_locked(active_id)
             return None
 
         if not self._is_recommendation_context_still_valid(
@@ -1582,7 +1584,8 @@ class GameLoop:
                 "Async recommendation discarded: request_id=%d reason=stale",
                 active_id,
             )
-            self._finish_async_request(active_id)
+            with self._pending_recommendation_lock:
+                self._finish_async_request_locked(active_id)
             return None
 
         if completed.error is not None:
@@ -1591,7 +1594,8 @@ class GameLoop:
                 active_id,
                 completed.error,
             )
-            self._finish_async_request(active_id)
+            with self._pending_recommendation_lock:
+                self._finish_async_request_locked(active_id)
             return None
 
         result = completed.recommendation
@@ -1600,7 +1604,8 @@ class GameLoop:
                 "Async recommendation discarded: request_id=%d reason=empty_result",
                 active_id,
             )
-            self._finish_async_request(active_id)
+            with self._pending_recommendation_lock:
+                self._finish_async_request_locked(active_id)
             return None
 
         logger.info(
@@ -1609,19 +1614,24 @@ class GameLoop:
             result.action,
             result.strategy_source,
         )
-        self._finish_async_request(active_id)
+        with self._pending_recommendation_lock:
+            self._finish_async_request_locked(active_id)
         return result
 
     def _finish_async_request(self, request_id: int) -> None:
         """Clear a completed async request after poll has handled it."""
         with self._pending_recommendation_lock:
-            if self._pending_recommendation_active_id == request_id:
-                self._pending_recommendation_active_id = None
-                self._pending_recommendation_context = None
-            thread = self._pending_recommendation_thread
-            if thread is not None and not thread.is_alive():
-                self._pending_recommendation_thread = None
-            self._cleanup_async_recommendation_state_locked(request_id)
+            self._finish_async_request_locked(request_id)
+
+    def _finish_async_request_locked(self, request_id: int) -> None:
+        """Clear a completed async request while holding the pending lock."""
+        if self._pending_recommendation_active_id == request_id:
+            self._pending_recommendation_active_id = None
+            self._pending_recommendation_context = None
+        thread = self._pending_recommendation_thread
+        if thread is not None and not thread.is_alive():
+            self._pending_recommendation_thread = None
+        self._cleanup_async_recommendation_state_locked(request_id)
 
     def _get_opponent_stats_for_strategy(self, game_state: GameState) -> dict[str, Any]:
         """Fetch seat-keyed opponent stats for strategy generation."""
