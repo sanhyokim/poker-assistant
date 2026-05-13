@@ -29,6 +29,9 @@ from strategy.recommendation_engine import Recommendation, RecommendationEngine
 
 logger = logging.getLogger(__name__)
 
+HERO_NON_FOLD_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "ALL_IN"}
+HERO_FOLD_BADGE_RECENT_ACTION_GUARD_SEC = 1.0
+
 
 @dataclass
 class _AsyncRecommendationResult:
@@ -135,6 +138,8 @@ class GameLoop:
         self._previous_recommendation: Recommendation | None = None
         self._previous_recommendation_context: dict[str, object] | None = None
         self._last_strategy_phase: str | None = None
+        self._last_hero_non_fold_action_time: float | None = None
+        self._last_hero_non_fold_action_name: str | None = None
 
         # Async HU postflop solver worker state
         self._pending_recommendation_lock = threading.Lock()
@@ -315,6 +320,8 @@ class GameLoop:
             self._visual_obstruction_recovery_until = 0.0
             self._last_seat_card_states.clear()
             self._seat_card_confirmed.clear()
+            self._last_hero_non_fold_action_time = None
+            self._last_hero_non_fold_action_name = None
             self._hero_cards_missing_since_hand_end = False
             self._last_ended_hero_cards = None
             logger.debug(
@@ -376,6 +383,8 @@ class GameLoop:
         self._previous_recommendation_context = None
         self._clear_pending_state()
         self._last_strategy_phase = None
+        self._last_hero_non_fold_action_time = None
+        self._last_hero_non_fold_action_name = None
         self._diff_detector.reset()
         self._action_estimator.reset()
         self._fold_badge_detector.reset()
@@ -1662,6 +1671,12 @@ class GameLoop:
             fold_results: Mapping of seat number to fold-badge status.
         """
         players_in_hand = self._hand_manager.get_players_in_hand()
+        hero_non_fold_action = self._get_hero_non_fold_action(
+            game_state.actions_since_last_frame
+        )
+        if hero_non_fold_action is not None:
+            self._last_hero_non_fold_action_time = time.monotonic()
+            self._last_hero_non_fold_action_name = hero_non_fold_action.action
 
         if self._is_visual_obstruction_protected():
             for seat, detected in fold_results.items():
@@ -1674,16 +1689,37 @@ class GameLoop:
             return
 
         if 1 in players_in_hand and fold_results.get(1, False):
-            logger.info("Hero FOLD detected via badge for seat 1")
-            game_state.actions_since_last_frame.append(
-                ActionRecord(
-                    seat=1,
-                    action="FOLD",
-                    amount=0,
-                    confidence="high",
+            if hero_non_fold_action is not None:
+                logger.info(
+                    "Hero fold badge ignored because non-fold hero action was "
+                    "detected: action=%s",
+                    hero_non_fold_action.action,
                 )
-            )
-            self._clear_hero_card_cache("hero fold badge detected")
+            elif self._has_recent_hero_non_fold_action():
+                action_name = self._last_hero_non_fold_action_name or "unknown"
+                action_time = self._last_hero_non_fold_action_time
+                age = (
+                    time.monotonic() - action_time
+                    if action_time is not None
+                    else 0.0
+                )
+                logger.info(
+                    "Hero fold badge ignored because recent non-fold hero "
+                    "action was detected: action=%s age=%.2fs",
+                    action_name,
+                    age,
+                )
+            else:
+                logger.info("Hero FOLD detected via badge for seat 1")
+                game_state.actions_since_last_frame.append(
+                    ActionRecord(
+                        seat=1,
+                        action="FOLD",
+                        amount=0,
+                        confidence="high",
+                    )
+                )
+                self._clear_hero_card_cache("hero fold badge detected")
 
         for seat in range(2, 7):
             if seat not in players_in_hand:
@@ -1710,6 +1746,26 @@ class GameLoop:
                     confidence="high",
                 )
             )
+
+    @staticmethod
+    def _get_hero_non_fold_action(
+        actions: list[ActionRecord],
+    ) -> ActionRecord | None:
+        """Return the hero's non-fold action in the current frame, if any."""
+        for action in actions:
+            if action.seat == 1 and action.action in HERO_NON_FOLD_ACTIONS:
+                return action
+        return None
+
+    def _has_recent_hero_non_fold_action(self) -> bool:
+        """Return whether a recent hero non-fold action should suppress badge fold."""
+        action_time = self._last_hero_non_fold_action_time
+        if action_time is None:
+            return False
+        return (
+            time.monotonic() - action_time
+            <= HERO_FOLD_BADGE_RECENT_ACTION_GUARD_SEC
+        )
 
     def _apply_seat_card_visibility(
         self,

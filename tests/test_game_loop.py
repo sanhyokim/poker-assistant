@@ -458,6 +458,96 @@ def test_fold_badge_detection_appends_hero_fold_and_clears_cache(
     assert loop._cached_hero_cards is None
 
 
+@pytest.mark.parametrize("action_name", ["CHECK", "CALL", "RAISE"])
+def test_fold_badge_detection_ignores_hero_badge_with_non_fold_action(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    action_name: str,
+) -> None:
+    """Hero non-fold actions take precedence over same-frame hero fold badges."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    game_state = _state_with_player("3")
+    hero_action = ActionRecord(
+        seat=1,
+        action=action_name,
+        amount=100 if action_name != "CHECK" else 0,
+        confidence="high",
+    )
+    game_state.actions_since_last_frame = [hero_action]
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        loop._process_fold_badge_detection(game_state, {1: True})
+
+    assert game_state.actions_since_last_frame == [hero_action]
+    assert loop._cached_hero_cards == ["Ah", "Kd"]
+    assert (
+        "Hero fold badge ignored because non-fold hero action was detected: "
+        f"action={action_name}"
+    ) in caplog.text
+    assert "Hero FOLD detected via badge for seat 1" not in caplog.text
+
+
+def test_fold_badge_detection_opponent_badge_still_processed_with_hero_action(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opponent fold badges are still processed when hero has a normal action."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    game_state = _state_with_player("3")
+    hero_action = ActionRecord(
+        seat=1,
+        action="CHECK",
+        amount=0,
+        confidence="high",
+    )
+    game_state.actions_since_last_frame = [hero_action]
+
+    loop._process_fold_badge_detection(game_state, {1: True, 3: True})
+
+    assert game_state.actions_since_last_frame == [
+        hero_action,
+        ActionRecord(
+            seat=3,
+            action="FOLD",
+            amount=0,
+            confidence="high",
+        ),
+    ]
+    assert loop._cached_hero_cards == ["Ah", "Kd"]
+
+
+def test_fold_badge_detection_ignores_recent_hero_non_fold_action(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A recent hero non-fold action suppresses near-frame hero fold badges."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    loop._last_hero_non_fold_action_time = time.monotonic()
+    loop._last_hero_non_fold_action_name = "CHECK"
+    game_state = create_empty_game_state()
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        loop._process_fold_badge_detection(game_state, {1: True})
+
+    assert game_state.actions_since_last_frame == []
+    assert loop._cached_hero_cards == ["Ah", "Kd"]
+    assert (
+        "Hero fold badge ignored because recent non-fold hero action was "
+        "detected: action=CHECK"
+    ) in caplog.text
+
+
 def test_fold_badge_detection_ignores_hero_outside_hand(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
