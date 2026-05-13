@@ -1070,6 +1070,104 @@ class TestActionAccumulation:
         assert current_street is not None
         assert current_street.actions == [action]
 
+    @pytest.mark.parametrize(
+        "action",
+        [
+            ActionRecord(seat=1, action="CHECK", amount=0),
+            ActionRecord(seat=1, action="CALL", amount=100),
+        ],
+    )
+    def test_frame_hero_boundary_action_is_not_saved_directly(
+        self,
+        manager: HandManager,
+        action: ActionRecord,
+    ) -> None:
+        """Frame-derived hero non-fold actions wait for turn-boundary recording."""
+        start_hand(manager)
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], actions=[action]))
+
+        assert manager.get_all_actions() == []
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        assert current_street.actions == []
+
+    def test_record_hero_action_saves_boundary_action(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Boundary-derived hero actions are still saved through _record_hero_action."""
+        start_hand(manager)
+        action = ActionRecord(seat=1, action="CHECK", amount=0)
+
+        manager._record_hero_action(action)
+
+        assert manager.get_all_actions() == [action]
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        assert current_street.actions == [action]
+
+    def test_frame_hero_fold_is_still_saved(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Frame-derived hero FOLD keeps the existing immediate fold behavior."""
+        start_hand(manager)
+        action = ActionRecord(seat=1, action="FOLD", amount=0)
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], actions=[action]))
+
+        assert manager.get_all_actions() == [action]
+        assert 1 not in manager.get_players_in_hand()
+
+    def test_frame_opponent_action_is_still_saved(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Opponent actions are unaffected by hero direct-action suppression."""
+        start_hand(manager)
+        action = ActionRecord(seat=2, action="CALL", amount=100)
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], actions=[action]))
+
+        assert manager.get_all_actions() == [action]
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        assert current_street.actions == [action]
+
+    def test_frame_hero_action_and_boundary_action_record_once(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Frame hero CHECK plus boundary CALL records only the boundary action."""
+        start_hand(manager)
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                hero_stack=5000,
+                hero_bet=0,
+                hero_is_my_turn=True,
+                players={"2": (5000, 100), "3": (5000, 0)},
+            )
+        )
+
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                hero_stack=4900,
+                hero_bet=100,
+                hero_is_my_turn=False,
+                actions=[ActionRecord(seat=1, action="CHECK", amount=0)],
+                players={"2": (5000, 100), "3": (5000, 0)},
+            )
+        )
+
+        actions = manager.get_all_actions()
+        assert actions == [ActionRecord(seat=1, action="CALL", amount=100)]
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        assert current_street.actions == actions
+
     def test_duplicate_same_amount_is_ignored(self, manager: HandManager) -> None:
         """Same seat/action/amount in consecutive frames is deduplicated."""
         start_hand(manager)
@@ -1123,7 +1221,7 @@ class TestActionAccumulation:
         """Preflop and flop actions are stored in separate street buckets."""
         start_hand(manager)
         preflop_action = ActionRecord(seat=2, action="CALL", amount=100)
-        flop_action = ActionRecord(seat=1, action="BET", amount=200)
+        flop_action = ActionRecord(seat=2, action="BET", amount=200)
 
         manager.process_frame(
             make_state(hero_cards=["Ah", "Kd"], actions=[preflop_action])
@@ -1863,7 +1961,7 @@ class TestPersistence:
             make_state(
                 hero_cards=["Ah", "Kd"],
                 board=["2c", "7d", "Ts"],
-                actions=[ActionRecord(seat=1, action="BET", amount=200)],
+                actions=[ActionRecord(seat=2, action="BET", amount=200)],
             )
         )
         manager.process_frame(

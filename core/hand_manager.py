@@ -47,6 +47,7 @@ class HandManager:
         "BLIND_SB",
         "BLIND_BB",
     }
+    _HERO_BOUNDARY_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "ALL_IN"}
     _ACTIVE_PHASES = {"preflop", "flop", "turn", "river"}
     _VALID_TRANSITIONS: dict[str, set[str]] = {
         "waiting": {"preflop"},
@@ -705,13 +706,31 @@ class HandManager:
             return False
         return time.monotonic() - self._hand_end_timestamp >= self._waiting_timeout_sec
 
-    def _add_actions(self, actions: list[ActionRecord]) -> None:
+    def _add_actions(
+        self,
+        actions: list[ActionRecord],
+        *,
+        allow_hero_boundary_actions: bool = False,
+    ) -> None:
         """Add non-duplicate actions to hand and street histories."""
         accepted_actions: list[ActionRecord] = []
         street_actions = self.get_current_street_actions()
         street = self._get_current_street_name() if street_actions is not None else None
 
         for action in actions:
+            action_name = action.action.upper()
+            if (
+                not allow_hero_boundary_actions
+                and action.seat == 1
+                and action_name in self._HERO_BOUNDARY_ACTIONS
+            ):
+                logger.debug(
+                    "Hero action from frame actions ignored; turn boundary "
+                    "will record it: action=%s amount=%s",
+                    action.action,
+                    action.amount,
+                )
+                continue
             if self._is_duplicate_action(action, self._last_frame_actions):
                 logger.debug("Duplicate action ignored: %s", action)
                 continue
@@ -731,7 +750,7 @@ class HandManager:
                 len(street_actions.actions) if street_actions is not None else 0,
             )
 
-        self._last_frame_actions = list(actions)
+        self._last_frame_actions = accepted_actions
 
     def _update_players_in_hand_from_action(self, action: ActionRecord) -> None:
         """Remove folded seats from the current hand participant set."""
@@ -873,7 +892,7 @@ class HandManager:
         if action.action == "FOLD":
             self._hero_folded = True
 
-        self._add_actions([action])
+        self._add_actions([action], allow_hero_boundary_actions=True)
         logger.info("Hero action recorded: %s %d", action.action, action.amount)
 
     def _check_recommendation_followed(
