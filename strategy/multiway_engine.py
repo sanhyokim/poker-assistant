@@ -84,21 +84,25 @@ class MultiwayEngine:
 
         # 数理メトリクス計算
         metrics = self._compute_metrics(game_state)
+        hero_ip_or_oop = self._hero_ip_or_oop(game_state)
         full_street_actions = (
             list(game_state.current_street_actions)
             if hasattr(game_state, "current_street_actions")
             and game_state.current_street_actions
             else None
         )
+        preflop_actions = list(game_state.preflop_actions or [])
 
         self.logger.info(
             "Multiway metrics: hero_cards=%s, board=%s, phase=%s, "
             "pot=%d, hero_current_bet=%d, "
             "facing_bet=%d, raw_call_amount=%d, "
             "effective_call_amount=%d, hero_stack=%d, pot_after_call=%d, "
-            "required_equity=%.4f, hero_equity=%.4f, "
+            "required_equity=%.4f, hero_call_is_all_in=%s, spr=%.1f, "
+            "hero_ip_or_oop=%s, hero_equity=%.4f, "
             "num_opponents=%d, active_player_count=%d, "
-            "opponent_range=%s, full_street_action_history=%s",
+            "opponent_range=%s, preflop_action_history=%s, "
+            "full_street_action_history=%s",
             hero_cards,
             board,
             game_state.phase,
@@ -110,10 +114,14 @@ class MultiwayEngine:
             metrics["hero_stack"],
             metrics["pot_after_call"],
             metrics["required_equity"],
+            metrics["hero_call_is_all_in"],
+            metrics["spr"],
+            hero_ip_or_oop,
             equity,
             num_opponents,
             game_state.active_player_count,
             opponent_range,
+            self._format_actions_summary(preflop_actions),
             self._format_actions_summary(full_street_actions),
         )
 
@@ -128,6 +136,12 @@ class MultiwayEngine:
                 facing_bet=metrics["facing_bet"],
                 pot_after_call=metrics["pot_after_call"],
                 required_equity=metrics["required_equity"],
+                raw_call_amount=metrics["raw_call_amount"],
+                effective_call_amount=metrics["effective_call_amount"],
+                hero_call_is_all_in=metrics["hero_call_is_all_in"],
+                spr=metrics["spr"],
+                hero_ip_or_oop=hero_ip_or_oop,
+                preflop_actions=preflop_actions,
                 current_street_actions=full_street_actions,
             )
         except Exception as error:
@@ -217,8 +231,9 @@ class MultiwayEngine:
 
         Returns dictionary with: hero_current_bet, facing_bet, call_amount,
         raw_call_amount, effective_call_amount, hero_stack, pot_after_call,
-        required_equity, pot_odds.
+        required_equity, pot_odds, spr, hero_call_is_all_in.
         """
+        pot = int(game_state.pot or 0)
         hero_current_bet = int(game_state.hero.bet or 0)
         hero_stack = int(game_state.hero.stack or 0)
         facing_bet = max(
@@ -232,11 +247,15 @@ class MultiwayEngine:
             call_amount = raw_call_amount
 
         if call_amount > 0:
-            pot_after_call = int(game_state.pot or 0) + call_amount
+            pot_after_call = pot + call_amount
             required_equity = call_amount / pot_after_call
         else:
-            pot_after_call = int(game_state.pot or 0)
+            pot_after_call = pot
             required_equity = 0.0
+        spr = hero_stack / pot if pot > 0 else 0.0
+        hero_call_is_all_in = bool(
+            call_amount > 0 and hero_stack > 0 and call_amount >= hero_stack
+        )
 
         return {
             "hero_current_bet": hero_current_bet,
@@ -248,6 +267,8 @@ class MultiwayEngine:
             "pot_after_call": pot_after_call,
             "required_equity": required_equity,
             "pot_odds": required_equity,
+            "spr": spr,
+            "hero_call_is_all_in": hero_call_is_all_in,
         }
 
     @staticmethod
@@ -547,6 +568,18 @@ class MultiwayEngine:
     ) -> int:
         """Infer opponent count from currently active players."""
         return max(1, int(game_state.active_player_count or 0) - 1)
+
+    @staticmethod
+    def _hero_ip_or_oop(game_state: GameState) -> str:
+        """Return a simple IP/OOP hint for multiway prompt."""
+        hero_position = game_state.hero.position or "Unknown"
+        if hero_position in {"BTN", "CO"}:
+            return "likely IP"
+        if hero_position in {"SB", "BB"}:
+            return "likely OOP"
+        if hero_position == "Unknown":
+            return "Unknown"
+        return "mixed/early"
 
     @staticmethod
     def _heuristic_fallback(equity: float) -> JsonDict:

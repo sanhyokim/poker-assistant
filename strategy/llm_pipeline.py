@@ -119,21 +119,29 @@ Solver cannot be used (3+ players). Use the equity data and opponent stats to re
 - Street: {street}
 - Hero Hand: {hero_hand}
 - Hero Position: {hero_position}
+- Hero IP/OOP: {hero_ip_or_oop}
 - Pot: {pot} chips
 - Hero Stack: {hero_stack} chips
 - Hero Current Bet: {hero_current_bet} chips
 - Number of Players: {num_players}
+- SPR: {spr:.1f}
 
 ## Betting Situation
 - Facing Bet: {facing_bet} chips
 - Call Amount: {call_amount} chips
+- Raw Call Amount: {raw_call_amount} chips
+- Effective Call Amount: {effective_call_amount} chips
+- Hero Call Is All-In: {hero_call_is_all_in}
 - Pot After Call: {pot_after_call} chips
 - Required Equity To Call: {required_equity:.1f}%
 
 ## Hero Equity (Monte Carlo, 10000 simulations)
 - Equity vs all opponents: {equity:.1f}%
 
-## Full Street Action History
+## Preflop Action History
+{preflop_action_history}
+
+## Current Street Action History
 {action_history}
 
 ## Opponent Profiles
@@ -404,6 +412,12 @@ class LLMPipeline:
         facing_bet: int = 0,
         pot_after_call: int = 0,
         required_equity: float = 0.0,
+        raw_call_amount: int = 0,
+        effective_call_amount: int = 0,
+        hero_call_is_all_in: bool = False,
+        spr: float = 0.0,
+        hero_ip_or_oop: str = "Unknown",
+        preflop_actions: list[ActionRecord] | None = None,
         current_street_actions: list[ActionRecord] | None = None,
     ) -> JsonDict:
         """Recommend an action for multiway pots where solver is unavailable.
@@ -416,26 +430,48 @@ class LLMPipeline:
             facing_bet: Maximum opponent bet hero is facing.
             pot_after_call: Pot size after hero calls.
             required_equity: Required equity to justify a call.
+            raw_call_amount: Uncapped amount needed to match the facing bet.
+            effective_call_amount: Amount Hero can actually call.
+            hero_call_is_all_in: Whether calling puts Hero all-in.
+            spr: Stack-to-pot ratio before Hero acts.
+            hero_ip_or_oop: Simple position hint for multiway decisions.
+            preflop_actions: Preflop action history for this hand.
             current_street_actions: Full current street action history.
 
         Returns:
             Action recommendation dictionary.
         """
         method_start = time.perf_counter()
+        if raw_call_amount <= 0:
+            raw_call_amount = call_amount
+        if effective_call_amount <= 0:
+            effective_call_amount = call_amount
+        preflop_history_actions = preflop_actions
+        if preflop_history_actions is None:
+            preflop_history_actions = list(game_state.preflop_actions or [])
         prompt = MULTIWAY_DECISION_PROMPT.format(
             board=self._board_to_str(game_state),
             street=game_state.phase,
             hero_hand=self._hero_hand(game_state),
             hero_position=game_state.hero.position or "Unknown",
+            hero_ip_or_oop=hero_ip_or_oop,
             pot=game_state.pot,
             hero_stack=game_state.hero.stack or 0,
             hero_current_bet=game_state.hero.bet or 0,
             facing_bet=facing_bet,
             call_amount=call_amount,
+            raw_call_amount=raw_call_amount,
+            effective_call_amount=effective_call_amount,
+            hero_call_is_all_in=hero_call_is_all_in,
             pot_after_call=pot_after_call,
             required_equity=required_equity * 100.0,
             num_players=game_state.active_player_count,
+            spr=spr,
             equity=hero_equity * 100.0,
+            preflop_action_history=self._format_action_history(
+                game_state,
+                preflop_history_actions,
+            ),
             action_history=self._format_action_history(
                 game_state,
                 current_street_actions,
@@ -919,12 +955,15 @@ class LLMPipeline:
         current_street_actions: list[ActionRecord] | None = None,
     ) -> str:
         """Format actions for prompt insertion, preferring full street history."""
-        actions = current_street_actions or (
-            game_state.current_street_actions
-            if hasattr(game_state, "current_street_actions")
-            and game_state.current_street_actions
-            else None
-        )
+        if current_street_actions is not None:
+            actions = current_street_actions
+        else:
+            actions = (
+                game_state.current_street_actions
+                if hasattr(game_state, "current_street_actions")
+                and game_state.current_street_actions
+                else None
+            )
         if actions:
             action_dicts = []
             for action in actions:
@@ -935,6 +974,8 @@ class LLMPipeline:
                 )
                 action_dicts.append(d)
             return json.dumps(action_dicts, ensure_ascii=False)
+        if current_street_actions is not None:
+            return "[]"
         if game_state.actions_since_last_frame:
             return json.dumps(
                 [action.__dict__ for action in game_state.actions_since_last_frame],

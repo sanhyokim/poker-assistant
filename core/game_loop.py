@@ -2164,6 +2164,8 @@ class GameLoop:
                 )
             game_state.active_player_count = 0
             game_state.hero.in_current_hand = False
+            game_state.current_street_actions = []
+            game_state.preflop_actions = []
             return
 
         current_street = self._hand_manager.get_current_street_actions()
@@ -2171,10 +2173,16 @@ class GameLoop:
             game_state.current_street_actions = list(current_street.actions)
         else:
             game_state.current_street_actions = []
+        if game_state.phase in {"waiting", "hand_end"}:
+            game_state.preflop_actions = []
+        else:
+            game_state.preflop_actions = list(self._hand_manager.get_preflop_actions())
         logger.debug(
-            "Synced current_street_actions: phase=%s count=%d actions=%s",
+            "Synced street action histories: phase=%s current_count=%d "
+            "preflop_count=%d actions=%s",
             game_state.phase,
             len(game_state.current_street_actions),
+            len(game_state.preflop_actions),
             [
                 {
                     "seat": action.seat,

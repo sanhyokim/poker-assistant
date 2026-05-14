@@ -2522,6 +2522,13 @@ def test_current_street_actions_synced_from_hand_manager(
         ActionRecord(seat=3, action="CALL", amount=300, confidence="high"),
         ActionRecord(seat=2, action="RAISE", amount=1600, confidence="high"),
     ]
+    preflop_actions = StreetActions(street="preflop")
+    preflop_actions.actions = [
+        ActionRecord(seat=2, action="BLIND_SB", amount=50, confidence="high"),
+        ActionRecord(seat=3, action="RAISE", amount=300, confidence="high"),
+        ActionRecord(seat=1, action="CALL", amount=300, confidence="high"),
+    ]
+    hm._street_actions["preflop"] = preflop_actions
     hm._street_actions["flop"] = flop_actions
     hm._phase = "flop"
 
@@ -2542,6 +2549,11 @@ def test_current_street_actions_synced_from_hand_manager(
     assert state.current_street_actions[2].seat == 2
     assert state.current_street_actions[2].action == "RAISE"
     assert state.current_street_actions[2].amount == 1600
+    assert len(state.preflop_actions) == 2
+    assert state.preflop_actions[0].seat == 3
+    assert state.preflop_actions[0].action == "RAISE"
+    assert state.preflop_actions[1].seat == 1
+    assert state.preflop_actions[1].action == "CALL"
 
 
 def test_current_street_actions_empty_when_no_street(
@@ -2560,6 +2572,7 @@ def test_current_street_actions_empty_when_no_street(
     loop._sync_game_state_with_hand_manager(state)
 
     assert state.current_street_actions == []
+    assert state.preflop_actions == []
 
 
 # ---------------------------------------------------------------------------

@@ -106,6 +106,7 @@ class GameState:
         buttons: Button state when hero can act, otherwise None.
         actions_since_last_frame: Actions detected since the previous frame.
         current_street_actions: Cumulative actions on the current street.
+        preflop_actions: Cumulative preflop actions for the current hand.
         hero_action: Hero action after execution, otherwise None.
         game_event: Game lifecycle event, or None.
         suppress_phase_fast_forward: Whether hand-start phase fast-forward
@@ -130,6 +131,7 @@ class GameState:
     buttons: ButtonState | None = None
     actions_since_last_frame: list[ActionRecord] = field(default_factory=list)
     current_street_actions: list[ActionRecord] = field(default_factory=list)
+    preflop_actions: list[ActionRecord] = field(default_factory=list)
     hero_action: ActionRecord | None = None
     game_event: str | None = None
     suppress_phase_fast_forward: bool = False

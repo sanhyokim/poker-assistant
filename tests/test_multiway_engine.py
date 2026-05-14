@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from unittest.mock import MagicMock
 
+import pytest
+
 from core.game_state import ActionRecord, GameState, HeroState, PlayerState
 from strategy.llm_pipeline import LLMPipeline
 from strategy.multiway_engine import MultiwayEngine
@@ -514,6 +516,8 @@ def test_call_amount_is_capped_by_hero_stack() -> None:
     assert metrics["hero_stack"] == 5442
     assert metrics["pot_after_call"] == 18802
     assert metrics["required_equity"] == 5442 / 18802
+    assert metrics["hero_call_is_all_in"] is True
+    assert metrics["spr"] == pytest.approx(5442 / 13360)
 
 
 def test_num_opponents_uses_active_player_count() -> None:

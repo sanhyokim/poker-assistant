@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import requests
 
-from core.game_state import GameState, HeroState, PlayerState
+from core.game_state import ActionRecord, GameState, HeroState, PlayerState
 from strategy.llm_pipeline import LLMPipeline
 
 
@@ -352,6 +352,57 @@ def test_decide_multiway_prompt_contains_no_player_name() -> None:
     prompt = mock_call.call_args.args[0]
     assert "SecretVillain" not in prompt
     assert "seat_2" in prompt
+
+
+def test_decide_multiway_prompt_contains_enriched_context() -> None:
+    """Multiway prompt includes effective call, SPR, IP/OOP, and split history."""
+    pipeline = make_pipeline()
+    state = make_state(pot=13360, stack=5442)
+    state.hero.position = "BTN"
+    preflop_actions = [
+        ActionRecord(seat=5, action="RAISE", amount=2580, confidence="high"),
+        ActionRecord(seat=1, action="CALL", amount=2580, confidence="high"),
+    ]
+    current_actions = [
+        ActionRecord(seat=5, action="ALL_IN", amount=42976, confidence="high")
+    ]
+
+    with patch.object(
+        pipeline,
+        "_call_api",
+        return_value='{"action":"call","size":5442,"confidence":"medium",'
+        '"reasoning":"Effective all-in call."}',
+    ) as mock_call:
+        pipeline.decide_multiway(
+            state,
+            0.45,
+            [{"vpip": 30}],
+            call_amount=5442,
+            facing_bet=42976,
+            pot_after_call=18802,
+            required_equity=5442 / 18802,
+            raw_call_amount=42976,
+            effective_call_amount=5442,
+            hero_call_is_all_in=True,
+            spr=5442 / 13360,
+            hero_ip_or_oop="likely IP",
+            preflop_actions=preflop_actions,
+            current_street_actions=current_actions,
+        )
+
+    prompt = mock_call.call_args.args[0]
+    assert "Hero IP/OOP" in prompt
+    assert "likely IP" in prompt
+    assert "SPR" in prompt
+    assert "0.4" in prompt
+    assert "Raw Call Amount: 42976 chips" in prompt
+    assert "Effective Call Amount: 5442 chips" in prompt
+    assert "Hero Call Is All-In: True" in prompt
+    assert "## Preflop Action History" in prompt
+    assert "RAISE" in prompt
+    assert "CALL" in prompt
+    assert "## Current Street Action History" in prompt
+    assert "ALL_IN" in prompt
 
 
 def test_request_preflop_delta_success() -> None:
