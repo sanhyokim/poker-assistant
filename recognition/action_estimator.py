@@ -126,6 +126,21 @@ class ActionEstimator:
             diff.pot_prev > 0
             and diff.pot_curr > diff.pot_prev * self._pot_spike_ratio
         ):
+            if self._is_suspicious_pot_spike(diff.pot_prev, diff.pot_curr, diff):
+                logger.warning(
+                    "Suspicious pot spike ignored: %d -> %d scaled10=%d, "
+                    "holding previous value",
+                    diff.pot_prev,
+                    diff.pot_curr,
+                    diff.pot_curr // 10,
+                )
+                self._pot_spike_streak = 0
+                self._pot_spike_value = 0
+                diff.pot_curr = diff.pot_prev
+                diff.pot_changed = False
+                diff.any_change = self._has_non_pot_change(diff)
+                return diff
+
             self._pot_spike_streak += 1
             self._pot_spike_value = diff.pot_curr
 
@@ -154,6 +169,25 @@ class ActionEstimator:
         self._pot_spike_streak = 0
         self._pot_spike_value = 0
         return diff
+
+    def _is_suspicious_pot_spike(
+        self,
+        pot_prev: int,
+        pot_curr: int,
+        diff: StateDiff,
+    ) -> bool:
+        """Return whether a pot spike looks like an OCR digit-scale error."""
+        if pot_prev <= 0 or pot_curr <= 0:
+            return False
+
+        if pot_curr <= pot_prev * self._pot_spike_ratio:
+            return False
+
+        scaled10 = pot_curr // 10
+        if scaled10 > pot_prev and scaled10 <= pot_prev * 2:
+            return True
+
+        return False
 
     def _has_non_pot_change(self, diff: StateDiff) -> bool:
         """Return whether the diff still has changes after pot filtering."""

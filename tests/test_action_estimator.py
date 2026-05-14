@@ -890,6 +890,65 @@ class TestPotSpikeFilter:
         assert first_result["filtered_pot"] == 400
         assert second_result["filtered_pot"] is None
 
+    def test_suspicious_ten_x_pot_spike_is_not_confirmed(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Clear ten-x OCR pot spikes are held even after repeated frames."""
+        previous = create_empty_game_state()
+        previous.pot = 7740
+
+        first_spike = create_empty_game_state()
+        first_spike.pot = 103320
+        first_result = estimator.estimate(previous, first_spike)
+
+        second_spike = create_empty_game_state()
+        second_spike.pot = 103320
+        if first_result["filtered_pot"] is not None:
+            first_spike.pot = first_result["filtered_pot"]
+        second_result = estimator.estimate(first_spike, second_spike)
+
+        assert first_result["game_event"] is None
+        assert first_result["filtered_pot"] == 7740
+        assert second_result["game_event"] is None
+        assert second_result["filtered_pot"] == 7740
+
+    def test_natural_pot_increase_is_not_suspicious(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Natural pot growth is not held by suspicious-spike filtering."""
+        previous = create_empty_game_state()
+        previous.pot = 7740
+
+        current = create_empty_game_state()
+        current.pot = 10320
+
+        result = estimator.estimate(previous, current)
+
+        assert result["filtered_pot"] is None
+
+    def test_non_suspicious_pot_spike_keeps_confirm_behavior(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Large non-ten-x spikes still use the existing confirm behavior."""
+        previous = create_empty_game_state()
+        previous.pot = 1000
+
+        first_spike = create_empty_game_state()
+        first_spike.pot = 5000
+        first_result = estimator.estimate(previous, first_spike)
+
+        second_spike = create_empty_game_state()
+        second_spike.pot = 5000
+        if first_result["filtered_pot"] is not None:
+            first_spike.pot = first_result["filtered_pot"]
+        second_result = estimator.estimate(first_spike, second_spike)
+
+        assert first_result["filtered_pot"] == 1000
+        assert second_result["filtered_pot"] is None
+
     def test_no_spike_returns_none_filtered_pot(
         self,
         estimator: ActionEstimator,
