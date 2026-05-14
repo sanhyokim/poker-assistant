@@ -1163,6 +1163,71 @@ class TestActionAccumulation:
         assert current_street is not None
         assert current_street.actions == [action]
 
+    def test_delayed_hero_call_replaces_recent_boundary_check(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """A delayed frame CALL replaces a very recent boundary CHECK."""
+        start_hand(manager)
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        current_street.recommendation = "CALL 300"
+        manager._record_hero_action(ActionRecord(seat=1, action="CHECK", amount=0))
+        assert manager._last_hero_boundary_action_monotonic is not None
+        manager._last_hero_boundary_action_monotonic = (
+            hand_manager_module.time.monotonic() - 0.5
+        )
+
+        manager._add_actions([ActionRecord(seat=1, action="CALL", amount=300)])
+
+        expected = [ActionRecord(seat=1, action="CALL", amount=300)]
+        assert current_street.actions == expected
+        assert manager.get_all_actions() == expected
+        assert current_street.human_action == "CALL 300"
+        assert current_street.followed_recommendation is True
+
+    def test_delayed_hero_call_after_window_does_not_replace_check(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Frame CALL after the replacement window is ignored as before."""
+        start_hand(manager)
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        check = ActionRecord(seat=1, action="CHECK", amount=0)
+        manager._record_hero_action(check)
+        assert manager._last_hero_boundary_action_monotonic is not None
+        manager._last_hero_boundary_action_monotonic = (
+            hand_manager_module.time.monotonic() - 1.5
+        )
+
+        manager._add_actions([ActionRecord(seat=1, action="CALL", amount=300)])
+
+        assert current_street.actions == [check]
+        assert manager.get_all_actions() == [check]
+        assert current_street.human_action == "CHECK"
+
+    def test_delayed_hero_raise_replaces_recent_boundary_check(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """A delayed frame RAISE can replace a very recent boundary CHECK."""
+        start_hand(manager)
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        manager._record_hero_action(ActionRecord(seat=1, action="CHECK", amount=0))
+        assert manager._last_hero_boundary_action_monotonic is not None
+        manager._last_hero_boundary_action_monotonic = (
+            hand_manager_module.time.monotonic() - 0.25
+        )
+
+        manager._add_actions([ActionRecord(seat=1, action="RAISE", amount=500)])
+
+        expected = [ActionRecord(seat=1, action="RAISE", amount=500)]
+        assert current_street.actions == expected
+        assert manager.get_all_actions() == expected
+        assert current_street.human_action == "RAISE 500"
+
     def test_frame_hero_fold_is_still_saved(
         self,
         manager: HandManager,

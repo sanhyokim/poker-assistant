@@ -101,6 +101,8 @@ class HandManager:
         self._turn_end_state: GameState | None = None
         self._prev_is_my_turn = False
         self._last_hero_action: ActionRecord | None = None
+        self._last_hero_boundary_action_monotonic: float | None = None
+        self._hero_check_replace_window_sec = 1.0
         self._last_saved_hand_id: int | None = None
         self._hand_just_started = False
         self._hand_start_monotonic: float | None = None
@@ -738,6 +740,8 @@ class HandManager:
                 and action.seat == 1
                 and action_name in self._HERO_BOUNDARY_ACTIONS
             ):
+                if self._try_replace_recent_hero_check(action):
+                    continue
                 logger.debug(
                     "Hero action from frame actions ignored; turn boundary "
                     "will record it: action=%s amount=%s",
@@ -765,6 +769,69 @@ class HandManager:
             )
 
         self._last_frame_actions = accepted_actions
+
+    def _try_replace_recent_hero_check(self, action: ActionRecord) -> bool:
+        """Replace a very recent boundary CHECK with a delayed Hero action."""
+        action_name = action.action.upper()
+        if action.seat != 1:
+            return False
+        if action_name not in {"CALL", "BET", "RAISE", "ALL_IN"}:
+            return False
+        if self._last_hero_action is None:
+            return False
+        if self._last_hero_action.action.upper() != "CHECK":
+            return False
+        if self._last_hero_boundary_action_monotonic is None:
+            return False
+
+        age = time.monotonic() - self._last_hero_boundary_action_monotonic
+        if age > self._hero_check_replace_window_sec:
+            return False
+
+        street_actions = self.get_current_street_actions()
+        street = self._get_current_street_name() if street_actions is not None else None
+        if street_actions is None:
+            return False
+
+        street_index = self._find_recent_hero_check_index(street_actions.actions)
+        if street_index is None:
+            return False
+        all_index = self._find_recent_hero_check_index(self._all_actions)
+        if all_index is None:
+            return False
+
+        previous_action = street_actions.actions[street_index]
+        street_actions.actions[street_index] = action
+        self._all_actions[all_index] = action
+        street_actions.human_action = action.action
+        if action.amount > 0:
+            street_actions.human_action = f"{action.action} {action.amount}"
+        if street_actions.recommendation is not None:
+            street_actions.followed_recommendation = self._check_recommendation_followed(
+                street_actions.recommendation,
+                action,
+            )
+        self._last_hero_action = action
+        logger.info(
+            "Hero delayed action replaced boundary CHECK: %s %d -> %s %d "
+            "age=%.2fs street=%s",
+            previous_action.action,
+            previous_action.amount,
+            action.action,
+            action.amount,
+            age,
+            street,
+        )
+        return True
+
+    @staticmethod
+    def _find_recent_hero_check_index(actions: list[ActionRecord]) -> int | None:
+        """Return the last Hero CHECK index in an action list."""
+        for index in range(len(actions) - 1, -1, -1):
+            action = actions[index]
+            if action.seat == 1 and action.action.upper() == "CHECK":
+                return index
+        return None
 
     def _update_players_in_hand_from_action(self, action: ActionRecord) -> None:
         """Remove folded seats from the current hand participant set."""
@@ -900,9 +967,10 @@ class HandManager:
                         street_actions.recommendation,
                         action,
                     )
-                )
+        )
 
         self._last_hero_action = action
+        self._last_hero_boundary_action_monotonic = time.monotonic()
         if action.action == "FOLD":
             self._hero_folded = True
 
@@ -1087,6 +1155,7 @@ class HandManager:
         self._turn_end_state = None
         self._prev_is_my_turn = False
         self._last_hero_action = None
+        self._last_hero_boundary_action_monotonic = None
         self._prev_frame_pot = None
         self._last_hand_end_reason = None
         self._participant_observation_active = False
