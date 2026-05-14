@@ -497,6 +497,40 @@ def test_llm_prompt_includes_pot_odds_fields() -> None:
     assert abs(call_kwargs["required_equity"] - 0.20) < 0.01  # 498/2490 ≈ 0.20
 
 
+def test_call_amount_is_capped_by_hero_stack() -> None:
+    """Multiway call metrics use Hero's effective all-in call amount."""
+    state = make_state()
+    state.hero.stack = 5442
+    state.hero.bet = 0
+    state.pot = 13360
+    state.active_player_count = 3
+    state.players["5"].bet = 42976
+
+    metrics = MultiwayEngine._compute_metrics(state)
+
+    assert metrics["raw_call_amount"] == 42976
+    assert metrics["call_amount"] == 5442
+    assert metrics["effective_call_amount"] == 5442
+    assert metrics["hero_stack"] == 5442
+    assert metrics["pot_after_call"] == 18802
+    assert metrics["required_equity"] == 5442 / 18802
+
+
+def test_num_opponents_uses_active_player_count() -> None:
+    """Equity opponent count follows active players, not stats list length."""
+    state = make_state()
+    state.active_player_count = 3
+    opponent_stats_list = [
+        {"total_hands": 50},
+        {"total_hands": 40},
+        {"total_hands": 30},
+        {"total_hands": 20},
+        {"total_hands": 10},
+    ]
+
+    assert MultiwayEngine._num_opponents(state, opponent_stats_list) == 2
+
+
 def test_full_street_action_history_passed_to_llm() -> None:
     """BET and CALL from separate frames must both reach Multiway LLM."""
     state = make_hand9_state()

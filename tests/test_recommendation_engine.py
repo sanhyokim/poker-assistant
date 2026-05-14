@@ -663,6 +663,19 @@ def test_multiway_call_zero_gets_call_amount() -> None:
     assert recommendation.amount == 300
 
 
+def test_multiway_call_zero_gets_effective_call_amount() -> None:
+    """Multiway CALL fallback caps the computed call by Hero stack."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=3)
+    state.hero.stack = 5442
+    state.hero.bet = 0
+    state.players["2"].bet = 42976
+
+    amount = engine._ensure_multiway_amount(0, "CALL", state)
+
+    assert amount == 5442
+
+
 def test_multiway_check_zero_stays_zero() -> None:
     """Multiway CHECK with null size keeps amount at zero."""
     engine = make_engine()

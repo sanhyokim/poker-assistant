@@ -93,8 +93,9 @@ class MultiwayEngine:
 
         self.logger.info(
             "Multiway metrics: hero_cards=%s, board=%s, phase=%s, "
-            "pot=%d, hero_stack=%d, hero_current_bet=%d, "
-            "facing_bet=%d, call_amount=%d, pot_after_call=%d, "
+            "pot=%d, hero_current_bet=%d, "
+            "facing_bet=%d, raw_call_amount=%d, "
+            "effective_call_amount=%d, hero_stack=%d, pot_after_call=%d, "
             "required_equity=%.4f, hero_equity=%.4f, "
             "num_opponents=%d, active_player_count=%d, "
             "opponent_range=%s, full_street_action_history=%s",
@@ -102,10 +103,11 @@ class MultiwayEngine:
             board,
             game_state.phase,
             game_state.pot,
-            game_state.hero.stack or 0,
             metrics["hero_current_bet"],
             metrics["facing_bet"],
-            metrics["call_amount"],
+            metrics["raw_call_amount"],
+            metrics["effective_call_amount"],
+            metrics["hero_stack"],
             metrics["pot_after_call"],
             metrics["required_equity"],
             equity,
@@ -214,14 +216,20 @@ class MultiwayEngine:
         """Compute mathematical metrics for multiway decision-making.
 
         Returns dictionary with: hero_current_bet, facing_bet, call_amount,
-        pot_after_call, required_equity, pot_odds.
+        raw_call_amount, effective_call_amount, hero_stack, pot_after_call,
+        required_equity, pot_odds.
         """
         hero_current_bet = int(game_state.hero.bet or 0)
+        hero_stack = int(game_state.hero.stack or 0)
         facing_bet = max(
             (int(player.bet or 0) for player in game_state.players.values()),
             default=0,
         )
-        call_amount = max(0, facing_bet - hero_current_bet)
+        raw_call_amount = max(0, facing_bet - hero_current_bet)
+        if hero_stack > 0:
+            call_amount = min(raw_call_amount, hero_stack)
+        else:
+            call_amount = raw_call_amount
 
         if call_amount > 0:
             pot_after_call = int(game_state.pot or 0) + call_amount
@@ -234,6 +242,9 @@ class MultiwayEngine:
             "hero_current_bet": hero_current_bet,
             "facing_bet": facing_bet,
             "call_amount": call_amount,
+            "raw_call_amount": raw_call_amount,
+            "effective_call_amount": call_amount,
+            "hero_stack": hero_stack,
             "pot_after_call": pot_after_call,
             "required_equity": required_equity,
             "pot_odds": required_equity,
@@ -534,10 +545,8 @@ class MultiwayEngine:
         game_state: GameState,
         opponent_stats_list: list[JsonDict | None],
     ) -> int:
-        """Infer opponent count from stats list or active player count."""
-        if opponent_stats_list:
-            return len(opponent_stats_list)
-        return max(1, game_state.active_player_count - 1)
+        """Infer opponent count from currently active players."""
+        return max(1, int(game_state.active_player_count or 0) - 1)
 
     @staticmethod
     def _heuristic_fallback(equity: float) -> JsonDict:

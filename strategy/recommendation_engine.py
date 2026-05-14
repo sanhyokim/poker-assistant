@@ -503,6 +503,7 @@ class RecommendationEngine:
         blind_bb = int(self.config.get("game", {}).get("blind_bb", 100))
         max_bet = self._current_max_bet(game_state)
         hero_bet = game_state.hero.bet
+        hero_stack = int(game_state.hero.stack or 0)
 
         if action == "BET":
             default = max(int(pot * 0.6), blind_bb)
@@ -514,14 +515,20 @@ class RecommendationEngine:
             return default
 
         if action == "CALL":
-            call_amount = max(0, max_bet - hero_bet)
+            raw_call_amount = max(0, max_bet - hero_bet)
+            if hero_stack > 0:
+                call_amount = min(raw_call_amount, hero_stack)
+            else:
+                call_amount = raw_call_amount
             if call_amount > 0:
                 self.logger.info(
-                    "Multiway CALL amount was 0, using call amount: %d "
-                    "(max_bet=%d, hero_bet=%d)",
+                    "Multiway CALL amount was 0, using effective call amount: %d "
+                    "(raw_call_amount=%d, max_bet=%d, hero_bet=%d, hero_stack=%d)",
                     call_amount,
+                    raw_call_amount,
                     max_bet,
                     hero_bet,
+                    hero_stack,
                 )
                 return call_amount
             return 0
@@ -541,7 +548,6 @@ class RecommendationEngine:
             return default
 
         if action == "ALL_IN":
-            hero_stack = int(game_state.hero.stack or 0)
             if hero_stack > 0:
                 self.logger.info(
                     "Multiway ALL_IN amount was 0, using hero stack: %d",
