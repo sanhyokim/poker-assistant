@@ -691,10 +691,13 @@ class LLMPipeline:
             return None
 
         selected_model = model or self.model_default
+        provider = self.openrouter_provider_config()
         self._logger.info(
-            "LLM request start: task=%s model=%s prompt_chars=%d max_tokens=%d timeout=%ss",
+            "LLM request start: task=%s model=%s provider=%s prompt_chars=%d "
+            "max_tokens=%d timeout=%ss",
             task_name,
             selected_model,
+            provider,
             len(prompt),
             max_tokens,
             self.timeout_sec,
@@ -714,6 +717,8 @@ class LLMPipeline:
             # If a provider rejects this, try reasoning_effort="none" manually.
             "reasoning": {"effort": "none"},
         }
+        if provider is not None:
+            payload["provider"] = provider
 
         call_start = time.perf_counter()
         try:
@@ -732,6 +737,14 @@ class LLMPipeline:
                 elapsed_ms,
                 response.status_code,
             )
+            if response.status_code >= 400:
+                self._logger.warning(
+                    "LLM API error response: task=%s model=%s status=%d body=%s",
+                    task_name,
+                    selected_model,
+                    response.status_code,
+                    response.text[:500],
+                )
             response.raise_for_status()
             data = response.json()
             content = data["choices"][0]["message"].get("content")
@@ -760,6 +773,35 @@ class LLMPipeline:
                 error,
             )
             return None
+
+    @staticmethod
+    def openrouter_provider_config() -> dict[str, Any] | None:
+        """Return OpenRouter provider routing config from environment."""
+        provider: dict[str, Any] = {}
+
+        provider_order = os.environ.get("OPENROUTER_PROVIDER_ORDER")
+        if provider_order:
+            order = [
+                item.strip()
+                for item in provider_order.split(",")
+                if item.strip()
+            ]
+            if order:
+                provider["order"] = order
+
+        allow_fallbacks = os.environ.get("OPENROUTER_ALLOW_FALLBACKS")
+        if allow_fallbacks is not None:
+            provider["allow_fallbacks"] = allow_fallbacks.lower() != "false"
+
+        require_parameters = os.environ.get("OPENROUTER_REQUIRE_PARAMETERS")
+        if require_parameters is not None:
+            provider["require_parameters"] = require_parameters.lower() == "true"
+
+        return provider or None
+
+    def _openrouter_provider_config(self) -> dict[str, Any] | None:
+        """Return OpenRouter provider routing config from environment."""
+        return self.openrouter_provider_config()
 
     def _select_model(self, game_state: GameState) -> str:
         """Return premium model for important spots, otherwise default model."""

@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import requests
+import pytest
 
 from core.game_state import ActionRecord, GameState, HeroState, PlayerState
 from strategy.llm_pipeline import LLMPipeline
@@ -495,6 +496,70 @@ def test_call_api_disables_reasoning(mock_post: MagicMock) -> None:
 
 
 @patch("strategy.llm_pipeline.requests.post")
+def test_call_api_includes_provider_env(mock_post: MagicMock) -> None:
+    """OpenRouter provider env values are included in the request payload."""
+    mock_post.return_value = make_response("done")
+    with patch.dict(
+        os.environ,
+        {
+            "OPENROUTER_API_KEY": "test-key",
+            "LLM_MODEL_DEFAULT": "default-model",
+            "LLM_MODEL_PREMIUM": "premium-model",
+            "OPENROUTER_PROVIDER_ORDER": "OpenAI",
+            "OPENROUTER_ALLOW_FALLBACKS": "false",
+            "OPENROUTER_REQUIRE_PARAMETERS": "false",
+        },
+        clear=True,
+    ):
+        pipeline = LLMPipeline(TEST_CONFIG)
+        assert pipeline._call_api("prompt", 10) == "done"
+
+    request_body = mock_post.call_args.kwargs["json"]
+    assert request_body["provider"] == {
+        "order": ["OpenAI"],
+        "allow_fallbacks": False,
+        "require_parameters": False,
+    }
+
+
+@patch("strategy.llm_pipeline.requests.post")
+def test_call_api_omits_provider_when_env_unset(mock_post: MagicMock) -> None:
+    """Provider payload is omitted when provider env values are not set."""
+    mock_post.return_value = make_response("done")
+    with patch.dict(
+        os.environ,
+        {
+            "OPENROUTER_API_KEY": "test-key",
+            "LLM_MODEL_DEFAULT": "default-model",
+            "LLM_MODEL_PREMIUM": "premium-model",
+        },
+        clear=True,
+    ):
+        pipeline = LLMPipeline(TEST_CONFIG)
+        assert pipeline._call_api("prompt", 10) == "done"
+
+    request_body = mock_post.call_args.kwargs["json"]
+    assert "provider" not in request_body
+
+
+@patch("strategy.llm_pipeline.requests.post")
+def test_call_api_logs_400_response_body(
+    mock_post: MagicMock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """HTTP 400 responses log the response text and still fall back."""
+    mock_post.return_value = make_error_response(400, '{"error":"bad request detail"}')
+    pipeline = make_pipeline()
+
+    with caplog.at_level(logging.WARNING):
+        result = pipeline._call_api("prompt", 10, task_name="test_task")
+
+    assert result is None
+    assert "LLM API error response" in caplog.text
+    assert "bad request detail" in caplog.text
+
+
+@patch("strategy.llm_pipeline.requests.post")
 def test_call_api_empty_content_returns_none(mock_post: MagicMock) -> None:
     """Empty/None content is treated as an API failure."""
     mock_post.return_value = make_response(None)
@@ -669,6 +734,7 @@ def make_response(content: str | None) -> MagicMock:
     """Build a mocked OpenRouter success response."""
     response = MagicMock()
     response.status_code = 200
+    response.text = '{"choices":[]}'
     response.raise_for_status.return_value = None
     response.json.return_value = {
         "choices": [
@@ -679,4 +745,13 @@ def make_response(content: str | None) -> MagicMock:
             }
         ]
     }
+    return response
+
+
+def make_error_response(status_code: int, text: str) -> MagicMock:
+    """Build a mocked OpenRouter error response."""
+    response = MagicMock()
+    response.status_code = status_code
+    response.text = text
+    response.raise_for_status.side_effect = requests.HTTPError(text)
     return response

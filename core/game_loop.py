@@ -492,17 +492,28 @@ class GameLoop:
             return
 
         try:
+            provider_config = None
+            get_provider_config = getattr(
+                llm_pipeline,
+                "openrouter_provider_config",
+                None,
+            )
+            if callable(get_provider_config):
+                provider_config = get_provider_config()
+            payload: dict[str, Any] = {
+                "model": model or "deepseek/deepseek-chat",
+                "messages": [{"role": "user", "content": "hi"}],
+                "max_tokens": 16,
+            }
+            if provider_config is not None:
+                payload["provider"] = provider_config
             response = requests.post(
                 "https://openrouter.ai/api/v1/chat/completions",
                 headers={
                     "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json",
                 },
-                json={
-                    "model": model or "deepseek/deepseek-chat",
-                    "messages": [{"role": "user", "content": "hi"}],
-                    "max_tokens": 1,
-                },
+                json=payload,
                 timeout=5,
             )
             if response.status_code == 200:
@@ -512,11 +523,12 @@ class GameLoop:
                 )
             else:
                 logger.warning(
-                    "LLM startup check: FAILED (model=%s, status=%d). "
+                    "LLM startup check: FAILED (model=%s, status=%d, body=%s). "
                     "LLM features may use fallback. "
                     "Check .env OPENROUTER_API_KEY and model name.",
                     model,
                     response.status_code,
+                    response.text[:500],
                 )
         except Exception as exc:
             logger.warning(
