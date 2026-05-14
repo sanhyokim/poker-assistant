@@ -39,6 +39,7 @@ class HandManager:
     """
 
     NEW_HAND_COOLDOWN_SEC = 5.0
+    POT_DECREASE_HAND_END_COOLDOWN_SEC = 5.0
     _PARTICIPANT_ACTIONS = {
         "BET",
         "CALL",
@@ -667,6 +668,19 @@ class HandManager:
             and game_state.pot < self._prev_frame_pot
             and self._prev_frame_pot > 0
         ):
+            if self._hand_start_monotonic is not None:
+                elapsed = time.monotonic() - self._hand_start_monotonic
+                if elapsed < self.POT_DECREASE_HAND_END_COOLDOWN_SEC:
+                    logger.warning(
+                        "Pot decrease hand_end suppressed: only %.1fs since "
+                        "hand start (cooldown: %.1fs), pot %d -> %d, phase=%s",
+                        elapsed,
+                        self.POT_DECREASE_HAND_END_COOLDOWN_SEC,
+                        self._prev_frame_pot,
+                        game_state.pot,
+                        self._phase,
+                    )
+                    return False
             self._last_hand_end_reason = "pot_decreased"
             logger.info(
                 "Hand end: pot decreased (%d -> %d), payout detected",

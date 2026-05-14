@@ -176,6 +176,11 @@ def finish_hand_by_pot_decrease(
             player_names=player_names,
         )
     )
+    manager._hand_start_monotonic = (
+        hand_manager_module.time.monotonic()
+        - manager.POT_DECREASE_HAND_END_COOLDOWN_SEC
+        - 1.0
+    )
     manager.process_frame(
         make_state(
             hero_cards=["Ah", "Kd"],
@@ -261,6 +266,11 @@ class TestPhaseTransitions:
         )
         assert manager.phase == "river"
 
+        manager._hand_start_monotonic = (
+            hand_manager_module.time.monotonic()
+            - manager.POT_DECREASE_HAND_END_COOLDOWN_SEC
+            - 1.0
+        )
         manager.process_frame(
             make_state(
                 hero_cards=["Ah", "Kd"],
@@ -465,6 +475,11 @@ class TestHandEndConditions:
             )
         )
 
+        manager._hand_start_monotonic = (
+            hand_manager_module.time.monotonic()
+            - manager.POT_DECREASE_HAND_END_COOLDOWN_SEC
+            - 1.0
+        )
         manager.process_frame(make_state(hero_cards=None, pot=0))
 
         assert manager.phase == "waiting"
@@ -495,6 +510,7 @@ class TestHandEndConditions:
     def test_pot_decrease_ends_hand(self, manager: HandManager) -> None:
         """A pot decrease during an active hand returns immediately to waiting."""
         start_hand(manager)
+        manager._hand_start_monotonic = hand_manager_module.time.monotonic() - 6.0
         manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=1200))
 
         manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
@@ -509,11 +525,51 @@ class TestHandEndConditions:
         """A pot decrease returns to waiting even with a long hand_end timeout."""
         manager._waiting_timeout_sec = 999.0
         start_hand(manager)
+        manager._hand_start_monotonic = hand_manager_module.time.monotonic() - 6.0
         manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=6840))
 
         manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
 
         assert manager.phase == "waiting"
+        assert manager.last_saved_hand_id == 1
+
+    def test_pot_decrease_suppressed_during_hand_start_cooldown(
+        self,
+        manager: HandManager,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A transient pot drop right after hand start does not end the hand."""
+        now = 100.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: now)
+        start_hand(manager)
+        manager._prev_frame_pot = 246
+
+        now = 100.8
+        with caplog.at_level(logging.WARNING, logger="core.hand_manager"):
+            manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
+
+        assert manager.phase == "preflop"
+        assert manager.hand_id == 1
+        assert manager._last_hand_end_reason is None
+        assert "Pot decrease hand_end suppressed: only 0.8s" in caplog.text
+
+    def test_pot_decrease_after_cooldown_still_ends_hand(
+        self,
+        manager: HandManager,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """After cooldown, a pot decrease still returns immediately to waiting."""
+        now = 200.0
+        monkeypatch.setattr(hand_manager_module.time, "monotonic", lambda: now)
+        start_hand(manager)
+        manager._prev_frame_pot = 1000
+
+        now = 206.0
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
+
+        assert manager.phase == "waiting"
+        assert manager.hand_id is None
         assert manager.last_saved_hand_id == 1
 
     def test_pot_same_zero_does_not_end_hand(self, manager: HandManager) -> None:
@@ -1854,6 +1910,11 @@ class TestPersistence:
         manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=1200))
         manager.close()
         manager._db_conn = None
+        manager._hand_start_monotonic = (
+            hand_manager_module.time.monotonic()
+            - manager.POT_DECREASE_HAND_END_COOLDOWN_SEC
+            - 1.0
+        )
 
         with caplog.at_level(logging.INFO):
             manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
@@ -2019,6 +2080,11 @@ class TestPersistence:
         manager._replay_dir = str(blocked_path)
         start_hand(manager)
         manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=1200))
+        manager._hand_start_monotonic = (
+            hand_manager_module.time.monotonic()
+            - manager.POT_DECREASE_HAND_END_COOLDOWN_SEC
+            - 1.0
+        )
 
         with caplog.at_level(logging.ERROR):
             manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
