@@ -543,6 +543,78 @@ def test_call_api_omits_provider_when_env_unset(mock_post: MagicMock) -> None:
 
 
 @patch("strategy.llm_pipeline.requests.post")
+def test_call_api_omits_response_format_when_strict_json_off(
+    mock_post: MagicMock,
+) -> None:
+    """Strict JSON response_format is omitted when the env flag is false."""
+    mock_post.return_value = make_response("done")
+    with patch.dict(
+        os.environ,
+        {
+            "OPENROUTER_API_KEY": "test-key",
+            "LLM_MODEL_DEFAULT": "default-model",
+            "LLM_MODEL_PREMIUM": "premium-model",
+            "OPENROUTER_USE_STRICT_JSON_SCHEMA": "false",
+        },
+        clear=True,
+    ):
+        pipeline = LLMPipeline(TEST_CONFIG)
+        assert pipeline._call_api("prompt", 10, task_name="multiway_decision") == "done"
+
+    request_body = mock_post.call_args.kwargs["json"]
+    assert "response_format" not in request_body
+
+
+@patch("strategy.llm_pipeline.requests.post")
+def test_call_api_includes_response_format_for_multiway_when_strict_json_on(
+    mock_post: MagicMock,
+) -> None:
+    """Strict JSON response_format is included for supported JSON tasks."""
+    mock_post.return_value = make_response("done")
+    with patch.dict(
+        os.environ,
+        {
+            "OPENROUTER_API_KEY": "test-key",
+            "LLM_MODEL_DEFAULT": "default-model",
+            "LLM_MODEL_PREMIUM": "premium-model",
+            "OPENROUTER_USE_STRICT_JSON_SCHEMA": "true",
+        },
+        clear=True,
+    ):
+        pipeline = LLMPipeline(TEST_CONFIG)
+        assert pipeline._call_api("prompt", 10, task_name="multiway_decision") == "done"
+
+    response_format = mock_post.call_args.kwargs["json"]["response_format"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    assert response_format["json_schema"]["name"] == "multiway_decision"
+    assert "schema" in response_format["json_schema"]
+
+
+@patch("strategy.llm_pipeline.requests.post")
+def test_call_api_omits_response_format_for_reason_generation(
+    mock_post: MagicMock,
+) -> None:
+    """Free-text reason generation does not use strict JSON response_format."""
+    mock_post.return_value = make_response("done")
+    with patch.dict(
+        os.environ,
+        {
+            "OPENROUTER_API_KEY": "test-key",
+            "LLM_MODEL_DEFAULT": "default-model",
+            "LLM_MODEL_PREMIUM": "premium-model",
+            "OPENROUTER_USE_STRICT_JSON_SCHEMA": "true",
+        },
+        clear=True,
+    ):
+        pipeline = LLMPipeline(TEST_CONFIG)
+        assert pipeline._call_api("prompt", 10, task_name="reason_generation") == "done"
+
+    request_body = mock_post.call_args.kwargs["json"]
+    assert "response_format" not in request_body
+
+
+@patch("strategy.llm_pipeline.requests.post")
 def test_call_api_logs_400_response_body(
     mock_post: MagicMock,
     caplog: pytest.LogCaptureFixture,
@@ -557,6 +629,27 @@ def test_call_api_logs_400_response_body(
     assert result is None
     assert "LLM API error response" in caplog.text
     assert "bad request detail" in caplog.text
+
+
+@patch("strategy.llm_pipeline.requests.post")
+def test_call_api_strict_json_400_returns_none(mock_post: MagicMock) -> None:
+    """Strict JSON schema API errors still return None for existing fallback flow."""
+    mock_post.return_value = make_error_response(400, '{"error":"schema rejected"}')
+    with patch.dict(
+        os.environ,
+        {
+            "OPENROUTER_API_KEY": "test-key",
+            "LLM_MODEL_DEFAULT": "default-model",
+            "LLM_MODEL_PREMIUM": "premium-model",
+            "OPENROUTER_USE_STRICT_JSON_SCHEMA": "true",
+        },
+        clear=True,
+    ):
+        pipeline = LLMPipeline(TEST_CONFIG)
+        result = pipeline._call_api("prompt", 10, task_name="multiway_decision")
+
+    assert result is None
+    assert "response_format" in mock_post.call_args.kwargs["json"]
 
 
 @patch("strategy.llm_pipeline.requests.post")

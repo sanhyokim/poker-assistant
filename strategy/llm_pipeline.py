@@ -692,12 +692,15 @@ class LLMPipeline:
 
         selected_model = model or self.model_default
         provider = self.openrouter_provider_config()
+        response_format = self._response_format_for_task(task_name)
+        strict_json_enabled = response_format is not None
         self._logger.info(
-            "LLM request start: task=%s model=%s provider=%s prompt_chars=%d "
-            "max_tokens=%d timeout=%ss",
+            "LLM request start: task=%s model=%s provider=%s strict_json=%s "
+            "prompt_chars=%d max_tokens=%d timeout=%ss",
             task_name,
             selected_model,
             provider,
+            strict_json_enabled,
             len(prompt),
             max_tokens,
             self.timeout_sec,
@@ -719,6 +722,8 @@ class LLMPipeline:
         }
         if provider is not None:
             payload["provider"] = provider
+        if response_format is not None:
+            payload["response_format"] = response_format
 
         call_start = time.perf_counter()
         try:
@@ -802,6 +807,30 @@ class LLMPipeline:
     def _openrouter_provider_config(self) -> dict[str, Any] | None:
         """Return OpenRouter provider routing config from environment."""
         return self.openrouter_provider_config()
+
+    def _response_format_for_task(self, task_name: str) -> dict[str, Any] | None:
+        """Return OpenRouter strict JSON Schema response_format for supported tasks."""
+        if os.environ.get("OPENROUTER_USE_STRICT_JSON_SCHEMA", "").lower() != "true":
+            return None
+
+        schema_by_task: dict[str, type[BaseModel]] = {
+            "multiway_decision": MultiwayDecisionResponse,
+            "exploit_adjustment": ExploitAdjustmentResponse,
+            "range_estimation": RangeEstimationResponse,
+            "preflop_delta": PreflopDeltaResponse,
+        }
+        schema_model = schema_by_task.get(task_name)
+        if schema_model is None:
+            return None
+
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": task_name,
+                "strict": True,
+                "schema": schema_model.model_json_schema(),
+            },
+        }
 
     def _select_model(self, game_state: GameState) -> str:
         """Return premium model for important spots, otherwise default model."""
