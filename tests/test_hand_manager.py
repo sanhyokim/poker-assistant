@@ -248,6 +248,35 @@ class TestPhaseTransitions:
         assert manager.hand_id is None
         assert manager.last_saved_hand_id is None
 
+    def test_abandon_current_hand_hero_cards_unstable_does_not_save(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Hero-card invalidation abandons without DB or replay persistence."""
+        db_path = tmp_path / "hands.sqlite3"
+        replay_dir = tmp_path / "replays"
+        manager = HandManager(
+            {
+                "capture": {"polling_interval_sec": 0.5},
+                "game": {"blind_sb": 50, "blind_bb": 100},
+                "db": {"path": str(db_path)},
+                "replay": {"base_dir": str(replay_dir)},
+            },
+            db_path=str(db_path),
+        )
+        start_hand(manager)
+
+        abandoned = manager.abandon_current_hand("hero_cards_unstable")
+
+        assert abandoned is True
+        assert manager.phase == "waiting"
+        assert manager.hand_id is None
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM hand_history").fetchone()[0]
+        assert count == 0
+        assert list(replay_dir.rglob("*.json")) == []
+        manager.close()
+
     def test_empty_hero_cards_do_not_start_hand(
         self,
         manager: HandManager,

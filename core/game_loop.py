@@ -142,6 +142,18 @@ class GameLoop:
         self._last_hero_non_fold_action_name: str | None = None
         self._hero_fold_badge_ignored_for_hand: bool = False
         self._hero_fold_badge_ignored_reason: str | None = None
+        self._hero_card_candidate: list[str] | None = None
+        self._hero_card_candidate_streak: int = 0
+        self._hero_card_confirm_frames: int = int(
+            recognition_config.get("hero_card_confirm_frames", 2)
+        )
+        self._hero_card_active_mismatch_streak: int = 0
+        self._hero_card_mismatch_confirm_frames: int = int(
+            recognition_config.get("hero_card_mismatch_confirm_frames", 2)
+        )
+        self._hero_cards_invalid_for_hand: bool = False
+        self._hero_cards_invalid_reason: str | None = None
+        self._hero_cards_recommendation_started_for_hand: bool = False
 
         # Async HU postflop solver worker state
         self._pending_recommendation_lock = threading.Lock()
@@ -194,6 +206,8 @@ class GameLoop:
         self._last_strategy_is_my_turn = False
         self._hero_fold_badge_ignored_for_hand = False
         self._hero_fold_badge_ignored_reason = None
+        self._reset_waiting_hero_card_candidate()
+        self._reset_active_hero_card_validation()
         self._notify_hud(None)
         self._abandon_active_hand(reason)
 
@@ -331,6 +345,8 @@ class GameLoop:
             self._last_hero_non_fold_action_name = None
             self._hero_fold_badge_ignored_for_hand = False
             self._hero_fold_badge_ignored_reason = None
+            self._reset_waiting_hero_card_candidate()
+            self._reset_active_hero_card_validation()
             self._waiting_for_card_clear = False
             self._hero_cards_missing_since_hand_end = False
             self._last_ended_hero_cards = None
@@ -354,6 +370,7 @@ class GameLoop:
                 )
 
         self._manage_hero_card_cache(game_state)
+        self._validate_active_hero_cards(frame, game_state)
 
         if (
             self._is_visual_obstruction_protected()
@@ -399,6 +416,8 @@ class GameLoop:
         self._last_hero_non_fold_action_name = None
         self._hero_fold_badge_ignored_for_hand = False
         self._hero_fold_badge_ignored_reason = None
+        self._reset_waiting_hero_card_candidate()
+        self._reset_active_hero_card_validation()
         self._diff_detector.reset()
         self._action_estimator.reset()
         self._fold_badge_detector.reset()
@@ -600,6 +619,32 @@ class GameLoop:
             return
 
         phase = self._hand_manager.phase if self._hand_manager is not None else None
+
+        hero_cards_invalid = bool(
+            getattr(self, "_hero_cards_invalid_for_hand", False)
+        )
+        if hero_cards_invalid or game_state.hero_cards_unstable_reason:
+            reason = (
+                getattr(self, "_hero_cards_invalid_reason", None)
+                or game_state.hero_cards_unstable_reason
+            )
+            logger.warning(
+                "Strategy skipped: hero cards unstable reason=%s cached=%s "
+                "current=%s phase=%s hand_id=%s",
+                reason,
+                self._cached_hero_cards,
+                game_state.hero.cards,
+                game_state.phase,
+                game_state.hand_id,
+            )
+            self._last_recommendation_log = None
+            self._previous_recommendation = None
+            self._previous_recommendation_context = None
+            self._clear_pending_state()
+            self._notify_hud_computing("HERO CARDS UNSTABLE")
+            self._last_strategy_phase = phase
+            self._last_strategy_is_my_turn = game_state.hero.is_my_turn
+            return
 
         # Phase が非アクティブなら何もしない
         if phase in (None, "waiting", "hand_end"):
@@ -1114,6 +1159,7 @@ class GameLoop:
             "Recommendation saved to hand_manager: %s",
             recommendation_text,
         )
+        self._hero_cards_recommendation_started_for_hand = True
 
     def _save_human_action_to_hand_manager(self, game_state: GameState) -> None:
         """Persist an explicit hero action from GameState when present."""
@@ -2379,7 +2425,7 @@ class GameLoop:
                         self._stale_suppression_start_time = None
                         self._stale_suppression_bypassed = False
                         logger.info(
-                            "Waiting: hero cards recognized - %s, starting hand",
+                            "Waiting: hero cards recognized candidate - %s",
                             hero_cards,
                         )
                         self._last_waiting_log = None
@@ -2404,10 +2450,18 @@ class GameLoop:
                     game_state.hero.cards_visible = False
                 else:
                     logger.info(
-                        "Waiting: hero cards recognized - %s, starting hand",
+                        "Waiting: hero cards recognized candidate - %s",
                         hero_cards,
                     )
                     self._last_waiting_log = None
+        if game_state.phase == "waiting":
+            if self._hero_cards_missing(game_state.hero.cards):
+                self._update_waiting_hero_card_candidate(None)
+            elif not self._update_waiting_hero_card_candidate(game_state.hero.cards):
+                game_state.hero_cards_unstable_reason = "hero_cards_waiting_unstable"
+                game_state.hero.cards = None
+                game_state.hero.cards_visible = False
+
         game_state.hero.cards_visible = not self._hero_cards_missing(
             game_state.hero.cards
         )
@@ -2514,6 +2568,119 @@ class GameLoop:
         if self._hero_cards_missing(game_state.hero.cards):
             return
         game_state.suppress_phase_fast_forward = True
+
+    def _reset_waiting_hero_card_candidate(self) -> None:
+        """Clear waiting-state hero card stability candidate."""
+        self._hero_card_candidate = None
+        self._hero_card_candidate_streak = 0
+
+    def _reset_active_hero_card_validation(self) -> None:
+        """Clear active-hand hero card invalidation state."""
+        self._hero_card_active_mismatch_streak = 0
+        self._hero_cards_invalid_for_hand = False
+        self._hero_cards_invalid_reason = None
+        self._hero_cards_recommendation_started_for_hand = False
+
+    def _update_waiting_hero_card_candidate(
+        self,
+        cards: list[str | None] | None,
+    ) -> bool:
+        """Return True when waiting hero cards are stable enough to use."""
+        if self._hero_cards_missing(cards) or self._is_visual_obstruction_protected():
+            self._reset_waiting_hero_card_candidate()
+            return False
+
+        candidate = [str(card) for card in cards or []]
+        if self._hero_card_candidate == candidate:
+            self._hero_card_candidate_streak += 1
+        else:
+            self._hero_card_candidate = candidate
+            self._hero_card_candidate_streak = 1
+
+        if self._hero_card_candidate_streak >= self._hero_card_confirm_frames:
+            logger.info(
+                "Waiting hero cards stable: %s streak=%d/%d",
+                candidate,
+                self._hero_card_candidate_streak,
+                self._hero_card_confirm_frames,
+            )
+            return True
+
+        logger.info(
+            "Waiting hero cards candidate: %s streak=%d/%d",
+            candidate,
+            self._hero_card_candidate_streak,
+            self._hero_card_confirm_frames,
+        )
+        return False
+
+    def _validate_active_hero_cards(
+        self,
+        frame: np.ndarray,
+        game_state: GameState,
+    ) -> None:
+        """Invalidate active hands when fresh hero OCR contradicts cached cards."""
+        if self._hand_manager is None:
+            return
+        phase = self._hand_manager.phase
+        if phase not in {"preflop", "flop", "turn", "river"}:
+            return
+        if self._cached_hero_cards is None:
+            return
+        if self._is_visual_obstruction_protected():
+            return
+
+        fresh_cards = self._format_hero_cards(
+            self._card_recognizer.recognize_hero_cards(frame, log_info=False)
+        )
+        if self._hero_cards_missing(fresh_cards):
+            return
+
+        fresh_list = [str(card) for card in fresh_cards or []]
+        cached_list = list(self._cached_hero_cards)
+        if fresh_list == cached_list:
+            self._hero_card_active_mismatch_streak = 0
+            return
+
+        self._hero_card_active_mismatch_streak += 1
+        if self._hero_card_active_mismatch_streak < self._hero_card_mismatch_confirm_frames:
+            logger.warning(
+                "Hero cards mismatch candidate: cached=%s fresh=%s "
+                "streak=%d/%d phase=%s",
+                cached_list,
+                fresh_list,
+                self._hero_card_active_mismatch_streak,
+                self._hero_card_mismatch_confirm_frames,
+                phase,
+            )
+            return
+
+        reason = "hero_cards_changed_during_active_hand"
+        if self._hero_cards_recommendation_started_for_hand:
+            reason = "hero_cards_changed_after_recommendation"
+        self._hero_cards_invalid_for_hand = True
+        self._hero_cards_invalid_reason = reason
+        game_state.hero_cards_unstable_reason = reason
+        logger.warning(
+            "Hero cards invalidated for hand: cached=%s fresh=%s reason=%s",
+            cached_list,
+            fresh_list,
+            reason,
+        )
+        logger.warning(
+            "Active hand abandoned because hero cards became unstable: "
+            "hand_id=%s phase=%s cached=%s fresh=%s",
+            self._hand_manager.hand_id,
+            phase,
+            cached_list,
+            fresh_list,
+        )
+        if self._abandon_active_hand("hero_cards_unstable"):
+            game_state.phase = self._hand_manager.phase
+            game_state.hand_id = self._hand_manager.hand_id
+            game_state.hero.cards = None
+            game_state.hero.cards_visible = False
+            game_state.hero.in_current_hand = False
 
     def _update_card_clear_wait_state(self, current_phase: str) -> None:
         if (
@@ -2762,6 +2929,8 @@ class GameLoop:
             self._clear_hero_card_cache(
                 f"hand_id changed {previous_hand_id} -> {current_hand_id}",
             )
+            self._reset_waiting_hero_card_candidate()
+            self._reset_active_hero_card_validation()
             logger.debug(
                 "Hero cards cache cleared: hand_id changed %s -> %s",
                 previous_hand_id,

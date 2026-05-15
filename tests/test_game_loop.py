@@ -182,6 +182,7 @@ def make_loop(
     config = {
         "capture": {"polling_interval_sec": 0.5},
         "game": {"blind_sb": 50, "blind_bb": 100},
+        "recognition": {"hero_card_confirm_frames": 1},
         "db": {"path": ":memory:"},
         "replay": {"base_dir": str(workspace_tmp / "replays")},
     }
@@ -1852,6 +1853,71 @@ def test_recommendation_generated_on_next_frame(
     assert loop.current_recommendation.action == "RAISE"
 
 
+def test_waiting_hero_cards_one_frame_does_not_start_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waiting hero cards need a stable streak before hand start."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hero_card_confirm_frames = 2
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["Qd", "Ac"],
+    )
+
+    state = loop.process_one_frame()
+
+    assert state is not None
+    assert state.hero.cards is None
+    assert state.hero.cards_visible is False
+    assert state.hero_cards_unstable_reason == "hero_cards_waiting_unstable"
+    assert loop._hand_manager.phase == "waiting"
+
+
+def test_waiting_hero_cards_two_matching_frames_can_start_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Matching waiting hero cards pass the stability gate on frame two."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hero_card_confirm_frames = 2
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["Qd", "Ac"],
+    )
+
+    first = loop.process_one_frame()
+    second = loop.process_one_frame()
+
+    assert first is not None
+    assert second is not None
+    assert first.hero.cards is None
+    assert second.hero.cards == ["Qd", "Ac"]
+    assert second.hero_cards_unstable_reason is None
+    loop._hand_manager.process_frame(second)
+    assert loop._hand_manager.phase == "preflop"
+
+
+def test_waiting_hero_cards_change_resets_streak(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Changing waiting hero-card candidates restart the confirmation streak."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hero_card_confirm_frames = 2
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        side_effect=[["Qd", "Ac"], ["Qd", "Kc"]],
+    )
+
+    first = loop.process_one_frame()
+    second = loop.process_one_frame()
+
+    assert first is not None
+    assert second is not None
+    assert second.hero.cards is None
+    assert loop._hero_card_candidate == ["Qd", "Kc"]
+    assert loop._hero_card_candidate_streak == 1
+    assert loop._hand_manager.phase == "waiting"
+
+
 def test_strategy_skipped_after_hero_fold(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2028,6 +2094,89 @@ def test_strategy_deferred_during_pot_spike_hold(
     assert loop._previous_recommendation_context is None
     assert loop._pending_recommendation_active_id is None
     computing_callback.assert_called_once_with("WAITING FOR STABLE POT...")
+
+
+def test_active_hero_card_single_mismatch_does_not_abandon(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One active-hand hero-card mismatch is only a candidate."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 6
+    loop._cached_hero_cards = ["Qd", "Ac"]
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["Qd", "4c"],
+    )
+    state = create_empty_game_state()
+    state.phase = "preflop"
+
+    loop._validate_active_hero_cards(np.zeros((1, 1, 3), dtype=np.uint8), state)
+
+    assert loop._hero_card_active_mismatch_streak == 1
+    assert loop._hero_cards_invalid_for_hand is False
+    assert loop._hand_manager.phase == "preflop"
+    assert state.hero_cards_unstable_reason is None
+
+
+def test_active_hero_card_confirmed_mismatch_abandons_and_skips_strategy(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two active-hand hero-card mismatches abandon and block strategy."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._recommendation_engine = MagicMock()
+    loop._previous_recommendation = Recommendation(action="BET", amount=120)
+    loop._pending_recommendation_active_id = 11
+    loop._hud_computing_callback = MagicMock()
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 6
+    loop._cached_hero_cards = ["Qd", "Ac"]
+    loop._hero_cards_recommendation_started_for_hand = True
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["Qd", "4c"],
+    )
+    state = create_empty_game_state()
+    state.phase = "preflop"
+    state.hand_id = 6
+    state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+
+    frame = np.zeros((1, 1, 3), dtype=np.uint8)
+    loop._validate_active_hero_cards(frame, state)
+    loop._validate_active_hero_cards(frame, state)
+    loop._handle_strategy(state)
+
+    assert loop._hand_manager.phase == "waiting"
+    assert loop._hero_cards_invalid_for_hand is True
+    assert state.hero_cards_unstable_reason == "hero_cards_changed_after_recommendation"
+    assert loop.current_recommendation is None
+    assert loop._pending_recommendation_active_id is None
+    loop._recommendation_engine.generate.assert_not_called()
+    loop._hud_computing_callback.assert_called_with("HERO CARDS UNSTABLE")
+
+
+def test_active_hero_card_mismatch_ignored_during_visual_obstruction(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visual obstruction protection disables active hero-card mismatch checks."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._hand_id = 6
+    loop._cached_hero_cards = ["Qd", "Ac"]
+    loop._card_recognizer.recognize_hero_cards = MagicMock(
+        return_value=["Qd", "4c"],
+    )
+    monkeypatch.setattr(loop, "_is_visual_obstruction_protected", lambda: True)
+    state = create_empty_game_state()
+    state.phase = "flop"
+
+    loop._validate_active_hero_cards(np.zeros((1, 1, 3), dtype=np.uint8), state)
+
+    assert loop._hero_card_active_mismatch_streak == 0
+    assert loop._hero_cards_invalid_for_hand is False
+    assert loop._hand_manager.phase == "flop"
 
 
 def test_strategy_recommendation_cleared_on_turn_end(

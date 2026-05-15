@@ -452,6 +452,7 @@ class TestRecommendationIntegration:
         config = {
             "capture": {"polling_interval_sec": 0.0},
             "game": {"blind_sb": 50, "blind_bb": 100},
+            "recognition": {"hero_card_confirm_frames": 1},
             "db": {"path": ":memory:"},
             "replay": {"base_dir": str(workspace_tmp / "replays")},
         }

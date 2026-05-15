@@ -113,6 +113,8 @@ class GameState:
             should be skipped for this frame.
         strategy_defer_reason: Reason to skip strategy calculation for this
             frame, or None when strategy may run.
+        hero_cards_unstable_reason: Reason hero cards are unsafe for strategy
+            or saving, or None when hero cards are stable.
     """
 
     timestamp: str = ""
@@ -138,6 +140,7 @@ class GameState:
     game_event: str | None = None
     suppress_phase_fast_forward: bool = False
     strategy_defer_reason: str | None = None
+    hero_cards_unstable_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the GameState to a JSON-serializable dictionary.
