@@ -317,6 +317,12 @@ class GameLoop:
                 else action
                 for action in estimation.get("actions", [])
             ]
+            game_state.actions_since_last_frame = (
+                self._filter_low_confidence_opponent_folds(
+                    game_state,
+                    game_state.actions_since_last_frame,
+                )
+            )
             filtered_pot = estimation.get("filtered_pot")
             if filtered_pot is not None:
                 logger.debug(
@@ -1399,7 +1405,10 @@ class GameLoop:
         Returns:
             True if the seat was promoted, False if already in hand or folded.
         """
-        promoted = self._hand_manager.rejoin_seat(seat)
+        promoted = self._hand_manager.rejoin_seat(
+            seat,
+            allow_folded_rejoin=True,
+        )
         if promoted:
             logger.info(
                 "Manual rejoin: seat %d promoted to in_current_hand", seat,
@@ -1874,6 +1883,59 @@ class GameLoop:
                     confidence="high",
                 )
             )
+
+    def _filter_low_confidence_opponent_folds(
+        self,
+        game_state: GameState,
+        actions: list[ActionRecord],
+    ) -> list[ActionRecord]:
+        """Drop weak opponent FOLDs that conflict with card or hand evidence."""
+        filtered: list[ActionRecord] = []
+        players_in_hand = self._hand_manager.get_players_in_hand()
+        for action in actions:
+            if (
+                action.seat == 1
+                or action.action.upper() != "FOLD"
+                or action.confidence != "low"
+            ):
+                filtered.append(action)
+                continue
+
+            reason = self._low_confidence_fold_ignore_reason(
+                game_state,
+                action.seat,
+                players_in_hand,
+            )
+            if reason is None:
+                filtered.append(action)
+                continue
+
+            logger.info(
+                "Opponent low-confidence FOLD ignored: seat=%d reason=%s",
+                action.seat,
+                reason,
+            )
+        return filtered
+
+    def _low_confidence_fold_ignore_reason(
+        self,
+        game_state: GameState,
+        seat: int,
+        players_in_hand: set[int],
+    ) -> str | None:
+        """Return why a weak opponent FOLD should be ignored, if any."""
+        if self._is_visual_obstruction_protected():
+            return "visual_obstruction"
+        if self._last_seat_card_states.get(seat, False):
+            return "recent_card_detected"
+        if seat in self._seat_card_confirmed:
+            return "seat_card_confirmed"
+        player = game_state.players.get(str(seat))
+        if player is not None and player.cards_visible:
+            return "cards_visible"
+        if seat in players_in_hand:
+            return "in_current_hand"
+        return None
 
     def _latch_hero_fold_badge_ignore(self, reason: str, action: str) -> None:
         """Ignore subsequent hero fold-badge latch results for this hand."""

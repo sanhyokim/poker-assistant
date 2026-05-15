@@ -710,7 +710,7 @@ class ActionEstimator:
             seat_num: Seat number from 2 to 6.
 
         Returns:
-            High-confidence FOLD after the configured confirmation count,
+            Low-confidence FOLD after the configured confirmation count,
             otherwise None.
         """
         seat_key = str(seat_num)
@@ -719,7 +719,8 @@ class ActionEstimator:
 
         if streak >= self._fold_confirm_frames:
             logger.info(
-                "FOLD confirmed for seat %d (%d consecutive None frames)",
+                "Possible FOLD from stack=None for seat %d "
+                "(%d consecutive None frames)",
                 seat_num,
                 streak,
             )
@@ -728,7 +729,7 @@ class ActionEstimator:
                 seat=seat_num,
                 action="FOLD",
                 amount=0,
-                confidence="high",
+                confidence="low",
             )
 
         logger.debug(

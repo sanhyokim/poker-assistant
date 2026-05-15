@@ -3177,7 +3177,10 @@ def test_rejoin_allowed_from_last_seat_card_state(
     result = loop.request_rejoin_seat(3)
 
     assert result is True
-    loop._hand_manager.rejoin_seat.assert_called_once_with(3)
+    loop._hand_manager.rejoin_seat.assert_called_once_with(
+        3,
+        allow_folded_rejoin=True,
+    )
 
 
 def test_rejoin_allowed_from_confirmed_cache(
@@ -3194,7 +3197,10 @@ def test_rejoin_allowed_from_confirmed_cache(
     result = loop.request_rejoin_seat(3)
 
     assert result is True
-    loop._hand_manager.rejoin_seat.assert_called_once_with(3)
+    loop._hand_manager.rejoin_seat.assert_called_once_with(
+        3,
+        allow_folded_rejoin=True,
+    )
 
 
 def test_rejoin_succeeds_on_retry(
@@ -3228,7 +3234,10 @@ def test_rejoin_succeeds_on_retry(
 
     assert result is True
     assert call_count[0] == 3
-    loop._hand_manager.rejoin_seat.assert_called_once_with(3)
+    loop._hand_manager.rejoin_seat.assert_called_once_with(
+        3,
+        allow_folded_rejoin=True,
+    )
 
 
 def test_rejoin_rejected_after_all_retries_fail(
@@ -3252,6 +3261,70 @@ def test_rejoin_rejected_after_all_retries_fail(
 
     assert result is False
     assert loop._seat_card_detector.detect_all.call_count == 3
+
+
+def test_low_confidence_opponent_fold_ignored_for_recent_card(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Low-confidence opponent FOLD is ignored after recent card sighting."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "4": True}
+    loop._last_seat_card_states = {4: True}
+    state = create_empty_game_state()
+    state.phase = "flop"
+    state.players["4"].in_current_hand = True
+    action = ActionRecord(seat=4, action="FOLD", amount=0, confidence="low")
+
+    filtered = loop._filter_low_confidence_opponent_folds(state, [action])
+
+    assert filtered == []
+
+
+def test_low_confidence_opponent_fold_ignored_during_obstruction(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visual obstruction/recovery suppresses weak opponent FOLD actions."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    monkeypatch.setattr(loop, "_is_visual_obstruction_protected", lambda: True)
+    state = create_empty_game_state()
+    action = ActionRecord(seat=5, action="FOLD", amount=0, confidence="low")
+
+    filtered = loop._filter_low_confidence_opponent_folds(state, [action])
+
+    assert filtered == []
+
+
+def test_high_confidence_opponent_fold_is_preserved(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fold-badge high-confidence opponent FOLD remains actionable."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._last_seat_card_states = {4: True}
+    state = create_empty_game_state()
+    action = ActionRecord(seat=4, action="FOLD", amount=0, confidence="high")
+
+    filtered = loop._filter_low_confidence_opponent_folds(state, [action])
+
+    assert filtered == [action]
+
+
+def test_low_confidence_hero_fold_is_preserved(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opponent low-confidence filter does not apply to Hero FOLD."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    monkeypatch.setattr(loop, "_is_visual_obstruction_protected", lambda: True)
+    state = create_empty_game_state()
+    action = ActionRecord(seat=1, action="FOLD", amount=0, confidence="low")
+
+    filtered = loop._filter_low_confidence_opponent_folds(state, [action])
+
+    assert filtered == [action]
 
 
 # ---------------------------------------------------------------------------

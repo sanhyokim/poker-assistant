@@ -667,7 +667,7 @@ class TestOcrFailureSkip:
         self,
         estimator: ActionEstimator,
     ) -> None:
-        """Three consecutive None frames produce high-confidence FOLD."""
+        """Three consecutive None frames produce low-confidence FOLD."""
         previous = create_empty_game_state()
         previous.players["2"].stack = 5000
 
@@ -689,7 +689,7 @@ class TestOcrFailureSkip:
 
         assert len(fold_actions) == 1
         assert fold_actions[0].seat == 2
-        assert fold_actions[0].confidence == "high"
+        assert fold_actions[0].confidence == "low"
 
     def test_none_recovery_resets_streak(
         self,

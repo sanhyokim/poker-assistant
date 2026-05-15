@@ -155,11 +155,13 @@ class HandManager:
             if in_hand
         }
 
-    def rejoin_seat(self, seat: int) -> bool:
+    def rejoin_seat(self, seat: int, *, allow_folded_rejoin: bool = False) -> bool:
         """Promote a seated player back into the current hand.
 
         Args:
             seat: Seat number from 2 to 6 to rejoin.
+            allow_folded_rejoin: Whether to allow confirmed card revalidation
+                to reverse a previous folded-seat latch.
 
         Returns:
             True if the seat was promoted, False otherwise.
@@ -171,9 +173,16 @@ class HandManager:
         if self._players_in_hand.get(seat_key, False):
             return False
 
-        if seat_key in self._folded_seats:
+        if seat_key in self._folded_seats and not allow_folded_rejoin:
             logger.info("Rejoin rejected for seat %d: already in folded_seats", seat)
             return False
+        if seat_key in self._folded_seats:
+            self._folded_seats.remove(seat_key)
+            logger.info(
+                "Seat %d rejoined from folded_seats via confirmed card "
+                "revalidation",
+                seat,
+            )
 
         self._players_in_hand[seat_key] = True
         self._participated_seats.add(seat_key)
@@ -781,6 +790,12 @@ class HandManager:
                 continue
             if self._is_duplicate_action(action, self._last_frame_actions):
                 logger.debug("Duplicate action ignored: %s", action)
+                continue
+            if action_name == "FOLD" and str(action.seat) in self._folded_seats:
+                logger.debug(
+                    "Duplicate fold ignored before recording: seat=%s",
+                    action.seat,
+                )
                 continue
             self._all_actions.append(action)
             accepted_actions.append(action)

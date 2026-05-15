@@ -1081,6 +1081,30 @@ class TestActionAccumulation:
         assert manager._folded_seats == {"3"}
         assert manager.get_players_in_hand() == {1, 2}
 
+    def test_duplicate_fold_action_not_recorded_twice(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Repeated FOLD for an already folded seat is not stored twice."""
+        start_hand(manager)
+        manager._players_in_hand = {"1": True, "2": True, "3": True}
+
+        manager._add_actions(
+            [
+                ActionRecord(seat=3, action="FOLD", amount=0),
+                ActionRecord(seat=3, action="FOLD", amount=0),
+            ]
+        )
+
+        street_actions = manager.get_current_street_actions()
+        assert street_actions is not None
+        folds = [
+            action
+            for action in street_actions.actions
+            if action.seat == 3 and action.action == "FOLD"
+        ]
+        assert len(folds) == 1
+
     def test_rejoin_seat_promotes_non_folded_seat(
         self,
         manager: HandManager,
@@ -1111,6 +1135,22 @@ class TestActionAccumulation:
         assert promoted is False
         assert manager._players_in_hand["3"] is False
         assert "3" not in manager._participated_seats
+
+    def test_rejoin_seat_allows_folded_rejoin_when_explicit(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """allow_folded_rejoin reverses a false folded-seat latch."""
+        manager._phase = "flop"
+        manager._players_in_hand = {"1": True, "2": True, "3": False}
+        manager._folded_seats = {"3"}
+
+        promoted = manager.rejoin_seat(3, allow_folded_rejoin=True)
+
+        assert promoted is True
+        assert manager._players_in_hand["3"] is True
+        assert "3" not in manager._folded_seats
+        assert "3" in manager._participated_seats
 
     def test_rejoin_seat_rejects_when_waiting(
         self,
