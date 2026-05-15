@@ -515,9 +515,9 @@ class LLMPipeline:
         if validated is not None:
             parsed = {
                 "action": parsed.get("action"),
-                "size": parsed.get("size", parsed.get("amount")),
-                "confidence": parsed.get("confidence", "low"),
-                "reasoning": parsed.get("reasoning", parsed.get("reason", "")),
+                "size": validated.amount,
+                "confidence": validated.confidence,
+                "reasoning": validated.reason,
             }
 
         total_ms = int((time.perf_counter() - method_start) * 1000)
@@ -828,9 +828,58 @@ class LLMPipeline:
             "json_schema": {
                 "name": task_name,
                 "strict": True,
-                "schema": schema_model.model_json_schema(),
+                "schema": self._openai_strict_schema(schema_model),
             },
         }
+
+    def _openai_strict_schema(self, schema_model: type[BaseModel]) -> dict[str, Any]:
+        """Return a Pydantic schema normalized for OpenAI strict JSON Schema."""
+        schema = schema_model.model_json_schema()
+        return self._normalize_json_schema_for_openai(schema)
+
+    def _normalize_json_schema_for_openai(self, schema: dict[str, Any]) -> dict[str, Any]:
+        """Normalize JSON Schema so OpenAI strict mode accepts it."""
+        normalized = dict(schema)
+        normalized.pop("default", None)
+        normalized.pop("title", None)
+
+        schema_type = normalized.get("type")
+        properties = normalized.get("properties")
+        if schema_type == "object" or isinstance(properties, dict):
+            object_properties = properties if isinstance(properties, dict) else {}
+            normalized["type"] = "object"
+            normalized["additionalProperties"] = False
+            normalized["properties"] = {
+                key: self._normalize_json_schema_for_openai(value)
+                for key, value in object_properties.items()
+            }
+            normalized["required"] = list(normalized["properties"].keys())
+
+        if "$defs" in normalized and isinstance(normalized["$defs"], dict):
+            normalized["$defs"] = {
+                key: self._normalize_json_schema_for_openai(value)
+                for key, value in normalized["$defs"].items()
+            }
+
+        for union_key in ("anyOf", "oneOf", "allOf"):
+            if union_key in normalized and isinstance(normalized[union_key], list):
+                normalized[union_key] = [
+                    self._normalize_json_schema_for_openai(value)
+                    for value in normalized[union_key]
+                ]
+
+        if not self._json_schema_has_type_information(normalized):
+            normalized["type"] = "string"
+
+        return normalized
+
+    @staticmethod
+    def _json_schema_has_type_information(schema: dict[str, Any]) -> bool:
+        """Return whether a schema node has enough type information."""
+        return any(
+            key in schema
+            for key in ("type", "anyOf", "oneOf", "allOf", "$ref", "const", "enum")
+        )
 
     def _select_model(self, game_state: GameState) -> str:
         """Return premium model for important spots, otherwise default model."""

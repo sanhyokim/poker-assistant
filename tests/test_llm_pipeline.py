@@ -11,6 +11,10 @@ import requests
 import pytest
 
 from core.game_state import ActionRecord, GameState, HeroState, PlayerState
+from strategy.llm_schemas import (
+    ExploitAdjustmentResponse,
+    MultiwayDecisionResponse,
+)
 from strategy.llm_pipeline import LLMPipeline
 
 
@@ -589,6 +593,9 @@ def test_call_api_includes_response_format_for_multiway_when_strict_json_on(
     assert response_format["json_schema"]["strict"] is True
     assert response_format["json_schema"]["name"] == "multiway_decision"
     assert "schema" in response_format["json_schema"]
+    amount_schema = response_format["json_schema"]["schema"]["properties"]["amount"]
+    assert amount_schema != {}
+    assert "type" in amount_schema or "anyOf" in amount_schema
 
 
 @patch("strategy.llm_pipeline.requests.post")
@@ -612,6 +619,140 @@ def test_call_api_omits_response_format_for_reason_generation(
 
     request_body = mock_post.call_args.kwargs["json"]
     assert "response_format" not in request_body
+
+
+def test_response_format_multiway_amount_has_type_information() -> None:
+    """Strict multiway schema has OpenAI-compatible amount type information."""
+    with patch.dict(
+        os.environ,
+        {"OPENROUTER_USE_STRICT_JSON_SCHEMA": "true"},
+        clear=True,
+    ):
+        response_format = make_pipeline()._response_format_for_task(
+            "multiway_decision"
+        )
+
+    assert response_format is not None
+    schema = response_format["json_schema"]["schema"]
+    amount_schema = schema["properties"]["amount"]
+    assert response_format["type"] == "json_schema"
+    assert response_format["json_schema"]["strict"] is True
+    assert amount_schema != {}
+    assert "type" in amount_schema or "anyOf" in amount_schema
+    assert schema["additionalProperties"] is False
+
+
+def test_response_format_exploit_adjusted_size_has_type_information() -> None:
+    """Strict exploit schema has OpenAI-compatible adjusted_size type info."""
+    with patch.dict(
+        os.environ,
+        {"OPENROUTER_USE_STRICT_JSON_SCHEMA": "true"},
+        clear=True,
+    ):
+        response_format = make_pipeline()._response_format_for_task(
+            "exploit_adjustment"
+        )
+
+    assert response_format is not None
+    schema = response_format["json_schema"]["schema"]
+    adjusted_size_schema = schema["properties"]["adjusted_size"]
+    assert adjusted_size_schema != {}
+    assert "type" in adjusted_size_schema or "anyOf" in adjusted_size_schema
+
+
+def test_response_format_returns_none_when_strict_json_off() -> None:
+    """Strict response_format helper returns None when the env flag is false."""
+    with patch.dict(
+        os.environ,
+        {"OPENROUTER_USE_STRICT_JSON_SCHEMA": "false"},
+        clear=True,
+    ):
+        response_format = make_pipeline()._response_format_for_task(
+            "multiway_decision"
+        )
+
+    assert response_format is None
+
+
+def test_multiway_decision_response_aliases_validate() -> None:
+    """Multiway schema accepts amount/reason and size/reasoning aliases."""
+    amount_response = MultiwayDecisionResponse.model_validate(
+        {
+            "action": "call",
+            "amount": 100,
+            "confidence": "medium",
+            "reasoning": "ok",
+        }
+    )
+    size_response = MultiwayDecisionResponse.model_validate(
+        {
+            "action": "call",
+            "size": 100,
+            "confidence": "medium",
+            "reason": "ok",
+        }
+    )
+
+    assert amount_response.action == "CALL"
+    assert amount_response.amount == 100
+    assert amount_response.reason == "ok"
+    assert size_response.action == "CALL"
+    assert size_response.amount == 100
+    assert size_response.reason == "ok"
+
+
+@pytest.mark.parametrize("amount", [None, "half_pot", 100])
+def test_multiway_decision_response_amount_valid_values(
+    amount: str | int | None,
+) -> None:
+    """Multiway amount accepts null, text size labels, and non-negative numbers."""
+    response = MultiwayDecisionResponse.model_validate(
+        {
+            "action": "call",
+            "amount": amount,
+            "confidence": "medium",
+            "reasoning": "ok",
+        }
+    )
+
+    assert response.amount == amount
+
+
+@pytest.mark.parametrize("amount", [-1, True])
+def test_multiway_decision_response_amount_invalid_values(
+    amount: int | bool,
+) -> None:
+    """Multiway amount rejects negative numbers and booleans."""
+    with pytest.raises(ValueError):
+        MultiwayDecisionResponse.model_validate(
+            {
+                "action": "call",
+                "amount": amount,
+                "confidence": "medium",
+                "reasoning": "ok",
+            }
+        )
+
+
+def test_exploit_adjustment_response_adjusted_size_validates() -> None:
+    """Exploit adjusted_size keeps size validation while exposing typed schema."""
+    valid = ExploitAdjustmentResponse.model_validate(
+        {
+            "adjusted_action": "raise",
+            "adjusted_size": "half_pot",
+            "confidence": "medium",
+        }
+    )
+
+    assert valid.adjusted_size == "half_pot"
+    with pytest.raises(ValueError):
+        ExploitAdjustmentResponse.model_validate(
+            {
+                "adjusted_action": "raise",
+                "adjusted_size": True,
+                "confidence": "medium",
+            }
+        )
 
 
 @patch("strategy.llm_pipeline.requests.post")

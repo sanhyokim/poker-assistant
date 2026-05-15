@@ -10,6 +10,8 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
+FlexibleSize = str | int | float | None
+
 
 class RangeEstimationResponse(BaseModel):
     """Response for range-estimation LLM tasks."""
@@ -45,7 +47,7 @@ class ExploitAdjustmentResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     adjusted_action: str = Field(...)
-    adjusted_size: Any = Field(
+    adjusted_size: FlexibleSize = Field(
         default=None,
         validation_alias=AliasChoices("adjusted_size", "adjusted_amount"),
     )
@@ -55,9 +57,9 @@ class ExploitAdjustmentResponse(BaseModel):
     )
     confidence: float | str = Field(default="low")
 
-    @field_validator("adjusted_size")
+    @field_validator("adjusted_size", mode="before")
     @classmethod
-    def validate_adjusted_size(cls, value: Any) -> Any:
+    def validate_adjusted_size(cls, value: Any) -> FlexibleSize:
         """Reject negative numeric sizes while allowing null and text sizes."""
         if value is None or value == "":
             return value
@@ -96,7 +98,10 @@ class MultiwayDecisionResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     action: str = Field(...)
-    amount: Any = Field(default=0, validation_alias=AliasChoices("amount", "size"))
+    amount: FlexibleSize = Field(
+        default=0,
+        validation_alias=AliasChoices("amount", "size"),
+    )
     reason: str = Field(default="", validation_alias=AliasChoices("reason", "reasoning"))
     confidence: float | str = Field(default="low")
 
@@ -112,9 +117,9 @@ class MultiwayDecisionResponse(BaseModel):
             raise ValueError(f"Invalid action '{value}'. Must be one of {valid_actions}")
         return normalized
 
-    @field_validator("amount")
+    @field_validator("amount", mode="before")
     @classmethod
-    def validate_amount(cls, value: Any) -> Any:
+    def validate_amount(cls, value: Any) -> FlexibleSize:
         """Reject negative numeric amounts while allowing null and text sizes."""
         if value is None or value == "":
             return value
