@@ -335,8 +335,46 @@ def test_decide_multiway_success() -> None:
     ):
         result = pipeline.decide_multiway(make_state(), 0.45, [{"vpip": 30}])
 
-    assert result["action"] == "check"
+    assert result["action"] == "CHECK"
     assert result["confidence"] == "medium"
+
+
+def test_decide_multiway_success_uses_validated_reason_and_numeric_confidence() -> None:
+    """Validated multiway response keeps reason text and numeric string confidence."""
+    pipeline = make_pipeline()
+    with patch.object(
+        pipeline,
+        "_call_api",
+        return_value=(
+            '{"action":"check","amount":null,"confidence":"0.89",'
+            '"reason":"理由あり"}'
+        ),
+    ):
+        result = pipeline.decide_multiway(make_state(), 0.45, [{"vpip": 30}])
+
+    assert result["action"] == "CHECK"
+    assert result["size"] is None
+    assert result["confidence"] == pytest.approx(0.89)
+    assert result["reasoning"] == "理由あり"
+
+
+def test_decide_multiway_validation_failure_preserves_raw_reason() -> None:
+    """Invalid validated response still returns raw reason as reasoning."""
+    pipeline = make_pipeline()
+    with patch.object(
+        pipeline,
+        "_call_api",
+        return_value=(
+            '{"action":"invalid_action","amount":null,"confidence":"medium",'
+            '"reason":"理由あり"}'
+        ),
+    ):
+        result = pipeline.decide_multiway(make_state(), 0.45, [{"vpip": 30}])
+
+    assert result["action"] == "invalid_action"
+    assert result["size"] is None
+    assert result["confidence"] == "medium"
+    assert result["reasoning"] == "理由あり"
 
 
 def test_decide_multiway_prompt_contains_no_player_name() -> None:
@@ -699,6 +737,52 @@ def test_multiway_decision_response_aliases_validate() -> None:
     assert size_response.action == "CALL"
     assert size_response.amount == 100
     assert size_response.reason == "ok"
+
+
+def test_multiway_decision_response_numeric_string_confidence_validates() -> None:
+    """Multiway confidence accepts numeric strings and normalizes to float."""
+    response = MultiwayDecisionResponse.model_validate(
+        {
+            "action": "check",
+            "amount": None,
+            "reason": "理由あり",
+            "confidence": "0.89",
+        }
+    )
+
+    assert response.action == "CHECK"
+    assert response.amount is None
+    assert response.reason == "理由あり"
+    assert response.confidence == pytest.approx(0.89)
+
+
+@pytest.mark.parametrize("confidence", ["1.2", "-0.1", "abc", True])
+def test_multiway_decision_response_invalid_confidence_rejected(
+    confidence: str | bool,
+) -> None:
+    """Multiway confidence rejects out-of-range strings, text, and booleans."""
+    with pytest.raises(ValueError):
+        MultiwayDecisionResponse.model_validate(
+            {
+                "action": "check",
+                "amount": None,
+                "reason": "理由あり",
+                "confidence": confidence,
+            }
+        )
+
+
+def test_exploit_adjustment_response_numeric_string_confidence_validates() -> None:
+    """Exploit confidence accepts numeric strings and normalizes to float."""
+    response = ExploitAdjustmentResponse.model_validate(
+        {
+            "adjusted_action": "call",
+            "adjusted_size": None,
+            "confidence": "0.75",
+        }
+    )
+
+    assert response.confidence == pytest.approx(0.75)
 
 
 @pytest.mark.parametrize("amount", [None, "half_pot", 100])

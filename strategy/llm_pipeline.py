@@ -514,10 +514,17 @@ class LLMPipeline:
         parsed_valid = validated is not None
         if validated is not None:
             parsed = {
-                "action": parsed.get("action"),
+                "action": validated.action,
                 "size": validated.amount,
                 "confidence": validated.confidence,
                 "reasoning": validated.reason,
+            }
+        else:
+            parsed = {
+                "action": parsed.get("action"),
+                "size": parsed.get("size", parsed.get("amount")),
+                "confidence": parsed.get("confidence", "low"),
+                "reasoning": parsed.get("reasoning", parsed.get("reason", "")),
             }
 
         total_ms = int((time.perf_counter() - method_start) * 1000)

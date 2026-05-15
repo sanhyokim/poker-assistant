@@ -13,6 +13,29 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 FlexibleSize = str | int | float | None
 
 
+def _validate_confidence_value(value: Any) -> float | str:
+    """Validate numeric confidence, numeric strings, or high/medium/low labels."""
+    if isinstance(value, bool):
+        raise ValueError("Boolean confidence is invalid")
+    if isinstance(value, (int, float)):
+        if not 0.0 <= float(value) <= 1.0:
+            raise ValueError("Confidence must be between 0 and 1")
+        return float(value)
+
+    normalized = value.lower().strip()
+    if normalized in {"high", "medium", "low"}:
+        return normalized
+    try:
+        numeric = float(normalized)
+    except ValueError as error:
+        raise ValueError(
+            "Confidence must be high, medium, low, or 0..1"
+        ) from error
+    if not 0.0 <= numeric <= 1.0:
+        raise ValueError("Confidence must be between 0 and 1")
+    return numeric
+
+
 class RangeEstimationResponse(BaseModel):
     """Response for range-estimation LLM tasks."""
 
@@ -76,20 +99,11 @@ class ExploitAdjustmentResponse(BaseModel):
                 raise ValueError("Adjusted size must be non-negative")
         return value
 
-    @field_validator("confidence")
+    @field_validator("confidence", mode="before")
     @classmethod
-    def validate_confidence(cls, value: float | str) -> float | str:
+    def validate_confidence(cls, value: Any) -> float | str:
         """Validate numeric confidence or existing high/medium/low labels."""
-        if isinstance(value, bool):
-            raise ValueError("Boolean confidence is invalid")
-        if isinstance(value, (int, float)):
-            if not 0.0 <= float(value) <= 1.0:
-                raise ValueError("Confidence must be between 0 and 1")
-            return float(value)
-        normalized = value.lower()
-        if normalized not in {"high", "medium", "low"}:
-            raise ValueError("Confidence must be high, medium, low, or 0..1")
-        return normalized
+        return _validate_confidence_value(value)
 
 
 class MultiwayDecisionResponse(BaseModel):
@@ -136,20 +150,11 @@ class MultiwayDecisionResponse(BaseModel):
                 raise ValueError("Amount must be non-negative")
         return value
 
-    @field_validator("confidence")
+    @field_validator("confidence", mode="before")
     @classmethod
-    def validate_confidence(cls, value: float | str) -> float | str:
+    def validate_confidence(cls, value: Any) -> float | str:
         """Validate numeric confidence or existing high/medium/low labels."""
-        if isinstance(value, bool):
-            raise ValueError("Boolean confidence is invalid")
-        if isinstance(value, (int, float)):
-            if not 0.0 <= float(value) <= 1.0:
-                raise ValueError("Confidence must be between 0 and 1")
-            return float(value)
-        normalized = value.lower()
-        if normalized not in {"high", "medium", "low"}:
-            raise ValueError("Confidence must be high, medium, low, or 0..1")
-        return normalized
+        return _validate_confidence_value(value)
 
 
 class ReasonGenerationResponse(BaseModel):
