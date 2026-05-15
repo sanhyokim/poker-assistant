@@ -142,6 +142,8 @@ class GameLoop:
         self._last_hero_non_fold_action_name: str | None = None
         self._hero_fold_badge_ignored_for_hand: bool = False
         self._hero_fold_badge_ignored_reason: str | None = None
+        self._pending_hero_fold_badge_recovery: bool = False
+        self._pending_hero_fold_badge_recovery_since: float | None = None
         self._hero_card_candidate: list[str] | None = None
         self._hero_card_candidate_streak: int = 0
         self._hero_card_confirm_frames: int = int(
@@ -180,6 +182,7 @@ class GameLoop:
                 game_state = self.process_one_frame()
                 if game_state is not None:
                     self._hand_manager.process_frame(game_state)
+                    self._recover_pending_hero_fold_badge(game_state)
                     self._sync_game_state_with_hand_manager(game_state)
                     self._update_hand_position_lock(game_state)
                     self._handle_strategy(game_state)
@@ -206,6 +209,7 @@ class GameLoop:
         self._last_strategy_is_my_turn = False
         self._hero_fold_badge_ignored_for_hand = False
         self._hero_fold_badge_ignored_reason = None
+        self._clear_pending_hero_fold_badge_recovery()
         self._reset_waiting_hero_card_candidate()
         self._reset_active_hero_card_validation()
         self._notify_hud(None)
@@ -351,6 +355,7 @@ class GameLoop:
             self._last_hero_non_fold_action_name = None
             self._hero_fold_badge_ignored_for_hand = False
             self._hero_fold_badge_ignored_reason = None
+            self._clear_pending_hero_fold_badge_recovery()
             self._reset_waiting_hero_card_candidate()
             self._reset_active_hero_card_validation()
             self._waiting_for_card_clear = False
@@ -422,6 +427,7 @@ class GameLoop:
         self._last_hero_non_fold_action_name = None
         self._hero_fold_badge_ignored_for_hand = False
         self._hero_fold_badge_ignored_reason = None
+        self._clear_pending_hero_fold_badge_recovery()
         self._reset_waiting_hero_card_candidate()
         self._reset_active_hero_card_validation()
         self._diff_detector.reset()
@@ -1830,6 +1836,8 @@ class GameLoop:
                     self._clear_hero_card_cache(
                         "hero fold badge recovered from check"
                     )
+                elif action_name == "CHECK":
+                    self._mark_pending_hero_fold_badge_recovery()
                 else:
                     logger.info(
                         "Hero fold badge ignored because non-fold hero action was "
@@ -1970,6 +1978,56 @@ class GameLoop:
             "Hero fold badge ignore latched for hand: reason=%s action=%s",
             reason,
             action,
+        )
+
+    def _mark_pending_hero_fold_badge_recovery(self) -> None:
+        """Defer same-frame Hero CHECK plus fold-badge recovery until after poll."""
+        self._pending_hero_fold_badge_recovery = True
+        self._pending_hero_fold_badge_recovery_since = time.monotonic()
+        logger.info("Hero fold badge recovery pending: same-frame CHECK detected")
+
+    def _clear_pending_hero_fold_badge_recovery(self) -> None:
+        """Clear deferred Hero fold-badge recovery state."""
+        self._pending_hero_fold_badge_recovery = False
+        self._pending_hero_fold_badge_recovery_since = None
+
+    def _recover_pending_hero_fold_badge(self, game_state: GameState) -> None:
+        """Recover a same-frame Hero CHECK to FOLD after HandManager records it."""
+        if not self._pending_hero_fold_badge_recovery:
+            return
+
+        if game_state.phase in {"hand_end", "waiting"}:
+            self._clear_pending_hero_fold_badge_recovery()
+            return
+
+        age = 0.0
+        if self._pending_hero_fold_badge_recovery_since is not None:
+            age = time.monotonic() - self._pending_hero_fold_badge_recovery_since
+
+        if age > 1.5:
+            logger.info(
+                "Hero fold badge pending recovery expired: age=%.2fs",
+                age,
+            )
+            self._clear_pending_hero_fold_badge_recovery()
+            return
+
+        replaced = self._hand_manager.replace_recent_hero_check_with_fold(
+            max_age_sec=1.5,
+        )
+        if replaced:
+            logger.info(
+                "Hero FOLD recovered from pending same-frame CHECK via fold badge"
+            )
+            self._clear_hero_card_cache(
+                "hero fold badge recovered from pending same-frame check"
+            )
+            self._clear_pending_hero_fold_badge_recovery()
+            return
+
+        logger.debug(
+            "Hero fold badge pending recovery not ready yet: age=%.2fs",
+            age,
         )
 
     @staticmethod

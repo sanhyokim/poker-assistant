@@ -492,7 +492,7 @@ def test_fold_badge_detection_appends_hero_fold_and_clears_cache(
     assert loop._cached_hero_cards is None
 
 
-@pytest.mark.parametrize("action_name", ["CHECK", "CALL", "RAISE"])
+@pytest.mark.parametrize("action_name", ["CALL", "RAISE"])
 def test_fold_badge_detection_ignores_hero_badge_with_non_fold_action(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -529,6 +529,98 @@ def test_fold_badge_detection_ignores_hero_badge_with_non_fold_action(
         f"reason=non_fold_action action={action_name}"
     ) in caplog.text
     assert "Hero FOLD detected via badge for seat 1" not in caplog.text
+
+
+def test_fold_badge_detection_same_frame_check_sets_pending_recovery(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Same-frame Hero CHECK plus fold badge waits for boundary CHECK recording."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    game_state = _state_with_player("3")
+    hero_check = ActionRecord(seat=1, action="CHECK", amount=0, confidence="high")
+    game_state.actions_since_last_frame = [hero_check]
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        loop._process_fold_badge_detection(game_state, {1: True})
+
+    assert game_state.actions_since_last_frame == [hero_check]
+    assert loop._cached_hero_cards == ["Ah", "Kd"]
+    assert loop._pending_hero_fold_badge_recovery is True
+    assert loop._pending_hero_fold_badge_recovery_since is not None
+    assert loop._hero_fold_badge_ignored_for_hand is False
+    assert loop._hero_fold_badge_ignored_reason is None
+    assert "Hero fold badge recovery pending: same-frame CHECK detected" in caplog.text
+    assert "Hero fold badge ignore latched for hand" not in caplog.text
+
+
+def test_pending_hero_fold_badge_recovery_replaces_check_after_hand_manager(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pending same-frame recovery converts the recorded boundary CHECK to FOLD."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    start_state = create_empty_game_state()
+    start_state.hero.cards = ["Ah", "Kd"]
+    start_state.hero.cards_visible = True
+    loop._hand_manager.process_frame(start_state)
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    game_state = _state_with_player("3")
+    game_state.phase = "flop"
+    hero_check = ActionRecord(seat=1, action="CHECK", amount=0, confidence="high")
+    game_state.actions_since_last_frame = [hero_check]
+
+    loop._process_fold_badge_detection(game_state, {1: True})
+    loop._hand_manager._record_hero_action(
+        ActionRecord(seat=1, action="CHECK", amount=0)
+    )
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        loop._recover_pending_hero_fold_badge(game_state)
+
+    current_street = loop._hand_manager.get_current_street_actions()
+    assert current_street is not None
+    assert current_street.actions == [
+        ActionRecord(seat=1, action="FOLD", amount=0, confidence="high")
+    ]
+    assert loop._hand_manager.hero_folded is True
+    assert 1 not in loop._hand_manager.get_players_in_hand()
+    assert loop._cached_hero_cards is None
+    assert loop._pending_hero_fold_badge_recovery is False
+    assert loop._pending_hero_fold_badge_recovery_since is None
+    assert (
+        "Hero FOLD recovered from pending same-frame CHECK via fold badge"
+        in caplog.text
+    )
+
+
+def test_pending_hero_fold_badge_recovery_expires_without_fold(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Expired pending recovery is cleared without folding Hero."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True}
+    loop._pending_hero_fold_badge_recovery = True
+    loop._pending_hero_fold_badge_recovery_since = time.monotonic() - 2.0
+    game_state = create_empty_game_state()
+    game_state.phase = "flop"
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        loop._recover_pending_hero_fold_badge(game_state)
+
+    assert loop._pending_hero_fold_badge_recovery is False
+    assert loop._pending_hero_fold_badge_recovery_since is None
+    assert loop._hand_manager.hero_folded is False
+    assert "Hero fold badge pending recovery expired" in caplog.text
 
 
 def test_fold_badge_detection_recovers_recent_hero_check_as_fold(
@@ -595,6 +687,7 @@ def test_fold_badge_detection_does_not_recover_check_during_obstruction(
     assert current_street.actions == [check]
     assert loop._hand_manager.hero_folded is False
     assert loop._hero_fold_badge_ignored_for_hand is False
+    assert loop._pending_hero_fold_badge_recovery is False
 
 
 @pytest.mark.parametrize("action_name", ["CALL", "BET", "RAISE", "ALL_IN"])
@@ -623,6 +716,7 @@ def test_fold_badge_detection_keeps_non_check_hero_action_ignore(
     assert loop._hand_manager.hero_folded is False
     assert loop._cached_hero_cards == ["Ah", "Kd"]
     assert loop._hero_fold_badge_ignored_for_hand is True
+    assert loop._pending_hero_fold_badge_recovery is False
 
 
 def test_fold_badge_detection_latched_hero_ignore_survives_recent_guard(
@@ -641,7 +735,8 @@ def test_fold_badge_detection_latched_hero_ignore_survives_recent_guard(
     ]
 
     loop._process_fold_badge_detection(first_state, {1: True})
-    assert loop._hero_fold_badge_ignored_for_hand is True
+    assert loop._pending_hero_fold_badge_recovery is True
+    loop._latch_hero_fold_badge_ignore("non_fold_action", "CHECK")
 
     loop._last_hero_non_fold_action_time = time.monotonic() - 2.0
     second_state = create_empty_game_state()
@@ -765,12 +860,40 @@ def test_fold_badge_detection_hero_ignore_latch_clears_on_hand_start(
     loop._hand_manager._hand_just_started = True
     loop._hero_fold_badge_ignored_for_hand = True
     loop._hero_fold_badge_ignored_reason = "non_fold_action"
+    loop._pending_hero_fold_badge_recovery = True
+    loop._pending_hero_fold_badge_recovery_since = time.monotonic()
 
     state = loop.process_one_frame()
 
     assert state is not None
     assert loop._hero_fold_badge_ignored_for_hand is False
     assert loop._hero_fold_badge_ignored_reason is None
+    assert loop._pending_hero_fold_badge_recovery is False
+    assert loop._pending_hero_fold_badge_recovery_since is None
+
+
+def test_pending_hero_fold_badge_recovery_clears_on_reset_and_stop(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reset and stop clear deferred Hero fold-badge recovery."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pending_hero_fold_badge_recovery = True
+    loop._pending_hero_fold_badge_recovery_since = time.monotonic()
+
+    loop.reset()
+
+    assert loop._pending_hero_fold_badge_recovery is False
+    assert loop._pending_hero_fold_badge_recovery_since is None
+
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pending_hero_fold_badge_recovery = True
+    loop._pending_hero_fold_badge_recovery_since = time.monotonic()
+
+    loop.stop()
+
+    assert loop._pending_hero_fold_badge_recovery is False
+    assert loop._pending_hero_fold_badge_recovery_since is None
 
 
 def test_fold_badge_detection_ignores_nonparticipants(
