@@ -311,6 +311,8 @@ class GameLoop:
                     filtered_pot,
                 )
                 game_state.pot = filtered_pot
+            if estimation.get("pot_spike_hold"):
+                game_state.strategy_defer_reason = "pot_spike_hold"
         else:
             game_state.game_event = None
             game_state.actions_since_last_frame = []
@@ -671,6 +673,27 @@ class GameLoop:
             return
 
         # === ここから is_my_turn=True のみ ===
+
+        if game_state.strategy_defer_reason:
+            logger.info(
+                "Strategy deferred: reason=%s phase=%s pot=%d actions=%s",
+                game_state.strategy_defer_reason,
+                phase,
+                game_state.pot,
+                [
+                    (action.seat, action.action, action.amount)
+                    for action in game_state.actions_since_last_frame
+                ],
+            )
+            self._last_recommendation_log = None
+            self._previous_recommendation = None
+            self._previous_recommendation_context = None
+            self._clear_pending_state()
+            self._notify_hud_computing("WAITING FOR STABLE POT...")
+            self._save_human_action_to_hand_manager(game_state)
+            self._last_strategy_phase = phase
+            self._last_strategy_is_my_turn = game_state.hero.is_my_turn
+            return
 
         # Cached recommendation freshness guard
         if (

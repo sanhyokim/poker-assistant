@@ -177,6 +177,7 @@ class TestGameEvents:
             "game_event": None,
             "actions": [],
             "filtered_pot": None,
+            "pot_spike_hold": False,
         }
 
     def test_new_hand_detected(self, estimator: ActionEstimator) -> None:
@@ -829,6 +830,7 @@ class TestPotSpikeFilter:
         assert result["game_event"] is None
         assert result["actions"] == []
         assert result["filtered_pot"] == 400
+        assert result["pot_spike_hold"] is True
 
     def test_pot_spike_held_returns_filtered_pot(
         self,
@@ -846,6 +848,7 @@ class TestPotSpikeFilter:
         assert result["game_event"] is None
         assert result["actions"] == []
         assert result["filtered_pot"] == 400
+        assert result["pot_spike_hold"] is True
 
     def test_pot_spike_no_false_new_hand(
         self,
@@ -888,7 +891,9 @@ class TestPotSpikeFilter:
         second_result = estimator.estimate(first_spike, second_spike)
 
         assert first_result["filtered_pot"] == 400
+        assert first_result["pot_spike_hold"] is True
         assert second_result["filtered_pot"] is None
+        assert second_result["pot_spike_hold"] is False
 
     def test_suspicious_ten_x_pot_spike_is_not_confirmed(
         self,
@@ -910,8 +915,10 @@ class TestPotSpikeFilter:
 
         assert first_result["game_event"] is None
         assert first_result["filtered_pot"] == 7740
+        assert first_result["pot_spike_hold"] is False
         assert second_result["game_event"] is None
         assert second_result["filtered_pot"] == 7740
+        assert second_result["pot_spike_hold"] is False
 
     def test_natural_pot_increase_is_not_suspicious(
         self,

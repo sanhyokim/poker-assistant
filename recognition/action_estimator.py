@@ -14,6 +14,7 @@ class EstimateResult(TypedDict):
     game_event: str | None
     actions: list[ActionRecord]
     filtered_pot: int | None
+    pot_spike_hold: bool
 
 
 class ActionEstimator:
@@ -72,30 +73,51 @@ class ActionEstimator:
 
         if not diff.any_change:
             actions = self._confirm_static_none_streaks(curr_state)
-            return {"game_event": None, "actions": actions, "filtered_pot": None}
+            return {
+                "game_event": None,
+                "actions": actions,
+                "filtered_pot": None,
+                "pot_spike_hold": False,
+            }
 
         original_pot_curr = diff.pot_curr
-        diff = self._filter_pot_spike(diff)
+        diff, pot_spike_hold = self._filter_pot_spike(diff)
         filtered_pot: int | None = None
         if diff.pot_curr != original_pot_curr:
             filtered_pot = diff.pot_curr
 
         if not diff.any_change:
-            return {"game_event": None, "actions": [], "filtered_pot": filtered_pot}
+            return {
+                "game_event": None,
+                "actions": [],
+                "filtered_pot": filtered_pot,
+                "pot_spike_hold": pot_spike_hold,
+            }
 
         if self._check_new_hand(diff):
-            return {"game_event": "NEW_HAND", "actions": [], "filtered_pot": None}
+            return {
+                "game_event": "NEW_HAND",
+                "actions": [],
+                "filtered_pot": None,
+                "pot_spike_hold": pot_spike_hold,
+            }
         if diff.pot_curr != original_pot_curr:
             filtered_pot = diff.pot_curr
 
         if not diff.any_change:
-            return {"game_event": None, "actions": [], "filtered_pot": filtered_pot}
+            return {
+                "game_event": None,
+                "actions": [],
+                "filtered_pot": filtered_pot,
+                "pot_spike_hold": pot_spike_hold,
+            }
 
         if self._check_new_street(diff):
             return {
                 "game_event": "NEW_STREET",
                 "actions": [],
                 "filtered_pot": filtered_pot,
+                "pot_spike_hold": pot_spike_hold,
             }
 
         if self._check_bets_collected(diff):
@@ -103,24 +125,31 @@ class ActionEstimator:
                 "game_event": "BETS_COLLECTED",
                 "actions": [],
                 "filtered_pot": filtered_pot,
+                "pot_spike_hold": pot_spike_hold,
             }
 
         actions = self._analyze_seat_actions(prev_state, curr_state, diff)
-        return {"game_event": None, "actions": actions, "filtered_pot": filtered_pot}
+        return {
+            "game_event": None,
+            "actions": actions,
+            "filtered_pot": filtered_pot,
+            "pot_spike_hold": pot_spike_hold,
+        }
 
-    def _filter_pot_spike(self, diff: StateDiff) -> StateDiff:
+    def _filter_pot_spike(self, diff: StateDiff) -> tuple[StateDiff, bool]:
         """Filter one-frame pot spikes before event/action analysis.
 
         Args:
             diff: Computed StateDiff. The object is updated in place.
 
         Returns:
-            The same StateDiff after pot spike filtering.
+            The same StateDiff after pot spike filtering and whether the pot
+            is temporarily held for this frame.
         """
         if not diff.pot_changed:
             self._pot_spike_streak = 0
             self._pot_spike_value = 0
-            return diff
+            return diff, False
 
         if (
             diff.pot_prev > 0
@@ -139,7 +168,7 @@ class ActionEstimator:
                 diff.pot_curr = diff.pot_prev
                 diff.pot_changed = False
                 diff.any_change = self._has_non_pot_change(diff)
-                return diff
+                return diff, False
 
             self._pot_spike_streak += 1
             self._pot_spike_value = diff.pot_curr
@@ -154,7 +183,7 @@ class ActionEstimator:
                 diff.pot_curr = diff.pot_prev
                 diff.pot_changed = False
                 diff.any_change = self._has_non_pot_change(diff)
-                return diff
+                return diff, True
 
             logger.info(
                 "Pot spike confirmed (streak=%d): %d -> %d",
@@ -164,11 +193,11 @@ class ActionEstimator:
             )
             self._pot_spike_streak = 0
             self._pot_spike_value = 0
-            return diff
+            return diff, False
 
         self._pot_spike_streak = 0
         self._pot_spike_value = 0
-        return diff
+        return diff, False
 
     def _is_suspicious_pot_spike(
         self,

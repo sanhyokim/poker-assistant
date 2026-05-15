@@ -1991,6 +1991,45 @@ def test_strategy_postflop_hero_turn_computes_synchronously(
     loop._recommendation_engine.generate.assert_called_once()
 
 
+def test_strategy_deferred_during_pot_spike_hold(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pot spike hold prevents broken pot/action strategy requests."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._recommendation_engine = MagicMock()
+    loop._previous_recommendation = Recommendation(action="BET", amount=120)
+    loop._previous_recommendation_context = {"hand_id": 1}
+    loop._pending_recommendation_active_id = 7
+    loop._pending_recommendation_context = {"hand_id": 1}
+    loop._start_async_postflop_recommendation = MagicMock()  # type: ignore[method-assign]
+    computing_callback = MagicMock()
+    loop._hud_computing_callback = computing_callback
+    loop._hand_manager._phase = "turn"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+
+    state = create_empty_game_state()
+    state.phase = "turn"
+    state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+    state.active_player_count = 2
+    state.board = ["2h", "3d", "5c", "9s"]
+    state.pot = 314
+    state.actions_since_last_frame = [
+        ActionRecord(seat=5, action="BET", amount=13820),
+    ]
+    state.strategy_defer_reason = "pot_spike_hold"
+
+    loop._handle_strategy(state)
+
+    loop._recommendation_engine.generate.assert_not_called()
+    loop._start_async_postflop_recommendation.assert_not_called()
+    assert loop.current_recommendation is None
+    assert loop._previous_recommendation_context is None
+    assert loop._pending_recommendation_active_id is None
+    computing_callback.assert_called_once_with("WAITING FOR STABLE POT...")
+
+
 def test_strategy_recommendation_cleared_on_turn_end(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2667,6 +2706,33 @@ def test_obstruction_active_pot_decrease_preserved(
     assert state is not None
     assert state.pot == 314
     assert "Pot decrease ignored during visual obstruction/recovery" in caplog.text
+
+
+def test_process_one_frame_sets_strategy_defer_on_pot_spike_hold(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ActionEstimator pot-spike holds are carried to GameState strategy deferral."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._hand_manager._phase = "turn"
+    loop._prev_state = create_empty_game_state()
+    loop._prev_state.pot = 314
+    loop._action_estimator = MagicMock()
+    loop._action_estimator.estimate.return_value = {
+        "game_event": None,
+        "actions": [ActionRecord(seat=5, action="BET", amount=13820)],
+        "filtered_pot": 314,
+        "pot_spike_hold": True,
+    }
+
+    state = loop.process_one_frame()
+
+    assert state is not None
+    assert state.pot == 314
+    assert state.strategy_defer_reason == "pot_spike_hold"
+    assert state.actions_since_last_frame == [
+        ActionRecord(seat=5, action="BET", amount=13820),
+    ]
 
 
 def test_obstruction_recovery_pot_decrease_preserved(

@@ -111,6 +111,8 @@ class GameState:
         game_event: Game lifecycle event, or None.
         suppress_phase_fast_forward: Whether hand-start phase fast-forward
             should be skipped for this frame.
+        strategy_defer_reason: Reason to skip strategy calculation for this
+            frame, or None when strategy may run.
     """
 
     timestamp: str = ""
@@ -135,6 +137,7 @@ class GameState:
     hero_action: ActionRecord | None = None
     game_event: str | None = None
     suppress_phase_fast_forward: bool = False
+    strategy_defer_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the GameState to a JSON-serializable dictionary.
