@@ -1339,6 +1339,89 @@ class TestActionAccumulation:
         assert manager.get_all_actions() == expected
         assert current_street.human_action == "RAISE 500"
 
+    def test_replace_recent_hero_check_with_fold_updates_hand_state(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """A recent Hero CHECK can be corrected to FOLD via fold badge."""
+        start_hand(manager)
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        check = ActionRecord(seat=1, action="CHECK", amount=0)
+        manager._record_hero_action(check)
+        assert manager._last_hero_boundary_action_monotonic is not None
+        manager._last_hero_boundary_action_monotonic = (
+            hand_manager_module.time.monotonic() - 0.5
+        )
+
+        replaced = manager.replace_recent_hero_check_with_fold(max_age_sec=1.5)
+
+        fold = ActionRecord(seat=1, action="FOLD", amount=0, confidence="high")
+        assert replaced is True
+        assert current_street.actions == [fold]
+        assert manager.get_all_actions() == [fold]
+        assert manager.hero_folded is True
+        assert manager._players_in_hand["1"] is False
+        assert "1" in manager._folded_seats
+        assert current_street.human_action == "FOLD"
+
+    def test_replace_recent_hero_check_with_fold_recomputes_recommendation(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """A corrected Hero FOLD marks a FOLD recommendation as followed."""
+        start_hand(manager)
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        current_street.recommendation = "FOLD"
+        manager._record_hero_action(ActionRecord(seat=1, action="CHECK", amount=0))
+        assert current_street.followed_recommendation is False
+
+        replaced = manager.replace_recent_hero_check_with_fold(max_age_sec=1.5)
+
+        assert replaced is True
+        assert current_street.followed_recommendation is True
+
+    def test_replace_recent_hero_check_with_fold_ignores_non_check(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Only a recent Hero CHECK can be corrected to FOLD."""
+        start_hand(manager)
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        call = ActionRecord(seat=1, action="CALL", amount=100)
+        manager._record_hero_action(call)
+
+        replaced = manager.replace_recent_hero_check_with_fold(max_age_sec=1.5)
+
+        assert replaced is False
+        assert current_street.actions == [call]
+        assert manager.get_all_actions() == [call]
+        assert manager.hero_folded is False
+
+    def test_replace_recent_hero_check_with_fold_ignores_old_check(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """A CHECK older than the fold recovery window is not replaced."""
+        start_hand(manager)
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        check = ActionRecord(seat=1, action="CHECK", amount=0)
+        manager._record_hero_action(check)
+        assert manager._last_hero_boundary_action_monotonic is not None
+        manager._last_hero_boundary_action_monotonic = (
+            hand_manager_module.time.monotonic() - 2.0
+        )
+
+        replaced = manager.replace_recent_hero_check_with_fold(max_age_sec=1.5)
+
+        assert replaced is False
+        assert current_street.actions == [check]
+        assert manager.get_all_actions() == [check]
+        assert manager.hero_folded is False
+
     def test_frame_hero_fold_is_still_saved(
         self,
         manager: HandManager,

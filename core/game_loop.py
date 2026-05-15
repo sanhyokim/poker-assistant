@@ -1819,15 +1819,27 @@ class GameLoop:
                     self._hero_fold_badge_ignored_reason,
                 )
             elif hero_non_fold_action is not None:
-                logger.info(
-                    "Hero fold badge ignored because non-fold hero action was "
-                    "detected: action=%s",
-                    hero_non_fold_action.action,
-                )
-                self._latch_hero_fold_badge_ignore(
-                    "non_fold_action",
-                    hero_non_fold_action.action,
-                )
+                action_name = hero_non_fold_action.action.upper()
+                if (
+                    action_name == "CHECK"
+                    and self._hand_manager.replace_recent_hero_check_with_fold(
+                        max_age_sec=1.5
+                    )
+                ):
+                    logger.info("Hero FOLD recovered from CHECK via fold badge")
+                    self._clear_hero_card_cache(
+                        "hero fold badge recovered from check"
+                    )
+                else:
+                    logger.info(
+                        "Hero fold badge ignored because non-fold hero action was "
+                        "detected: action=%s",
+                        hero_non_fold_action.action,
+                    )
+                    self._latch_hero_fold_badge_ignore(
+                        "non_fold_action",
+                        hero_non_fold_action.action,
+                    )
             elif self._has_recent_hero_non_fold_action():
                 action_name = self._last_hero_non_fold_action_name or "unknown"
                 action_time = self._last_hero_non_fold_action_time
@@ -1836,16 +1848,29 @@ class GameLoop:
                     if action_time is not None
                     else 0.0
                 )
-                logger.info(
-                    "Hero fold badge ignored because recent non-fold hero "
-                    "action was detected: action=%s age=%.2fs",
-                    action_name,
-                    age,
-                )
-                self._latch_hero_fold_badge_ignore(
-                    "recent_non_fold_action",
-                    action_name,
-                )
+                if (
+                    action_name.upper() == "CHECK"
+                    and self._hand_manager.replace_recent_hero_check_with_fold(
+                        max_age_sec=1.5
+                    )
+                ):
+                    logger.info(
+                        "Hero FOLD recovered from recent CHECK via fold badge"
+                    )
+                    self._clear_hero_card_cache(
+                        "hero fold badge recovered from recent check"
+                    )
+                else:
+                    logger.info(
+                        "Hero fold badge ignored because recent non-fold hero "
+                        "action was detected: action=%s age=%.2fs",
+                        action_name,
+                        age,
+                    )
+                    self._latch_hero_fold_badge_ignore(
+                        "recent_non_fold_action",
+                        action_name,
+                    )
             else:
                 logger.info("Hero FOLD detected via badge for seat 1")
                 game_state.actions_since_last_frame.append(

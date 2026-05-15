@@ -531,6 +531,100 @@ def test_fold_badge_detection_ignores_hero_badge_with_non_fold_action(
     assert "Hero FOLD detected via badge for seat 1" not in caplog.text
 
 
+def test_fold_badge_detection_recovers_recent_hero_check_as_fold(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A Hero fold badge can correct a very recent boundary CHECK to FOLD."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    start_state = create_empty_game_state()
+    start_state.hero.cards = ["Ah", "Kd"]
+    start_state.hero.cards_visible = True
+    loop._hand_manager.process_frame(start_state)
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    loop._hand_manager._record_hero_action(
+        ActionRecord(seat=1, action="CHECK", amount=0)
+    )
+    loop._hand_manager._last_hero_boundary_action_monotonic = time.monotonic() - 0.2
+    game_state = _state_with_player("3")
+    hero_check = ActionRecord(seat=1, action="CHECK", amount=0, confidence="high")
+    game_state.actions_since_last_frame = [hero_check]
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        loop._process_fold_badge_detection(game_state, {1: True})
+
+    current_street = loop._hand_manager.get_current_street_actions()
+    assert current_street is not None
+    assert current_street.actions == [
+        ActionRecord(seat=1, action="FOLD", amount=0, confidence="high")
+    ]
+    assert loop._hand_manager.hero_folded is True
+    assert 1 not in loop._hand_manager.get_players_in_hand()
+    assert loop._cached_hero_cards is None
+    assert loop._hero_fold_badge_ignored_for_hand is False
+    assert game_state.actions_since_last_frame == [hero_check]
+    assert "Hero FOLD recovered from CHECK via fold badge" in caplog.text
+
+
+def test_fold_badge_detection_does_not_recover_check_during_obstruction(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Visual obstruction keeps Hero fold-badge recovery disabled."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    start_state = create_empty_game_state()
+    start_state.hero.cards = ["Ah", "Kd"]
+    start_state.hero.cards_visible = True
+    loop._hand_manager.process_frame(start_state)
+    loop._hand_manager._players_in_hand = {"1": True}
+    loop._visual_obstruction_active = True
+    loop._visual_obstruction_until = time.monotonic() + 10.0
+    check = ActionRecord(seat=1, action="CHECK", amount=0)
+    loop._hand_manager._record_hero_action(check)
+    game_state = create_empty_game_state()
+    game_state.actions_since_last_frame = [
+        ActionRecord(seat=1, action="CHECK", amount=0, confidence="high")
+    ]
+
+    loop._process_fold_badge_detection(game_state, {1: True})
+
+    current_street = loop._hand_manager.get_current_street_actions()
+    assert current_street is not None
+    assert current_street.actions == [check]
+    assert loop._hand_manager.hero_folded is False
+    assert loop._hero_fold_badge_ignored_for_hand is False
+
+
+@pytest.mark.parametrize("action_name", ["CALL", "BET", "RAISE", "ALL_IN"])
+def test_fold_badge_detection_keeps_non_check_hero_action_ignore(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    action_name: str,
+) -> None:
+    """CALL/BET/RAISE/ALL_IN still ignore contradictory Hero fold badges."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True}
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    game_state = create_empty_game_state()
+    hero_action = ActionRecord(
+        seat=1,
+        action=action_name,
+        amount=100,
+        confidence="high",
+    )
+    game_state.actions_since_last_frame = [hero_action]
+
+    loop._process_fold_badge_detection(game_state, {1: True})
+
+    assert game_state.actions_since_last_frame == [hero_action]
+    assert loop._hand_manager.hero_folded is False
+    assert loop._cached_hero_cards == ["Ah", "Kd"]
+    assert loop._hero_fold_badge_ignored_for_hand is True
+
+
 def test_fold_badge_detection_latched_hero_ignore_survives_recent_guard(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

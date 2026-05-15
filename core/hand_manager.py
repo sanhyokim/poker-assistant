@@ -815,6 +815,58 @@ class HandManager:
 
         self._last_frame_actions = accepted_actions
 
+    def replace_recent_hero_check_with_fold(self, *, max_age_sec: float = 1.5) -> bool:
+        """Replace a very recent Hero CHECK with a fold-badge confirmed FOLD."""
+        if self._last_hero_action is None:
+            return False
+        if self._last_hero_action.action.upper() != "CHECK":
+            return False
+        if self._last_hero_boundary_action_monotonic is None:
+            return False
+
+        age = time.monotonic() - self._last_hero_boundary_action_monotonic
+        if age > max_age_sec:
+            return False
+
+        street_actions = self.get_current_street_actions()
+        street = self._get_current_street_name() if street_actions is not None else None
+        if street_actions is None:
+            return False
+
+        street_index = self._find_recent_hero_check_index(street_actions.actions)
+        if street_index is None:
+            return False
+        all_index = self._find_recent_hero_check_index(self._all_actions)
+        if all_index is None:
+            return False
+
+        fold_action = ActionRecord(
+            seat=1,
+            action="FOLD",
+            amount=0,
+            confidence="high",
+        )
+        street_actions.actions[street_index] = fold_action
+        self._all_actions[all_index] = fold_action
+        street_actions.human_action = "FOLD"
+        if street_actions.recommendation is not None:
+            street_actions.followed_recommendation = self._check_recommendation_followed(
+                street_actions.recommendation,
+                fold_action,
+            )
+        self._last_hero_action = fold_action
+        self._hero_folded = True
+        self._players_in_hand["1"] = False
+        self._folded_seats.add("1")
+        self._participated_seats.add("1")
+        logger.info(
+            "Hero recent CHECK replaced with FOLD via fold badge: "
+            "age=%.2fs street=%s",
+            age,
+            street,
+        )
+        return True
+
     def _try_replace_recent_hero_check(self, action: ActionRecord) -> bool:
         """Replace a very recent boundary CHECK with a delayed Hero action."""
         action_name = action.action.upper()
