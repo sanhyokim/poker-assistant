@@ -206,6 +206,48 @@ def stat_action(seat: int, action: str, street: str, amount: int = 0) -> dict:
 class TestPhaseTransitions:
     """Tests for lifecycle phase transitions."""
 
+    def test_abandon_current_active_hand_does_not_save_db_or_replay(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """Abandoning an active hand discards it without DB or replay output."""
+        db_path = tmp_path / "hands.sqlite3"
+        replay_dir = tmp_path / "replays"
+        manager = HandManager(
+            {
+                "capture": {"polling_interval_sec": 0.5},
+                "game": {"blind_sb": 50, "blind_bb": 100},
+                "db": {"path": str(db_path)},
+                "replay": {"base_dir": str(replay_dir)},
+            },
+            db_path=str(db_path),
+        )
+        start_hand(manager)
+        manager._add_actions([ActionRecord(seat=2, action="CALL", amount=100)])
+
+        abandoned = manager.abandon_current_hand("user_stop")
+
+        assert abandoned is True
+        assert manager.phase == "waiting"
+        assert manager.hand_id is None
+        with sqlite3.connect(db_path) as conn:
+            count = conn.execute("SELECT COUNT(*) FROM hand_history").fetchone()[0]
+        assert count == 0
+        assert list(replay_dir.rglob("*.json")) == []
+        manager.close()
+
+    def test_abandon_current_hand_waiting_is_noop(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Abandoning while waiting does nothing and does not save."""
+        abandoned = manager.abandon_current_hand("user_stop")
+
+        assert abandoned is False
+        assert manager.phase == "waiting"
+        assert manager.hand_id is None
+        assert manager.last_saved_hand_id is None
+
     def test_empty_hero_cards_do_not_start_hand(
         self,
         manager: HandManager,

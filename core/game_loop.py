@@ -181,7 +181,7 @@ class GameLoop:
             if sleep_time > 0:
                 time.sleep(sleep_time)
 
-    def stop(self) -> None:
+    def stop(self, reason: str = "user_stop") -> None:
         """Request polling loop stop."""
         self._running = False
         self._cached_player_names = {}
@@ -195,6 +195,7 @@ class GameLoop:
         self._hero_fold_badge_ignored_for_hand = False
         self._hero_fold_badge_ignored_reason = None
         self._notify_hud(None)
+        self._abandon_active_hand(reason)
 
         if self._recommendation_engine is not None:
             solver_bridge = self._recommendation_engine.solver_bridge
@@ -566,7 +567,28 @@ class GameLoop:
             max_attempts,
         )
         self._capture_failed = True
-        self.stop()
+        self.stop(reason="capture_lost")
+
+    def _abandon_active_hand(self, reason: str) -> bool:
+        """Abandon an active hand and clear strategy/HUD state."""
+        if self._hand_manager is None:
+            return False
+        try:
+            abandoned = self._hand_manager.abandon_current_hand(reason)
+        except Exception:
+            logger.warning("HandManager abandon failed: reason=%s", reason, exc_info=True)
+            return False
+
+        if not abandoned:
+            return False
+
+        self._previous_recommendation = None
+        self._previous_recommendation_context = None
+        self._clear_pending_state()
+        self._last_recommendation_log = None
+        self._last_strategy_is_my_turn = False
+        self._notify_hud(None)
+        return True
 
     def _handle_strategy(self, game_state: GameState) -> None:
         """Manage strategy calculation on hero's turn only."""
@@ -2640,6 +2662,28 @@ class GameLoop:
                 game_state.pot,
                 fresh_dealer_detected,
             )
+            if not self._table_visible:
+                self._abandon_active_hand_for_invisible_table()
+
+    def _abandon_active_hand_for_invisible_table(self) -> None:
+        """Abandon active hand after table invisibility has been confirmed."""
+        if self._hand_manager is None:
+            return
+        phase = self._hand_manager.phase
+        if phase not in {"preflop", "flop", "turn", "river"}:
+            return
+        if self._is_visual_obstruction_protected():
+            return
+
+        hand_id = self._hand_manager.hand_id
+        logger.info(
+            "Active hand abandoned because table became invisible: hand_id=%s "
+            "phase=%s inactive_streak=%d",
+            hand_id,
+            phase,
+            self._table_inactive_streak,
+        )
+        self._abandon_active_hand("table_invisible")
 
     def _clear_players_for_inactive_table(self, game_state: GameState) -> None:
         """Clear stale player OCR values when the table is not visible."""

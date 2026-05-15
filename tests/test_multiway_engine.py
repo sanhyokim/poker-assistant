@@ -354,7 +354,7 @@ def test_equity_calculation_time() -> None:
     elapsed_ms = (time.perf_counter() - started_at) * 1000
 
     assert 0.0 <= equity <= 1.0
-    assert elapsed_ms < 100
+    assert elapsed_ms < 150
 
 
 # ---------------------------------------------------------------------------

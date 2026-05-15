@@ -202,6 +202,39 @@ def test_game_loop_instantiates(
     assert loop._prev_state is None
 
 
+def test_stop_abandons_active_hand_before_close(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """stop() abandons an active hand before closing HandManager."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    hand_manager = MagicMock()
+    hand_manager.abandon_current_hand.return_value = True
+    loop._hand_manager = hand_manager
+
+    loop.stop()
+
+    hand_manager.abandon_current_hand.assert_called_once_with("user_stop")
+    hand_manager.close.assert_called_once()
+
+
+def test_capture_lost_stop_uses_capture_lost_reason(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Capture failure beyond reconnect limit stops with capture_lost reason."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._consecutive_capture_failures = int(
+        loop._config.get("capture", {}).get("max_reconnect_attempts", 3)
+    )
+    loop.stop = MagicMock()  # type: ignore[method-assign]
+
+    loop._handle_capture_failure()
+
+    loop.stop.assert_called_once_with(reason="capture_lost")
+    assert loop.capture_failed is True
+
+
 def test_process_one_frame_returns_game_state(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1197,6 +1230,35 @@ def test_table_visibility_inactive_confirm_frames_clear_visible_state(
         loop._update_table_visibility(inactive_state, fresh_dealer_detected=False)
 
     assert inactive_state.table_visible is False
+
+
+def test_table_invisible_confirm_abandons_active_hand_and_clears_strategy(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Confirmed table invisibility abandons an active hand without saving."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._hand_id = 5
+    loop._hand_manager.abandon_current_hand = MagicMock(return_value=True)  # type: ignore[method-assign]
+    hud_callback = MagicMock()
+    loop._hud_callback = hud_callback
+    loop._previous_recommendation = Recommendation(action="BET", amount=100)
+    loop._previous_recommendation_context = {"hand_id": 5}
+    loop._last_recommendation_log = (5, "flop", True)
+    loop._last_strategy_is_my_turn = True
+    loop._table_visible = True
+
+    for _ in range(loop._table_inactive_confirm_frames):
+        inactive_state = create_empty_game_state()
+        loop._update_table_visibility(inactive_state, fresh_dealer_detected=False)
+
+    loop._hand_manager.abandon_current_hand.assert_called_once_with("table_invisible")
+    assert loop._previous_recommendation is None
+    assert loop._previous_recommendation_context is None
+    assert loop._last_recommendation_log is None
+    assert loop._last_strategy_is_my_turn is False
+    hud_callback.assert_called_with(None)
 
 
 def test_clear_players_for_inactive_table_clears_stale_state(

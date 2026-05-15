@@ -206,6 +206,36 @@ class HandManager:
         finally:
             self._db_conn = None
 
+    def abandon_current_hand(self, reason: str) -> bool:
+        """Discard the current active hand without saving DB/replay/stats.
+
+        Args:
+            reason: Short machine-readable reason for abandoning the hand.
+
+        Returns:
+            True if an active hand was discarded, False otherwise.
+        """
+        if self._phase not in self._ACTIVE_PHASES:
+            logger.info(
+                "No active hand to abandon: phase=%s reason=%s",
+                self._phase,
+                reason,
+            )
+            return False
+
+        hand_id = self._hand_id
+        phase = self._phase
+        logger.info(
+            "Hand %s abandoned without saving: reason=%s phase=%s",
+            hand_id,
+            reason,
+            phase,
+        )
+        self._phase = "waiting"
+        self._hand_id = None
+        self._clear_current_hand_state()
+        return True
+
     def _cleanup_old_replays(self) -> None:
         """Remove dated replay directories older than retention_days."""
         import shutil
