@@ -802,6 +802,81 @@ def test_bb_limp_call_button_converted_to_check(
     assert "FOLD -> CHECK conversion: hero_bet(100) >= max_bet(100)" in caplog.text
 
 
+def test_zero_cost_call_recommendation_converted_to_check(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """CALL recommendations become CHECK when Hero already matched max bet."""
+    engine = make_engine()
+    engine.preflop_chart.get_scenario.return_value = "BB_limp"
+    engine.preflop_chart.get_recommendation.return_value = {
+        "action": "call",
+        "amount": 100,
+        "confidence": "medium",
+        "source": "preflop_chart",
+    }
+    state = make_state(phase="preflop", active_player_count=6)
+    state.buttons = ButtonState(call_or_check="call")
+    state.hero.bet = 100
+    state.players["2"].bet = 100
+    state.players["3"].bet = 100
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(state)
+
+    assert recommendation.action == "CHECK"
+    assert recommendation.amount == 0
+    assert recommendation.amount_bb is None
+    assert recommendation.pot_percentage is None
+    assert recommendation.preset_hint is None
+    assert recommendation.raise_multiplier is None
+    assert recommendation.raise_multiplier_label is None
+    assert "CALL -> CHECK conversion: hero_bet(100) >= max_bet(100)" in caplog.text
+
+
+def test_call_recommendation_kept_when_additional_cost_exists() -> None:
+    """CALL recommendations remain CALL when Hero owes more chips."""
+    engine = make_engine()
+    engine.preflop_chart.get_scenario.return_value = "vs_raise"
+    engine.preflop_chart.get_recommendation.return_value = {
+        "action": "call",
+        "amount": 300,
+        "confidence": "medium",
+        "source": "preflop_chart",
+    }
+    state = make_state(phase="preflop", active_player_count=6)
+    state.buttons = ButtonState(call_or_check="call")
+    state.hero.bet = 100
+    state.players["2"].bet = 300
+
+    recommendation = engine.generate(state)
+
+    assert recommendation.action == "CALL"
+    assert recommendation.amount == 300
+
+
+@pytest.mark.parametrize("action_name", ["BET", "RAISE", "ALL_IN"])
+def test_non_call_sized_recommendations_ignore_zero_cost_call_constraint(
+    action_name: str,
+) -> None:
+    """BET/RAISE/ALL_IN recommendations are not affected by CALL constraints."""
+    engine = make_engine()
+    engine.preflop_chart.get_scenario.return_value = "sized_action"
+    engine.preflop_chart.get_recommendation.return_value = {
+        "action": action_name.lower(),
+        "amount": 300,
+        "confidence": "medium",
+        "source": "preflop_chart",
+    }
+    state = make_state(phase="preflop", active_player_count=6)
+    state.buttons = ButtonState(call_or_check="call")
+    state.hero.bet = 100
+    state.players["2"].bet = 100
+
+    recommendation = engine.generate(state)
+
+    assert recommendation.action == action_name
+
+
 def test_fold_stays_fold_when_hero_owes_more_chips() -> None:
     """FOLD remains valid when opponent max bet is greater than hero bet."""
     engine = make_engine()

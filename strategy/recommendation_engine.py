@@ -757,7 +757,23 @@ class RecommendationEngine:
         hero_bet = self._player_bet(getattr(game_state, "hero", None))
         max_opponent_bet = self._get_max_opponent_bet(game_state)
 
-        if recommendation.action not in {"FOLD", "CHECK"}:
+        if recommendation.action not in {"FOLD", "CHECK", "CALL"}:
+            return recommendation
+
+        if (
+            recommendation.action == "CALL"
+            and call_or_check == "call"
+            and hero_bet > 0
+            and max_opponent_bet > 0
+            and hero_bet >= max_opponent_bet
+        ):
+            self.logger.info(
+                "CALL -> CHECK conversion: hero_bet(%s) >= max_bet(%s), "
+                "no additional cost",
+                hero_bet,
+                max_opponent_bet,
+            )
+            self._convert_to_check(recommendation)
             return recommendation
 
         if recommendation.action == "FOLD" and call_or_check == "check":
