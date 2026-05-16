@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from capture.file_capture import FileCapture
-from core.game_loop import GameLoop
+from core.game_loop import GameLoop, _AsyncRecommendationResult
 from core.game_state import ActionRecord, PlayerState, create_empty_game_state
 from core.hand_manager import HandManager
 from strategy.recommendation_engine import Recommendation
@@ -2650,6 +2650,91 @@ def test_strategy_deferred_during_pot_spike_hold(
     assert loop._previous_recommendation_context is None
     assert loop._pending_recommendation_active_id is None
     computing_callback.assert_called_once_with("WAITING FOR STABLE POT...")
+
+
+def test_async_recommendation_accepted_logs_details(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Async accepted logs include source, action, reason, and latency."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    recommendation = Recommendation(
+        action="BET",
+        amount=120,
+        reason="solver value bet",
+        confidence="high",
+        strategy_source="solver",
+        latency_breakdown={"solver_ms": 12.0},
+    )
+    state = create_empty_game_state()
+    state.hand_id = 3
+    state.phase = "flop"
+    monkeypatch.setattr(
+        loop,
+        "_is_recommendation_context_still_valid",
+        lambda _ctx, _state: True,
+    )
+    loop._pending_recommendation_active_id = 9
+    loop._pending_recommendation_context = {"hand_id": 3}
+    loop._pending_recommendation_completed[9] = _AsyncRecommendationResult(
+        request_id=9,
+        recommendation=recommendation,
+    )
+
+    result = loop._poll_async_recommendation_result(state)
+
+    assert result is recommendation
+    assert "Async recommendation accepted: request_id=9" in caplog.text
+    assert "hand_id=3" in caplog.text
+    assert "phase=flop" in caplog.text
+    assert "source=solver" in caplog.text
+    assert "action=BET" in caplog.text
+    assert "amount=120" in caplog.text
+    assert "reason=solver value bet" in caplog.text
+    assert "latency={'solver_ms': 12.0}" in caplog.text
+
+
+def test_async_fallback_recommendation_accepted_logs_warning(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Accepted fallback async recommendations emit a warning with reason."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    recommendation = Recommendation(
+        action="CHECK",
+        amount=0,
+        reason="Solver request unavailable",
+        confidence="low",
+        strategy_source="fallback",
+        latency_breakdown={"headsup_total_ms": 25.0},
+    )
+    state = create_empty_game_state()
+    state.hand_id = 4
+    state.phase = "turn"
+    monkeypatch.setattr(
+        loop,
+        "_is_recommendation_context_still_valid",
+        lambda _ctx, _state: True,
+    )
+    loop._pending_recommendation_active_id = 10
+    loop._pending_recommendation_context = {"hand_id": 4}
+    loop._pending_recommendation_completed[10] = _AsyncRecommendationResult(
+        request_id=10,
+        recommendation=recommendation,
+    )
+
+    result = loop._poll_async_recommendation_result(state)
+
+    assert result is recommendation
+    assert "Async recommendation accepted: request_id=10" in caplog.text
+    assert "source=fallback" in caplog.text
+    assert "Async fallback recommendation accepted: request_id=10" in caplog.text
+    assert "reason=Solver request unavailable" in caplog.text
+    assert "latency={'headsup_total_ms': 25.0}" in caplog.text
 
 
 def test_active_hero_card_single_mismatch_does_not_abandon(

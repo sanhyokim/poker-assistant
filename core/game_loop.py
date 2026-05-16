@@ -1810,11 +1810,28 @@ class GameLoop:
             return None
 
         logger.info(
-            "Async recommendation accepted: request_id=%d action=%s source=%s",
+            "Async recommendation accepted: request_id=%s hand_id=%s phase=%s "
+            "source=%s action=%s amount=%s confidence=%s reason=%s latency=%s",
             active_id,
-            result.action,
+            current_state.hand_id,
+            current_state.phase,
             result.strategy_source,
+            result.action,
+            result.amount,
+            result.confidence,
+            result.reason[:160],
+            result.latency_breakdown,
         )
+        if result.strategy_source == "fallback":
+            logger.warning(
+                "Async fallback recommendation accepted: request_id=%s hand_id=%s "
+                "phase=%s reason=%s latency=%s",
+                active_id,
+                current_state.hand_id,
+                current_state.phase,
+                result.reason,
+                result.latency_breakdown,
+            )
         with self._pending_recommendation_lock:
             self._finish_async_request_locked(active_id)
         return result

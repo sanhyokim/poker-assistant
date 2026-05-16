@@ -265,6 +265,18 @@ class RecommendationEngine:
         started_at = time.perf_counter()
         latency: dict[str, float] = {}
         if self.solver_bridge is None or getattr(self.solver_bridge, "disabled", False):
+            logger.info(
+                "HU solver fallback reason=solver_unavailable phase=%s hand_id=%s "
+                "solver_bridge_none=%s solver_disabled=%s",
+                game_state.phase,
+                game_state.hand_id,
+                self.solver_bridge is None,
+                (
+                    bool(getattr(self.solver_bridge, "disabled", False))
+                    if self.solver_bridge is not None
+                    else None
+                ),
+            )
             return self._llm_headsup_fallback(
                 game_state,
                 opponent_stats,
@@ -297,6 +309,25 @@ class RecommendationEngine:
         )
         latency["request_build_ms"] = self._elapsed_ms(request_started)
         if request is None:
+            logger.info(
+                "HU solver fallback reason=request_unavailable phase=%s hand_id=%s "
+                "hero_cards=%s board=%s pot=%s active=%s "
+                "current_street_actions=%s preflop_actions=%s",
+                game_state.phase,
+                game_state.hand_id,
+                game_state.hero.cards,
+                game_state.board,
+                game_state.pot,
+                game_state.active_player_count,
+                [
+                    {"seat": a.seat, "action": a.action, "amount": a.amount}
+                    for a in getattr(game_state, "current_street_actions", [])
+                ],
+                [
+                    {"seat": a.seat, "action": a.action, "amount": a.amount}
+                    for a in getattr(game_state, "preflop_actions", [])
+                ],
+            )
             return self._llm_headsup_fallback(
                 game_state,
                 opponent_stats,
@@ -336,6 +367,18 @@ class RecommendationEngine:
                 bridge_timeout_sec,
                 solver_output.get("error", "Solver failed"),
             )
+            logger.info(
+                "HU solver fallback reason=solver_failed phase=%s hand_id=%s "
+                "elapsed_ms=%.0f timeout_ms=%d bridge_timeout_sec=%.1f error=%s "
+                "solver_output_keys=%s",
+                game_state.phase,
+                game_state.hand_id,
+                latency["solver_ms"],
+                timeout_ms,
+                bridge_timeout_sec,
+                solver_output.get("error", "Solver failed"),
+                sorted(solver_output.keys()),
+            )
             return self._llm_headsup_fallback(
                 game_state,
                 opponent_stats,
@@ -354,11 +397,51 @@ class RecommendationEngine:
         )
 
         parse_started = time.perf_counter()
-        action, amount, probabilities = self._parse_solver_strategy(
-            solver_output,
-            game_state,
+        try:
+            action, amount, probabilities = self._parse_solver_strategy(
+                solver_output,
+                game_state,
+            )
+            latency["solver_parse_ms"] = self._elapsed_ms(parse_started)
+        except Exception as exc:
+            latency["solver_parse_ms"] = self._elapsed_ms(parse_started)
+            logger.exception(
+                "HU solver fallback reason=parse_exception phase=%s hand_id=%s "
+                "elapsed_ms=%.0f error=%s solver_output_keys=%s",
+                game_state.phase,
+                game_state.hand_id,
+                latency["solver_parse_ms"],
+                exc,
+                sorted(solver_output.keys()),
+            )
+            return self._llm_headsup_fallback(
+                game_state,
+                opponent_stats,
+                f"Solver parse exception: {exc}",
+                latency,
+                started_at,
+            )
+        logger.info(
+            "HU solver parse result: phase=%s hand_id=%s action=%s amount=%s "
+            "probability_keys=%s probabilities=%s",
+            game_state.phase,
+            game_state.hand_id,
+            action,
+            amount,
+            sorted(probabilities.keys()) if isinstance(probabilities, dict) else None,
+            probabilities,
         )
-        latency["solver_parse_ms"] = self._elapsed_ms(parse_started)
+        if not action or not probabilities:
+            logger.warning(
+                "HU solver suspicious parse result: phase=%s hand_id=%s "
+                "action=%s amount=%s probabilities=%s solver_output_keys=%s",
+                game_state.phase,
+                game_state.hand_id,
+                action,
+                amount,
+                probabilities,
+                sorted(solver_output.keys()),
+            )
 
         reason = "HU solver recommendation"
         latency["exploit_adjustment_ms"] = 0.0
@@ -1082,6 +1165,16 @@ class RecommendationEngine:
         fallback = self._generate_fallback(game_state, reason)
         first_stats = self._first_stats(opponent_stats)
         usable_stats = self._has_usable_stats(first_stats)
+        logger.info(
+            "HU fallback entered: phase=%s hand_id=%s reason=%s "
+            "usable_stats=%s total_hands=%s latency=%s",
+            game_state.phase,
+            game_state.hand_id,
+            reason,
+            usable_stats,
+            first_stats.get("total_hands") if first_stats else None,
+            latency,
+        )
         latency.setdefault("range_estimation_ms", 0.0)
         latency.setdefault("reason_generation_ms", 0.0)
         latency["exploit_adjustment_ms"] = 0.0

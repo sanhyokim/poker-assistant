@@ -1177,6 +1177,7 @@ def test_headsup_solver_timeout_from_request(
     assert "timeout_ms=20000" in caplog.text
     assert "bridge_timeout_sec=22.0" in caplog.text
     assert "HU solver success" in caplog.text
+    assert "HU solver parse result" in caplog.text
 
 
 def test_headsup_solver_timeout_default_when_missing(
@@ -1238,7 +1239,70 @@ def test_headsup_solver_failure_uses_correct_timeout(
     assert "timeout_ms=20000" in caplog.text
     assert "bridge_timeout_sec=22.0" in caplog.text
     assert "HU solver failed" in caplog.text
+    assert "HU solver fallback reason=solver_failed" in caplog.text
     assert "Solver timeout" in caplog.text
+    assert "error=Solver timeout" in caplog.text
+
+
+def test_headsup_solver_unavailable_logs_fallback_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Missing solver bridge logs the solver_unavailable reason."""
+    engine = make_engine()
+    engine.solver_bridge = None
+    state = make_state(phase="flop", active_player_count=2)
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "fallback"
+    assert "HU solver fallback reason=solver_unavailable" in caplog.text
+    assert "HU fallback entered" in caplog.text
+    assert "reason=Solver unavailable" in caplog.text
+
+
+def test_headsup_solver_request_unavailable_logs_fallback_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Missing solver request logs request context before fallback."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 8
+    engine.solver_request_builder.build_request.return_value = None
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "fallback"
+    assert "HU solver fallback reason=request_unavailable" in caplog.text
+    assert "hand_id=8" in caplog.text
+    assert "reason=Solver request unavailable" in caplog.text
+
+
+def test_headsup_solver_parse_exception_logs_fallback_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Solver parse exceptions are logged with a parse_exception reason."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    engine.solver_request_builder.build_request.return_value = {"board": "Td7c2h"}
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {"actions": ["Check"], "average_strategy": {"Check": 1.0}},
+    }
+
+    def raise_parse(_solver_output: dict, _state: GameState) -> tuple[str, int, dict]:
+        raise ValueError("parse boom")
+
+    monkeypatch.setattr(engine, "_parse_solver_strategy", raise_parse)
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "fallback"
+    assert "HU solver fallback reason=parse_exception" in caplog.text
+    assert "parse boom" in caplog.text
 
 
 def test_generate_postflop_headsup_uses_exploit_only_with_usable_stats() -> None:
