@@ -154,6 +154,7 @@ class GameLoop:
         self._previous_recommendation: Recommendation | None = None
         self._previous_recommendation_context: dict[str, object] | None = None
         self._last_strategy_phase: str | None = None
+        self._suspicious_amount_guard_until: float = 0.0
         self._last_hero_non_fold_action_time: float | None = None
         self._last_hero_non_fold_action_name: str | None = None
         self._hero_fold_badge_ignored_for_hand: bool = False
@@ -218,7 +219,7 @@ class GameLoop:
             game_state.actions_since_last_frame,
         )
         game_state.actions_since_last_frame = (
-            self._filter_suspicious_preflop_amount_actions(
+            self._filter_suspicious_amount_actions(
                 game_state,
                 game_state.actions_since_last_frame,
             )
@@ -247,26 +248,32 @@ class GameLoop:
             filtered.append(action)
         return filtered
 
-    def _filter_suspicious_preflop_amount_actions(
+    def _filter_suspicious_amount_actions(
         self,
         game_state: GameState,
         actions: list[ActionRecord],
     ) -> list[ActionRecord]:
-        """Drop implausible preflop amount actions before hand processing."""
+        """Drop implausible amount actions before hand processing."""
         phase = game_state.phase
-        if phase != "preflop" and self._hand_manager is not None:
+        active_phases = {"preflop", "flop", "turn", "river"}
+        if phase not in active_phases and self._hand_manager is not None:
             phase = self._hand_manager.phase
-        if phase != "preflop":
+        if phase not in active_phases:
             return actions
 
         blind_bb = self._blind_bb()
-        spike_threshold = self._preflop_spike_action_threshold(blind_bb)
+        preflop_spike_threshold = self._preflop_spike_action_threshold(blind_bb)
+        postflop_spike_threshold = self._postflop_spike_action_threshold(
+            blind_bb,
+            game_state.pot,
+        )
         absolute_threshold = self._max_reasonable_preflop_action_amount(blind_bb)
         known_max_stack = self._known_max_stack(game_state)
         spike_context = game_state.strategy_defer_reason in {
             "pot_spike_hold",
             "suspicious_pot_spike",
         }
+        recovery_context = self._is_suspicious_amount_guard_active()
         filtered: list[ActionRecord] = []
 
         for action in actions:
@@ -275,7 +282,11 @@ class GameLoop:
                 filtered.append(action)
                 continue
 
-            if action_name in {"BET", "RAISE", "ALL_IN"} and action.amount <= 0:
+            if (
+                phase == "preflop"
+                and action_name in {"BET", "RAISE", "ALL_IN"}
+                and action.amount <= 0
+            ):
                 logger.warning(
                     "Ignored invalid preflop action amount: hand_id=%s phase=%s "
                     "seat=%s action=%s amount=%s pot=%s blind_bb=%s reason=%s",
@@ -290,7 +301,11 @@ class GameLoop:
                 )
                 continue
 
-            if spike_context and action.amount >= spike_threshold:
+            if (
+                phase == "preflop"
+                and spike_context
+                and action.amount >= preflop_spike_threshold
+            ):
                 logger.warning(
                     "Ignored suspicious preflop action during pot spike hold: "
                     "hand_id=%s phase=%s seat=%s action=%s amount=%s pot=%s "
@@ -306,7 +321,43 @@ class GameLoop:
                 )
                 continue
 
-            if action.amount >= absolute_threshold:
+            if phase in {"flop", "turn", "river"}:
+                if spike_context and action.amount >= postflop_spike_threshold:
+                    logger.warning(
+                        "Ignored suspicious postflop action during pot spike hold: "
+                        "hand_id=%s phase=%s seat=%s action=%s amount=%s pot=%s "
+                        "blind_bb=%s strategy_defer_reason=%s",
+                        game_state.hand_id,
+                        phase,
+                        action.seat,
+                        action.action,
+                        action.amount,
+                        game_state.pot,
+                        blind_bb,
+                        game_state.strategy_defer_reason,
+                    )
+                    continue
+                if recovery_context and action.amount >= blind_bb * 50:
+                    logger.warning(
+                        "Ignored suspicious postflop action during pot spike recovery: "
+                        "hand_id=%s phase=%s seat=%s action=%s amount=%s pot=%s "
+                        "blind_bb=%s guard_remaining_ms=%.0f",
+                        game_state.hand_id,
+                        phase,
+                        action.seat,
+                        action.action,
+                        action.amount,
+                        game_state.pot,
+                        blind_bb,
+                        max(
+                            0.0,
+                            self._suspicious_amount_guard_until - time.monotonic(),
+                        )
+                        * 1000.0,
+                    )
+                    continue
+
+            if phase == "preflop" and action.amount >= absolute_threshold:
                 logger.warning(
                     "Ignored invalid preflop action amount: hand_id=%s phase=%s "
                     "seat=%s action=%s amount=%s pot=%s blind_bb=%s reason=%s",
@@ -321,7 +372,11 @@ class GameLoop:
                 )
                 continue
 
-            if known_max_stack is not None and action.amount > known_max_stack * 1.2:
+            if (
+                phase == "preflop"
+                and known_max_stack is not None
+                and action.amount > known_max_stack * 1.2
+            ):
                 logger.warning(
                     "Ignored invalid preflop action amount: hand_id=%s phase=%s "
                     "seat=%s action=%s amount=%s pot=%s blind_bb=%s "
@@ -356,6 +411,11 @@ class GameLoop:
             )
         )
 
+    @staticmethod
+    def _postflop_spike_action_threshold(blind_bb: int, pot: int) -> int:
+        """Return the postflop pot-spike-context amount threshold."""
+        return max(blind_bb * 50, pot * 5)
+
     def _max_reasonable_preflop_action_amount(self, blind_bb: int) -> int:
         """Return the absolute preflop amount guardrail."""
         recognition_config = self._config.get("recognition", {})
@@ -378,6 +438,23 @@ class GameLoop:
         if not stack_values:
             return None
         return max(stack_values)
+
+    def _is_suspicious_amount_guard_active(self) -> bool:
+        """Return whether recent pot-spike frames should still guard actions."""
+        return time.monotonic() < self._suspicious_amount_guard_until
+
+    def _extend_suspicious_amount_guard(self) -> None:
+        """Keep amount filtering active briefly after a pot-spike hold frame."""
+        hold_sec = float(
+            self._config.get("recognition", {}).get(
+                "suspicious_amount_recovery_sec",
+                1.0,
+            )
+        )
+        self._suspicious_amount_guard_until = max(
+            self._suspicious_amount_guard_until,
+            time.monotonic() + hold_sec,
+        )
 
     def stop(self, reason: str = "user_stop") -> None:
         """Request polling loop stop."""
@@ -520,8 +597,10 @@ class GameLoop:
                 game_state.pot = filtered_pot
             if estimation.get("pot_spike_hold"):
                 game_state.strategy_defer_reason = "pot_spike_hold"
+                self._extend_suspicious_amount_guard()
             if estimation.get("suspicious_pot_spike"):
                 game_state.strategy_defer_reason = "suspicious_pot_spike"
+                self._extend_suspicious_amount_guard()
         else:
             game_state.game_event = None
             game_state.actions_since_last_frame = []

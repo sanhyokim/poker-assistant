@@ -804,6 +804,18 @@ class HandManager:
                     self._blind_bb(),
                 )
                 continue
+            if self._is_invalid_postflop_action_amount(action):
+                logger.warning(
+                    "Ignored invalid postflop action amount: hand_id=%s phase=%s "
+                    "seat=%s action=%s amount=%s blind_bb=%s",
+                    self._hand_id,
+                    self._phase,
+                    action.seat,
+                    action.action,
+                    action.amount,
+                    self._blind_bb(),
+                )
+                continue
             if (
                 not allow_hero_boundary_actions
                 and action.seat == 1
@@ -857,6 +869,14 @@ class HandManager:
         if action.action.upper() not in {"BET", "RAISE", "ALL_IN", "CALL"}:
             return False
         return action.amount >= self._blind_bb() * 200
+
+    def _is_invalid_postflop_action_amount(self, action: ActionRecord) -> bool:
+        """Return whether a postflop action amount is too large to persist."""
+        if self._phase not in {"flop", "turn", "river"}:
+            return False
+        if action.action.upper() not in {"BET", "RAISE", "ALL_IN", "CALL"}:
+            return False
+        return action.amount >= self._blind_bb() * 300
 
     def _blind_bb(self) -> int:
         """Return the configured big blind for action sanity checks."""

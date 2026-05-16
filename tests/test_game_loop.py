@@ -390,6 +390,146 @@ def test_process_game_state_after_frame_keeps_normal_preflop_raise(
     assert received_actions == [action]
 
 
+def test_process_game_state_after_frame_filters_huge_flop_all_in_during_pot_spike(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Huge postflop all-ins during pot-spike hold are not sent to HandManager."""
+    caplog.set_level(logging.WARNING, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    state = create_empty_game_state()
+    state.phase = "flop"
+    state.hand_id = 1
+    state.pot = 480
+    state.strategy_defer_reason = "pot_spike_hold"
+    all_in = ActionRecord(seat=3, action="ALL_IN", amount=17382, confidence="high")
+    state.actions_since_last_frame = [all_in]
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert state.actions_since_last_frame == []
+    assert received_actions == []
+    assert "Ignored suspicious postflop action during pot spike hold" in caplog.text
+
+
+def test_process_game_state_after_frame_keeps_normal_flop_bet_during_pot_spike(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normal postflop bets are preserved even while strategy is deferred."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    state = create_empty_game_state()
+    state.phase = "flop"
+    state.pot = 480
+    state.strategy_defer_reason = "pot_spike_hold"
+    action = ActionRecord(seat=3, action="BET", amount=709, confidence="high")
+    state.actions_since_last_frame = [action]
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert state.actions_since_last_frame == [action]
+    assert received_actions == [action]
+
+
+def test_process_game_state_after_frame_filters_huge_postflop_action_during_recovery(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Huge postflop actions are guarded briefly after pot-spike hold clears."""
+    caplog.set_level(logging.WARNING, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._suspicious_amount_guard_until = time.monotonic() + 1.0
+    state = create_empty_game_state()
+    state.phase = "flop"
+    state.hand_id = 1
+    state.pot = 17862
+    all_in = ActionRecord(seat=3, action="ALL_IN", amount=17382, confidence="high")
+    state.actions_since_last_frame = [all_in]
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert state.actions_since_last_frame == []
+    assert received_actions == []
+    assert "Ignored suspicious postflop action during pot spike recovery" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("phase", "action"),
+    [
+        ("turn", ActionRecord(seat=4, action="RAISE", amount=22000, confidence="high")),
+        ("river", ActionRecord(seat=5, action="CALL", amount=18000, confidence="high")),
+    ],
+)
+def test_process_game_state_after_frame_filters_huge_late_street_actions(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    phase: str,
+    action: ActionRecord,
+) -> None:
+    """Turn and river pot-spike frames drop suspicious huge amount actions."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = phase
+    state = create_empty_game_state()
+    state.phase = phase
+    state.pot = 900
+    state.strategy_defer_reason = "pot_spike_hold"
+    state.actions_since_last_frame = [action]
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert state.actions_since_last_frame == []
+    assert received_actions == []
+
+
 def test_start_uses_canonical_post_frame_processing(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

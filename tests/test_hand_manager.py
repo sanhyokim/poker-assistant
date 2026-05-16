@@ -1333,6 +1333,57 @@ class TestActionAccumulation:
         assert current_street.actions == [action]
         assert manager.get_preflop_actions() == [action]
 
+    def test_huge_postflop_amount_is_not_saved(
+        self,
+        manager: HandManager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Postflop actions at 300BB or above are rejected as implausible."""
+        caplog.set_level(logging.WARNING, logger="core.hand_manager")
+        start_hand(manager)
+        manager._phase = "flop"
+        action = ActionRecord(seat=3, action="ALL_IN", amount=30000, confidence="high")
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], actions=[action]))
+
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        assert action not in current_street.actions
+        assert action not in manager.get_all_actions()
+        assert "Ignored invalid postflop action amount" in caplog.text
+
+    def test_normal_postflop_bet_is_saved(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Regular postflop bet sizes are recorded as before."""
+        start_hand(manager)
+        manager._phase = "flop"
+        action = ActionRecord(seat=3, action="BET", amount=709, confidence="high")
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], actions=[action]))
+
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        assert current_street.actions == [action]
+        assert manager.get_all_actions() == [action]
+
+    def test_100bb_postflop_all_in_is_saved_without_pot_spike_context(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """HandManager alone does not reject plausible postflop 100BB all-ins."""
+        start_hand(manager)
+        manager._phase = "flop"
+        action = ActionRecord(seat=2, action="ALL_IN", amount=9984, confidence="high")
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], actions=[action]))
+
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        assert current_street.actions == [action]
+        assert manager.get_all_actions() == [action]
+
     def test_hero_turn_started_context_is_logged(
         self,
         manager: HandManager,
