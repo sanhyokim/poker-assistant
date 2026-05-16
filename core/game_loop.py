@@ -122,6 +122,7 @@ class GameLoop:
         self._last_detected_dealer_seat: int | None = None
         self._hand_positions: dict[int, str] | None = None
         self._hand_dealer_seat: int | None = None
+        self._hand_position_hand_id: int | None = None
         self._recommendation_engine: RecommendationEngine | None = None
 
         self._consecutive_capture_failures = 0
@@ -363,6 +364,7 @@ class GameLoop:
             self._last_ended_hero_cards = None
             self._stale_suppression_start_time = None
             self._stale_suppression_bypassed = False
+            self._clear_hand_position_lock("hand start")
             logger.debug(
                 "Fold badge and seat-card states cleared on hand start (hand_id=%s)",
                 self._hand_manager.hand_id,
@@ -412,6 +414,7 @@ class GameLoop:
         self._last_detected_dealer_seat = None
         self._hand_positions = None
         self._hand_dealer_seat = None
+        self._hand_position_hand_id = None
         self._last_waiting_log = None
         self._waiting_for_card_clear = False
         self._hero_cards_missing_since_hand_end = False
@@ -2453,51 +2456,65 @@ class GameLoop:
             )
             game_state.active_player_count = active_count
 
+    def _clear_hand_position_lock(self, reason: str) -> None:
+        if self._hand_positions is not None or self._hand_dealer_seat is not None:
+            logger.debug("Clearing locked hand positions: %s", reason)
+        self._hand_positions = None
+        self._hand_dealer_seat = None
+        self._hand_position_hand_id = None
+
     def _update_hand_position_lock(self, game_state: GameState) -> None:
-        """Lock positions once at hand start and reuse them during the hand."""
-        phase = self._hand_manager.phase
+        """Recalculate and apply locked positions from the latest hand state."""
+        phase = self._hand_manager.phase if self._hand_manager else game_state.phase
         if not game_state.table_visible:
-            if self._hand_positions is not None or self._hand_dealer_seat is not None:
-                logger.debug("Clearing locked hand positions: table not visible")
-            self._hand_positions = None
-            self._hand_dealer_seat = None
+            self._clear_hand_position_lock("table not visible")
             game_state.hero.position = None
             return
 
-        if phase in {"waiting", "hand_end"}:
-            if self._hand_positions is not None or self._hand_dealer_seat is not None:
-                logger.debug("Clearing locked hand positions: phase=%s", phase)
-            self._hand_positions = None
-            self._hand_dealer_seat = None
+        if phase not in {"preflop", "flop", "turn", "river"}:
+            self._clear_hand_position_lock(f"phase={phase}")
             game_state.hero.position = None
             return
 
         if self._hand_manager.hand_just_started:
-            active_seats = self._active_seats_for_position(game_state)
-            self._hand_dealer_seat = game_state.dealer_seat
-            self._hand_positions = calculate_positions(
-                self._hand_dealer_seat,
-                active_seats,
-            )
-            logger.info(
-                "Positions locked for hand: dealer=%s, active_seats=%s, "
-                "positions=%s",
-                self._hand_dealer_seat,
-                active_seats,
-                self._hand_positions,
-            )
+            self._clear_hand_position_lock("hand start")
 
+        dealer_seat = self._select_position_dealer_seat(game_state)
+        if dealer_seat is None:
+            game_state.hero.position = None
+            return
+
+        active_seats = self._active_seats_for_position(game_state)
+        positions = calculate_positions(dealer_seat, active_seats)
+        self._hand_dealer_seat = dealer_seat
+        self._hand_positions = positions
+        self._hand_position_hand_id = self._hand_manager.hand_id
         self._apply_locked_positions(game_state)
+        logger.info(
+            "Position lock updated: hand_id=%s dealer=%s active_seats=%s "
+            "positions=%s hero_position=%s",
+            self._hand_manager.hand_id,
+            dealer_seat,
+            active_seats,
+            positions,
+            game_state.hero.position,
+        )
 
-    @staticmethod
-    def _active_seats_for_position(game_state: GameState) -> list[int]:
+    def _select_position_dealer_seat(self, game_state: GameState) -> int | None:
+        """Return the dealer seat source used for position locking."""
+        if game_state.dealer_seat is not None:
+            return game_state.dealer_seat
+        if self._cached_dealer_seat is not None:
+            return self._cached_dealer_seat
+        return self._hand_dealer_seat
+
+    def _active_seats_for_position(self, game_state: GameState) -> list[int]:
         """Return seat numbers eligible for position assignment."""
-        active_seats = [1]
-        for seat_key, player in game_state.players.items():
-            if player.in_current_hand:
-                active_seats.append(int(seat_key))
+        players_in_hand = self._hand_manager.get_players_in_hand()
+        active_seats = [seat for seat in players_in_hand if 1 <= seat <= 6]
 
         if len(active_seats) <= 1:
+            active_seats = [1]
             for seat_key, player in game_state.players.items():
                 if player.is_seated:
                     active_seats.append(int(seat_key))
@@ -2508,8 +2525,30 @@ class GameLoop:
         """Apply locked dealer and hero position to a GameState."""
         if self._hand_positions is None:
             return
+        if self._hand_position_hand_id != self._hand_manager.hand_id:
+            self._clear_hand_position_lock("hand id mismatch")
+            return
+        if (
+            game_state.dealer_seat is not None
+            and self._hand_dealer_seat is not None
+            and game_state.dealer_seat != self._hand_dealer_seat
+        ):
+            self._clear_hand_position_lock("dealer mismatch")
+            return
         game_state.dealer_seat = self._hand_dealer_seat
-        game_state.hero.position = self._hand_positions.get(1)
+        game_state.hero.position = get_hero_position(self._hand_positions, hero_seat=1)
+        for seat in range(2, 7):
+            player = game_state.players.get(str(seat))
+            if player is not None:
+                setattr(player, "position", self._hand_positions.get(seat))
+        logger.debug(
+            "Position lock applied: hand_id=%s dealer=%s hero_position=%s "
+            "positions=%s",
+            self._hand_manager.hand_id,
+            self._hand_dealer_seat,
+            game_state.hero.position,
+            self._hand_positions,
+        )
 
     def _build_game_state(self, frame: np.ndarray, timestamp: float) -> GameState:
         """Build a GameState by running recognition modules."""
@@ -3045,7 +3084,8 @@ class GameLoop:
 
         if self._hand_positions is not None:
             self._apply_locked_positions(game_state)
-            return
+            if self._hand_positions is not None:
+                return
 
         if game_state.dealer_seat is None:
             game_state.hero.position = None

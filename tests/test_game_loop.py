@@ -1604,14 +1604,20 @@ def _make_seated_state(dealer_seat: int) -> Any:
     return game_state
 
 
+def _set_players_in_hand(loop: GameLoop, seats: set[int]) -> None:
+    """Set HandManager players-in-hand state for position tests."""
+    loop._hand_manager._players_in_hand = {str(seat): True for seat in seats}
+
+
 def test_position_locked_during_hand(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Dealer changes during a hand do not change locked hero position."""
+    """Position lock is recalculated from the latest active hand state."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "preflop"
     loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
     first_state = _make_seated_state(dealer_seat=3)
 
     loop._update_hand_position_lock(first_state)
@@ -1621,10 +1627,10 @@ def test_position_locked_during_hand(
 
     loop._hand_manager._hand_just_started = False
     next_state = _make_seated_state(dealer_seat=4)
-    loop._populate_position(next_state)
+    loop._update_hand_position_lock(next_state)
 
-    assert next_state.dealer_seat == 3
-    assert next_state.hero.position == "BB"
+    assert next_state.dealer_seat == 4
+    assert next_state.hero.position == "UTG"
 
 
 def test_position_updated_on_new_hand(
@@ -1635,6 +1641,7 @@ def test_position_updated_on_new_hand(
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "preflop"
     loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
     first_state = _make_seated_state(dealer_seat=3)
     loop._update_hand_position_lock(first_state)
 
@@ -1645,6 +1652,7 @@ def test_position_updated_on_new_hand(
 
     loop._hand_manager._phase = "preflop"
     loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
     second_state = _make_seated_state(dealer_seat=4)
     loop._update_hand_position_lock(second_state)
 
@@ -1660,6 +1668,7 @@ def test_position_cleared_on_hand_end(
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "preflop"
     loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
     active_state = _make_seated_state(dealer_seat=3)
     loop._update_hand_position_lock(active_state)
 
@@ -1671,6 +1680,113 @@ def test_position_cleared_on_hand_end(
     assert loop._hand_positions is None
     assert loop._hand_dealer_seat is None
     assert end_state.hero.position is None
+
+
+def test_position_lock_dealer_three_full_ring_sets_hero_bb(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dealer seat 3 with all seats in hand makes hero BB, not BTN."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 2
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    state = _make_seated_state(dealer_seat=3)
+
+    loop._update_hand_position_lock(state)
+
+    assert loop._hand_positions is not None
+    assert loop._hand_positions[3] == "BTN"
+    assert state.hero.position != "BTN"
+    assert state.hero.position == "BB"
+    assert getattr(state.players["3"], "position") == "BTN"
+
+
+def test_position_lock_dealer_one_full_ring_sets_hero_btn(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Dealer seat 1 with all seats in hand makes hero BTN."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 4
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    state = _make_seated_state(dealer_seat=1)
+
+    loop._update_hand_position_lock(state)
+
+    assert loop._hand_positions is not None
+    assert loop._hand_positions[1] == "BTN"
+    assert state.hero.position == "BTN"
+
+
+def test_position_lock_clears_stale_hero_btn_on_next_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stale hero BTN lock from the previous hand is not reused."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 1
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    first_state = _make_seated_state(dealer_seat=1)
+    loop._update_hand_position_lock(first_state)
+    assert first_state.hero.position == "BTN"
+
+    loop._hand_manager._hand_id = 2
+    loop._hand_manager._hand_just_started = True
+    second_state = _make_seated_state(dealer_seat=3)
+    loop._update_hand_position_lock(second_state)
+
+    assert loop._hand_dealer_seat == 3
+    assert loop._hand_positions is not None
+    assert loop._hand_positions[3] == "BTN"
+    assert second_state.hero.position == "BB"
+
+
+def test_position_lock_uses_hand_manager_phase_when_state_is_waiting(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HandManager active phase updates position even if GameState is stale."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 2
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    state = _make_seated_state(dealer_seat=3)
+    state.phase = "waiting"
+
+    loop._update_hand_position_lock(state)
+
+    assert state.hero.position == "BB"
+
+
+def test_strategy_sees_recalculated_hero_position(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Strategy handling receives the GameState after position recalculation."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 2
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    state = _make_seated_state(dealer_seat=3)
+    seen_positions: list[str | None] = []
+
+    def capture_strategy_position(game_state: Any) -> None:
+        seen_positions.append(game_state.hero.position)
+
+    monkeypatch.setattr(loop, "_handle_strategy", capture_strategy_position)
+
+    loop._update_hand_position_lock(state)
+    loop._handle_strategy(state)
+
+    assert seen_positions == ["BB"]
 
 
 def test_process_one_frame_none_capture_returns_none(
