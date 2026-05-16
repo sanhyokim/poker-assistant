@@ -1616,6 +1616,7 @@ def test_position_locked_during_hand(
     """Position lock is recalculated from the latest active hand state."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 1
     loop._hand_manager._hand_just_started = True
     _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
     first_state = _make_seated_state(dealer_seat=3)
@@ -1640,6 +1641,7 @@ def test_position_updated_on_new_hand(
     """A new hand recomputes positions from the latest dealer seat."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 1
     loop._hand_manager._hand_just_started = True
     _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
     first_state = _make_seated_state(dealer_seat=3)
@@ -1651,6 +1653,7 @@ def test_position_updated_on_new_hand(
     loop._update_hand_position_lock(waiting_state)
 
     loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 2
     loop._hand_manager._hand_just_started = True
     _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
     second_state = _make_seated_state(dealer_seat=4)
@@ -1667,6 +1670,7 @@ def test_position_cleared_on_hand_end(
     """Hand-end phases clear the locked position cache."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 1
     loop._hand_manager._hand_just_started = True
     _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
     active_state = _make_seated_state(dealer_seat=3)
@@ -1703,6 +1707,30 @@ def test_position_lock_dealer_three_full_ring_sets_hero_bb(
     assert getattr(state.players["3"], "position") == "BTN"
 
 
+def test_position_lock_update_logs_dealer_three_hero_bb(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Position lock update emits searchable INFO diagnostics."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 2
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    state = _make_seated_state(dealer_seat=3)
+
+    loop._update_hand_position_lock(state)
+
+    assert "Position lock updated" in caplog.text
+    assert "hand_id=2" in caplog.text
+    assert "dealer=3" in caplog.text
+    assert "active_seats=[1, 2, 3, 4, 5, 6]" in caplog.text
+    assert "hero_position=BB" in caplog.text
+    assert "dealer_source=game_state" in caplog.text
+
+
 def test_position_lock_dealer_one_full_ring_sets_hero_btn(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1720,6 +1748,27 @@ def test_position_lock_dealer_one_full_ring_sets_hero_btn(
     assert loop._hand_positions is not None
     assert loop._hand_positions[1] == "BTN"
     assert state.hero.position == "BTN"
+
+
+def test_position_lock_update_logs_dealer_one_hero_btn(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Dealer seat 1 emits update log with hero BTN."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 4
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    state = _make_seated_state(dealer_seat=1)
+
+    loop._update_hand_position_lock(state)
+
+    assert "Position lock updated" in caplog.text
+    assert "dealer=1" in caplog.text
+    assert "hero_position=BTN" in caplog.text
 
 
 def test_position_lock_clears_stale_hero_btn_on_next_hand(
@@ -1763,6 +1812,67 @@ def test_position_lock_uses_hand_manager_phase_when_state_is_waiting(
     loop._update_hand_position_lock(state)
 
     assert state.hero.position == "BB"
+
+
+def test_position_lock_logs_inactive_phase_skip(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Inactive phases emit a reasoned position lock skip log."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "waiting"
+    loop._hand_manager._hand_id = None
+    state = _make_seated_state(dealer_seat=3)
+    state.phase = "waiting"
+
+    loop._update_hand_position_lock(state)
+
+    assert "Position lock skipped: reason=inactive_phase" in caplog.text
+
+
+def test_position_lock_logs_no_dealer_skip(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Missing all dealer sources emits a no_dealer skip log."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 2
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    loop._cached_dealer_seat = None
+    loop._hand_dealer_seat = None
+    state = _make_seated_state(dealer_seat=3)
+    state.dealer_seat = None
+
+    loop._update_hand_position_lock(state)
+
+    assert "Position lock skipped: reason=no_dealer" in caplog.text
+    assert "dealer_source=none" in caplog.text
+
+
+def test_apply_locked_positions_logs_hero_position(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Applying an existing lock emits searchable INFO diagnostics."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 2
+    loop._hand_position_hand_id = 2
+    loop._hand_dealer_seat = 3
+    loop._hand_positions = {3: "BTN", 2: "SB", 1: "BB"}
+    state = _make_seated_state(dealer_seat=3)
+
+    loop._apply_locked_positions(state)
+
+    assert "Position lock applied" in caplog.text
+    assert "hero_position=BB" in caplog.text
 
 
 def test_strategy_sees_recalculated_hero_position(
