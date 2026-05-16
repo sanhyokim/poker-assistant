@@ -249,6 +249,46 @@ def test_process_game_state_after_frame_uses_canonical_order(
     ]
 
 
+def test_process_game_state_after_frame_filters_invalid_actions_before_manager(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Seat 0 actions are removed before HandManager receives a GameState."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    invalid_action = ActionRecord(
+        seat=0,
+        action="CHECK",
+        amount=0,
+        confidence="low",
+    )
+    valid_action = ActionRecord(
+        seat=2,
+        action="CALL",
+        amount=100,
+        confidence="high",
+    )
+    state.actions_since_last_frame = [invalid_action, valid_action]
+    received_actions: list[ActionRecord] = []
+
+    def process_frame(game_state: Any) -> None:
+        received_actions.extend(game_state.actions_since_last_frame)
+
+    monkeypatch.setattr(loop._hand_manager, "process_frame", process_frame)
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert state.actions_since_last_frame == [valid_action]
+    assert received_actions == [valid_action]
+    assert "Ignored invalid action before hand manager: seat=0" in caplog.text
+
+
 def test_start_uses_canonical_post_frame_processing(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

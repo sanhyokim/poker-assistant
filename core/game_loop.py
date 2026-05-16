@@ -214,11 +214,32 @@ class GameLoop:
         Args:
             game_state: Frame recognition result returned by process_one_frame().
         """
+        game_state.actions_since_last_frame = self._filter_invalid_actions(
+            game_state.actions_since_last_frame,
+        )
         self._hand_manager.process_frame(game_state)
         self._recover_pending_hero_fold_badge(game_state)
         self._sync_game_state_with_hand_manager(game_state)
         self._update_hand_position_lock(game_state)
         self._handle_strategy(game_state)
+
+    @staticmethod
+    def _filter_invalid_actions(actions: list[ActionRecord]) -> list[ActionRecord]:
+        """Drop actions for non-table seats before hand processing."""
+        filtered: list[ActionRecord] = []
+        for action in actions:
+            if action.seat < 1 or action.seat > 6:
+                logger.info(
+                    "Ignored invalid action before hand manager: seat=%s "
+                    "action=%s amount=%s confidence=%s",
+                    action.seat,
+                    action.action,
+                    action.amount,
+                    action.confidence,
+                )
+                continue
+            filtered.append(action)
+        return filtered
 
     def stop(self, reason: str = "user_stop") -> None:
         """Request polling loop stop."""
@@ -1080,6 +1101,20 @@ class GameLoop:
                 return
             self._last_recommendation_log = log_key
         recommendation_text = self._format_recommendation_log(recommendation)
+        turn_started_at = (
+            self._hand_manager.hero_turn_started_monotonic
+            if self._hand_manager is not None
+            else None
+        )
+        if (
+            prefix == "Preflop recommendation"
+            and isinstance(turn_started_at, int | float)
+        ):
+            elapsed_ms = (time.monotonic() - turn_started_at) * 1000.0
+            recommendation_text = (
+                f"{recommendation_text} "
+                f"turn_to_recommendation_ms={elapsed_ms:.0f}"
+            )
         if street is None:
             logger.info("%s: %s", prefix, recommendation_text)
             return

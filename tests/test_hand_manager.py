@@ -1237,6 +1237,82 @@ class TestActionAccumulation:
         assert current_street is not None
         assert current_street.actions == [action]
 
+    def test_invalid_seat_action_is_not_saved(
+        self,
+        manager: HandManager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Seat 0 actions are ignored before hand histories are updated."""
+        caplog.set_level(logging.INFO, logger="core.hand_manager")
+        start_hand(manager)
+        invalid_action = ActionRecord(
+            seat=0,
+            action="CHECK",
+            amount=0,
+            confidence="low",
+        )
+
+        manager.process_frame(
+            make_state(hero_cards=["Ah", "Kd"], actions=[invalid_action])
+        )
+
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        assert invalid_action not in current_street.actions
+        assert invalid_action not in manager.get_all_actions()
+        assert invalid_action not in manager.get_preflop_actions()
+        assert "Ignored invalid action seat=0" in caplog.text
+
+    def test_valid_seat_action_is_still_saved(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Real table-seat actions are recorded as before."""
+        start_hand(manager)
+        action = ActionRecord(
+            seat=2,
+            action="CALL",
+            amount=100,
+            confidence="high",
+        )
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], actions=[action]))
+
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+        assert current_street.actions == [action]
+        assert manager.get_all_actions() == [action]
+        assert manager.get_preflop_actions() == [action]
+
+    def test_hero_turn_started_context_is_logged(
+        self,
+        manager: HandManager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Hero turn start logs the surrounding action context."""
+        caplog.set_level(logging.INFO, logger="core.hand_manager")
+        start_hand(manager)
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                actions=[ActionRecord(seat=2, action="CALL", amount=100)],
+            )
+        )
+
+        manager.process_frame(
+            make_state(
+                hero_cards=["Ah", "Kd"],
+                hero_is_my_turn=True,
+                hero_bet=100,
+                pot=250,
+            )
+        )
+
+        assert "Hero turn started context:" in caplog.text
+        assert "hand_id=1" in caplog.text
+        assert "phase=preflop" in caplog.text
+        assert "preflop_action_count=1" in caplog.text
+
     @pytest.mark.parametrize(
         "action",
         [

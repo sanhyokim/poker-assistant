@@ -99,6 +99,7 @@ class HandManager:
         self._seen_hero_cards_this_hand = False
         self._turn_start_state: GameState | None = None
         self._turn_end_state: GameState | None = None
+        self._hero_turn_started_monotonic: float | None = None
         self._prev_is_my_turn = False
         self._last_hero_action: ActionRecord | None = None
         self._last_hero_boundary_action_monotonic: float | None = None
@@ -357,6 +358,11 @@ class HandManager:
             for action in street_actions.actions
             if action.action.upper() not in {"BLIND_SB", "BLIND_BB"}
         ]
+
+    @property
+    def hero_turn_started_monotonic(self) -> float | None:
+        """Return monotonic timestamp for the latest hero turn start."""
+        return self._hero_turn_started_monotonic
 
     def get_hand_summary(self) -> dict[str, Any] | None:
         """Return a JSON-ready summary for replay generation."""
@@ -773,6 +779,18 @@ class HandManager:
         street = self._get_current_street_name() if street_actions is not None else None
 
         for action in actions:
+            if not self._is_valid_action_seat(action.seat):
+                logger.info(
+                    "Ignored invalid action seat=%s: action=%s amount=%s "
+                    "confidence=%s phase=%s hand_id=%s",
+                    action.seat,
+                    action.action,
+                    action.amount,
+                    action.confidence,
+                    self._phase,
+                    self._hand_id,
+                )
+                continue
             action_name = action.action.upper()
             if (
                 not allow_hero_boundary_actions
@@ -814,6 +832,11 @@ class HandManager:
             )
 
         self._last_frame_actions = accepted_actions
+
+    @staticmethod
+    def _is_valid_action_seat(seat: int) -> bool:
+        """Return whether an action seat maps to a real table seat."""
+        return 1 <= seat <= 6
 
     def replace_recent_hero_check_with_fold(self, *, max_age_sec: float = 1.5) -> bool:
         """Replace a very recent Hero CHECK with a fold-badge confirmed FOLD."""
@@ -958,9 +981,11 @@ class HandManager:
         current_is_my_turn = game_state.hero.is_my_turn
 
         if current_is_my_turn and not self._prev_is_my_turn:
+            self._hero_turn_started_monotonic = time.monotonic()
             self._turn_start_state = copy.deepcopy(game_state)
             self._turn_end_state = None
             logger.info("Hero turn started")
+            self._log_hero_turn_started_context(game_state)
 
         if not current_is_my_turn and self._prev_is_my_turn:
             self._turn_end_state = copy.deepcopy(game_state)
@@ -970,6 +995,37 @@ class HandManager:
                 self._record_hero_action(hero_action)
 
         self._prev_is_my_turn = current_is_my_turn
+
+    def _log_hero_turn_started_context(self, game_state: GameState) -> None:
+        """Log action context when hero turn starts."""
+        current_street = self.get_current_street_actions()
+        current_actions = [] if current_street is None else current_street.actions
+        max_bet = max(
+            [game_state.hero.bet]
+            + [player.bet for player in game_state.players.values()],
+            default=0,
+        )
+        logger.info(
+            "Hero turn started context: hand_id=%s phase=%s pot=%s hero_bet=%s "
+            "max_bet=%s current_street_action_count=%s "
+            "current_street_actions=%s preflop_action_count=%s",
+            self._hand_id,
+            self._phase,
+            game_state.pot,
+            game_state.hero.bet,
+            max_bet,
+            len(current_actions),
+            [
+                {
+                    "seat": action.seat,
+                    "action": action.action,
+                    "amount": action.amount,
+                    "confidence": action.confidence,
+                }
+                for action in current_actions
+            ],
+            len(self.get_preflop_actions()),
+        )
 
     def _detect_hero_action(self) -> ActionRecord | None:
         """Detect hero action from saved turn boundary states.
@@ -1250,6 +1306,7 @@ class HandManager:
         self._seen_hero_cards_this_hand = False
         self._turn_start_state = None
         self._turn_end_state = None
+        self._hero_turn_started_monotonic = None
         self._prev_is_my_turn = False
         self._last_hero_action = None
         self._last_hero_boundary_action_monotonic = None
@@ -1778,7 +1835,9 @@ class HandManager:
         return {
             str(action.seat)
             for action in actions
-            if action.seat != 1 and action.action.upper() in self._PARTICIPANT_ACTIONS
+            if self._is_valid_action_seat(action.seat)
+            and action.seat != 1
+            and action.action.upper() in self._PARTICIPANT_ACTIONS
         }
 
     def _update_participant_observation(self, game_state: GameState) -> None:
