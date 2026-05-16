@@ -792,21 +792,9 @@ class HandManager:
                 )
                 continue
             action_name = action.action.upper()
-            if self._is_invalid_preflop_action_amount(action):
+            if self._is_invalid_action_amount(action):
                 logger.warning(
-                    "Ignored invalid preflop action amount: hand_id=%s phase=%s "
-                    "seat=%s action=%s amount=%s blind_bb=%s",
-                    self._hand_id,
-                    self._phase,
-                    action.seat,
-                    action.action,
-                    action.amount,
-                    self._blind_bb(),
-                )
-                continue
-            if self._is_invalid_postflop_action_amount(action):
-                logger.warning(
-                    "Ignored invalid postflop action amount: hand_id=%s phase=%s "
+                    "Ignored invalid action amount: hand_id=%s phase=%s "
                     "seat=%s action=%s amount=%s blind_bb=%s",
                     self._hand_id,
                     self._phase,
@@ -862,21 +850,15 @@ class HandManager:
         """Return whether an action seat maps to a real table seat."""
         return 1 <= seat <= 6
 
-    def _is_invalid_preflop_action_amount(self, action: ActionRecord) -> bool:
-        """Return whether a preflop action amount is too large to persist."""
-        if self._phase != "preflop":
-            return False
-        if action.action.upper() not in {"BET", "RAISE", "ALL_IN", "CALL"}:
-            return False
-        return action.amount >= self._blind_bb() * 200
-
-    def _is_invalid_postflop_action_amount(self, action: ActionRecord) -> bool:
-        """Return whether a postflop action amount is too large to persist."""
-        if self._phase not in {"flop", "turn", "river"}:
-            return False
-        if action.action.upper() not in {"BET", "RAISE", "ALL_IN", "CALL"}:
-            return False
-        return action.amount >= self._blind_bb() * 300
+    @staticmethod
+    def _is_invalid_action_amount(action: ActionRecord) -> bool:
+        """Return whether an action amount is invalid independent of OCR context."""
+        action_name = action.action.upper()
+        if action.amount < 0:
+            return True
+        if action_name in {"BET", "RAISE", "ALL_IN"} and action.amount <= 0:
+            return True
+        return False
 
     def _blind_bb(self) -> int:
         """Return the configured big blind for action sanity checks."""

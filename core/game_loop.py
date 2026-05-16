@@ -155,6 +155,12 @@ class GameLoop:
         self._previous_recommendation_context: dict[str, object] | None = None
         self._last_strategy_phase: str | None = None
         self._suspicious_amount_guard_until: float = 0.0
+        self._pending_amount_rechecks: dict[int, dict[str, object]] = {}
+        self._amount_recheck_max_frames: int = int(
+            recognition_config.get("amount_recheck_max_frames", 2)
+        )
+        self._amount_recheck_failed_seats_this_frame: set[int] = set()
+        self._amount_recheck_accepted_seats_this_frame: set[int] = set()
         self._last_hero_non_fold_action_time: float | None = None
         self._last_hero_non_fold_action_name: str | None = None
         self._hero_fold_badge_ignored_for_hand: bool = False
@@ -215,9 +221,18 @@ class GameLoop:
         Args:
             game_state: Frame recognition result returned by process_one_frame().
         """
+        if game_state.game_event == "NEW_HAND":
+            self._pending_amount_rechecks.clear()
         game_state.actions_since_last_frame = self._filter_invalid_actions(
             game_state.actions_since_last_frame,
         )
+        self._amount_recheck_failed_seats_this_frame = set()
+        self._amount_recheck_accepted_seats_this_frame = set()
+        accepted_recheck_actions = self._evaluate_pending_amount_rechecks(game_state)
+        if accepted_recheck_actions:
+            game_state.actions_since_last_frame = (
+                accepted_recheck_actions + game_state.actions_since_last_frame
+            )
         game_state.actions_since_last_frame = (
             self._filter_suspicious_amount_actions(
                 game_state,
@@ -263,10 +278,7 @@ class GameLoop:
 
         blind_bb = self._blind_bb()
         preflop_spike_threshold = self._preflop_spike_action_threshold(blind_bb)
-        postflop_spike_threshold = self._postflop_spike_action_threshold(
-            blind_bb,
-            game_state.pot,
-        )
+        postflop_spike_threshold = self._postflop_spike_action_threshold(game_state.pot)
         absolute_threshold = self._max_reasonable_preflop_action_amount(blind_bb)
         known_max_stack = self._known_max_stack(game_state)
         spike_context = game_state.strategy_defer_reason in {
@@ -277,7 +289,12 @@ class GameLoop:
         filtered: list[ActionRecord] = []
 
         for action in actions:
+            if action.seat in self._amount_recheck_failed_seats_this_frame:
+                continue
             action_name = action.action.upper()
+            if action.seat in self._amount_recheck_accepted_seats_this_frame:
+                filtered.append(action)
+                continue
             if action_name not in {"BET", "RAISE", "ALL_IN", "CALL"}:
                 filtered.append(action)
                 continue
@@ -306,70 +323,47 @@ class GameLoop:
                 and spike_context
                 and action.amount >= preflop_spike_threshold
             ):
-                logger.warning(
-                    "Ignored suspicious preflop action during pot spike hold: "
-                    "hand_id=%s phase=%s seat=%s action=%s amount=%s pot=%s "
-                    "blind_bb=%s defer_reason=%s",
-                    game_state.hand_id,
+                if self._request_amount_recheck(
+                    game_state,
+                    action,
                     phase,
-                    action.seat,
-                    action.action,
-                    action.amount,
-                    game_state.pot,
-                    blind_bb,
-                    game_state.strategy_defer_reason,
-                )
+                    "preflop_pot_spike_hold",
+                ):
+                    continue
+                filtered.append(action)
                 continue
 
             if phase in {"flop", "turn", "river"}:
                 if spike_context and action.amount >= postflop_spike_threshold:
-                    logger.warning(
-                        "Ignored suspicious postflop action during pot spike hold: "
-                        "hand_id=%s phase=%s seat=%s action=%s amount=%s pot=%s "
-                        "blind_bb=%s strategy_defer_reason=%s",
-                        game_state.hand_id,
+                    if self._request_amount_recheck(
+                        game_state,
+                        action,
                         phase,
-                        action.seat,
-                        action.action,
-                        action.amount,
-                        game_state.pot,
-                        blind_bb,
-                        game_state.strategy_defer_reason,
-                    )
+                        "postflop_pot_spike_hold",
+                    ):
+                        continue
+                    filtered.append(action)
                     continue
                 if recovery_context and action.amount >= blind_bb * 50:
-                    logger.warning(
-                        "Ignored suspicious postflop action during pot spike recovery: "
-                        "hand_id=%s phase=%s seat=%s action=%s amount=%s pot=%s "
-                        "blind_bb=%s guard_remaining_ms=%.0f",
-                        game_state.hand_id,
+                    if self._request_amount_recheck(
+                        game_state,
+                        action,
                         phase,
-                        action.seat,
-                        action.action,
-                        action.amount,
-                        game_state.pot,
-                        blind_bb,
-                        max(
-                            0.0,
-                            self._suspicious_amount_guard_until - time.monotonic(),
-                        )
-                        * 1000.0,
-                    )
+                        "postflop_pot_spike_recovery",
+                    ):
+                        continue
+                    filtered.append(action)
                     continue
 
             if phase == "preflop" and action.amount >= absolute_threshold:
-                logger.warning(
-                    "Ignored invalid preflop action amount: hand_id=%s phase=%s "
-                    "seat=%s action=%s amount=%s pot=%s blind_bb=%s reason=%s",
-                    game_state.hand_id,
+                if self._request_amount_recheck(
+                    game_state,
+                    action,
                     phase,
-                    action.seat,
-                    action.action,
-                    action.amount,
-                    game_state.pot,
-                    blind_bb,
-                    "absolute_threshold",
-                )
+                    "preflop_absolute_threshold",
+                ):
+                    continue
+                filtered.append(action)
                 continue
 
             if (
@@ -377,25 +371,324 @@ class GameLoop:
                 and known_max_stack is not None
                 and action.amount > known_max_stack * 1.2
             ):
-                logger.warning(
-                    "Ignored invalid preflop action amount: hand_id=%s phase=%s "
-                    "seat=%s action=%s amount=%s pot=%s blind_bb=%s "
-                    "known_max_stack=%s reason=%s",
-                    game_state.hand_id,
+                if self._request_amount_recheck(
+                    game_state,
+                    action,
                     phase,
-                    action.seat,
-                    action.action,
-                    action.amount,
-                    game_state.pot,
-                    blind_bb,
-                    known_max_stack,
-                    "stack_threshold",
-                )
+                    "preflop_stack_threshold",
+                ):
+                    continue
+                filtered.append(action)
                 continue
 
             filtered.append(action)
 
         return filtered
+
+    def _request_amount_recheck(
+        self,
+        game_state: GameState,
+        action: ActionRecord,
+        phase: str,
+        reason: str,
+    ) -> bool:
+        """Hold a suspicious amount action for a seat-specific reread."""
+        if not self._amount_recheck_enabled():
+            return False
+
+        if action.seat in self._pending_amount_rechecks:
+            self._mark_amount_recheck_deferred(
+                game_state,
+                "existing_pending_amount_recheck",
+                pending=True,
+            )
+            return True
+
+        previous_state = self._prev_state
+        previous_stack = self._seat_stack(previous_state, action.seat)
+        candidate_stack = self._seat_stack(game_state, action.seat)
+        candidate_bet = self._seat_bet(game_state, action.seat)
+        confirmed_pot = previous_state.pot if previous_state is not None else game_state.pot
+        pending = {
+            "seat": action.seat,
+            "action": action.action,
+            "amount": action.amount,
+            "confidence": action.confidence,
+            "first_seen_frame": game_state.frame_number,
+            "phase": phase,
+            "board_count": game_state.board_card_count,
+            "candidate_pot": game_state.pot,
+            "confirmed_pot": confirmed_pot,
+            "candidate_bet": candidate_bet,
+            "candidate_stack": candidate_stack,
+            "previous_stack": previous_stack,
+        }
+        self._pending_amount_rechecks[action.seat] = pending
+        self._mark_amount_recheck_deferred(game_state, reason, pending=True)
+        logger.warning(
+            "Amount recheck requested: hand_id=%s phase=%s seat=%s action=%s "
+            "amount=%s old_pot=%s new_pot=%s board_count=%s reason=%s",
+            game_state.hand_id,
+            phase,
+            action.seat,
+            action.action,
+            action.amount,
+            confirmed_pot,
+            game_state.pot,
+            game_state.board_card_count,
+            reason,
+        )
+        return True
+
+    def _evaluate_pending_amount_rechecks(
+        self,
+        game_state: GameState,
+    ) -> list[ActionRecord]:
+        """Evaluate pending amount rereads and return accepted actions."""
+        accepted_actions: list[ActionRecord] = []
+        if not self._pending_amount_rechecks:
+            return accepted_actions
+
+        for seat, pending in list(self._pending_amount_rechecks.items()):
+            phase = str(pending["phase"])
+            amount = int(pending["amount"])
+            action_name = str(pending["action"])
+            first_seen_frame = int(pending["first_seen_frame"])
+            board_count = int(pending["board_count"])
+            current_phase = self._active_phase(game_state)
+            current_bet = self._seat_bet(game_state, seat)
+            current_stack = self._seat_stack(game_state, seat)
+            previous_stack = self._optional_int(pending.get("previous_stack"))
+            candidate_pot = int(pending["candidate_pot"])
+            confirmed_pot = int(pending["confirmed_pot"])
+            frames_waited = max(0, game_state.frame_number - first_seen_frame)
+
+            if current_phase != phase or game_state.board_card_count != board_count:
+                self._fail_amount_recheck(
+                    game_state,
+                    pending,
+                    "phase_or_board_changed",
+                    current_bet,
+                    current_stack,
+                )
+                continue
+
+            matched_by = self._amount_recheck_match_reason(
+                game_state,
+                pending,
+                current_bet,
+                current_stack,
+                previous_stack,
+            )
+            if matched_by is not None:
+                accepted_action = ActionRecord(
+                    seat=seat,
+                    action=action_name,
+                    amount=amount,
+                    confidence=str(pending.get("confidence", "high")),
+                )
+                accepted_actions.append(accepted_action)
+                self._amount_recheck_accepted_seats_this_frame.add(seat)
+                del self._pending_amount_rechecks[seat]
+                logger.warning(
+                    "Amount recheck accepted: hand_id=%s phase=%s seat=%s "
+                    "action=%s amount=%s matched_by=%s pot=%s player_bet=%s "
+                    "stack_prev=%s stack_curr=%s",
+                    game_state.hand_id,
+                    phase,
+                    seat,
+                    action_name,
+                    amount,
+                    matched_by,
+                    game_state.pot,
+                    current_bet,
+                    previous_stack,
+                    current_stack,
+                )
+                if game_state.pot <= confirmed_pot:
+                    self._mark_amount_recheck_deferred(
+                        game_state,
+                        "accepted_waiting_for_pot",
+                        pending=True,
+                    )
+                continue
+
+            stack_drop = self._stack_drop(previous_stack, current_stack)
+            if current_bet <= self._amount_tolerance() and (stack_drop is None or stack_drop <= 0):
+                self._fail_amount_recheck(
+                    game_state,
+                    pending,
+                    "bet_disappeared",
+                    current_bet,
+                    current_stack,
+                )
+                continue
+
+            if frames_waited >= self._amount_recheck_max_frames:
+                self._fail_amount_recheck(
+                    game_state,
+                    pending,
+                    "max_frames_exceeded",
+                    current_bet,
+                    current_stack,
+                )
+                continue
+
+            self._mark_amount_recheck_deferred(
+                game_state,
+                "waiting_for_reread",
+                pending=True,
+            )
+            logger.info(
+                "Amount recheck pending: hand_id=%s phase=%s seat=%s action=%s "
+                "amount=%s frames_waited=%s pot=%s player_bet=%s stack_prev=%s "
+                "stack_curr=%s first_pot=%s",
+                game_state.hand_id,
+                phase,
+                seat,
+                action_name,
+                amount,
+                frames_waited,
+                game_state.pot,
+                current_bet,
+                previous_stack,
+                current_stack,
+                candidate_pot,
+            )
+
+        return accepted_actions
+
+    def _amount_recheck_match_reason(
+        self,
+        game_state: GameState,
+        pending: dict[str, object],
+        current_bet: int,
+        current_stack: int | None,
+        previous_stack: int | None,
+    ) -> str | None:
+        """Return the amount recheck match reason, or None if not matched."""
+        amount = int(pending["amount"])
+        action_name = str(pending["action"]).upper()
+        confirmed_pot = int(pending["confirmed_pot"])
+        bet_matches = self._amount_close(current_bet, amount)
+        stack_drop = self._stack_drop(previous_stack, current_stack)
+        stack_matches = stack_drop is not None and self._amount_close(stack_drop, amount)
+        pot_increased = game_state.pot >= confirmed_pot
+
+        if bet_matches and stack_matches:
+            return "bet_stack"
+        if action_name == "ALL_IN" and current_stack == 0 and bet_matches:
+            return "all_in_stack_zero"
+        if bet_matches and pot_increased:
+            return "bet_pot"
+        return None
+
+    def _fail_amount_recheck(
+        self,
+        game_state: GameState,
+        pending: dict[str, object],
+        reason: str,
+        current_bet: int,
+        current_stack: int | None,
+    ) -> None:
+        """Fail and clear one pending amount recheck."""
+        seat = int(pending["seat"])
+        if seat in self._pending_amount_rechecks:
+            del self._pending_amount_rechecks[seat]
+        self._amount_recheck_failed_seats_this_frame.add(seat)
+        self._mark_amount_recheck_deferred(game_state, reason, pending=False)
+        logger.warning(
+            "Amount recheck failed: hand_id=%s phase=%s seat=%s action=%s "
+            "amount=%s first_pot=%s reread_pot=%s first_bet=%s reread_bet=%s "
+            "first_stack=%s reread_stack=%s reason=%s",
+            game_state.hand_id,
+            pending["phase"],
+            seat,
+            pending["action"],
+            pending["amount"],
+            pending["candidate_pot"],
+            game_state.pot,
+            pending["candidate_bet"],
+            current_bet,
+            pending["candidate_stack"],
+            current_stack,
+            reason,
+        )
+
+    @staticmethod
+    def _mark_amount_recheck_deferred(
+        game_state: GameState,
+        reason: str,
+        *,
+        pending: bool,
+    ) -> None:
+        """Mark GameState as deferred due to amount recheck."""
+        game_state.strategy_defer_reason = (
+            "amount_recheck_pending" if pending else "amount_recheck_failed"
+        )
+        game_state.amount_recheck_pending = pending
+        game_state.amount_recheck_reason = reason
+
+    def _active_phase(self, game_state: GameState) -> str:
+        """Return GameState phase, falling back to HandManager active phase."""
+        active_phases = {"preflop", "flop", "turn", "river"}
+        if game_state.phase in active_phases:
+            return game_state.phase
+        if self._hand_manager is not None and self._hand_manager.phase in active_phases:
+            return self._hand_manager.phase
+        return game_state.phase
+
+    @staticmethod
+    def _seat_bet(game_state: GameState, seat: int) -> int:
+        """Return the current bet for a seat in the frame."""
+        if seat == 1:
+            return game_state.hero.bet
+        player = game_state.players.get(str(seat))
+        if player is None:
+            return 0
+        return player.bet
+
+    @staticmethod
+    def _seat_stack(game_state: GameState | None, seat: int) -> int | None:
+        """Return the visible stack for a seat in the frame."""
+        if game_state is None:
+            return None
+        if seat == 1:
+            return game_state.hero.stack
+        player = game_state.players.get(str(seat))
+        if player is None:
+            return None
+        return player.stack
+
+    @staticmethod
+    def _stack_drop(
+        previous_stack: int | None,
+        current_stack: int | None,
+    ) -> int | None:
+        """Return stack decrease, or None when unavailable."""
+        if previous_stack is None or current_stack is None:
+            return None
+        return previous_stack - current_stack
+
+    @staticmethod
+    def _optional_int(value: object) -> int | None:
+        """Convert an optional object value to int."""
+        if value is None:
+            return None
+        return int(value)
+
+    def _amount_tolerance(self) -> int:
+        """Return amount reread tolerance."""
+        return max(2, int(self._blind_bb() * 0.1))
+
+    def _amount_close(self, lhs: int, rhs: int) -> bool:
+        """Return whether two chip amounts are close enough for reread."""
+        return abs(lhs - rhs) <= self._amount_tolerance()
+
+    def _amount_recheck_enabled(self) -> bool:
+        """Return whether amount reread protection is enabled."""
+        recognition_config = self._config.get("recognition", {})
+        return bool(recognition_config.get("amount_recheck_enabled", True))
 
     def _blind_bb(self) -> int:
         """Return the configured big blind for amount sanity checks."""
@@ -407,14 +700,16 @@ class GameLoop:
         return int(
             recognition_config.get(
                 "preflop_pot_spike_action_amount",
-                blind_bb * 50,
+                blind_bb * int(recognition_config.get("amount_recheck_min_bb", 50)),
             )
         )
 
-    @staticmethod
-    def _postflop_spike_action_threshold(blind_bb: int, pot: int) -> int:
+    def _postflop_spike_action_threshold(self, pot: int) -> int:
         """Return the postflop pot-spike-context amount threshold."""
-        return max(blind_bb * 50, pot * 5)
+        recognition_config = self._config.get("recognition", {})
+        min_bb = int(recognition_config.get("amount_recheck_min_bb", 50))
+        pot_ratio = float(recognition_config.get("amount_recheck_pot_ratio", 5.0))
+        return max(self._blind_bb() * min_bb, int(pot * pot_ratio))
 
     def _max_reasonable_preflop_action_amount(self, blind_bb: int) -> int:
         """Return the absolute preflop amount guardrail."""
@@ -465,6 +760,7 @@ class GameLoop:
         self._previous_recommendation = None
         self._previous_recommendation_context = None
         self._clear_pending_state()
+        self._pending_amount_rechecks.clear()
         self._last_recommendation_log = None
         self._last_strategy_is_my_turn = False
         self._hero_fold_badge_ignored_for_hand = False

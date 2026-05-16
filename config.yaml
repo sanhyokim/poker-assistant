@@ -59,6 +59,10 @@ recognition:
   fold_badge_threshold: 0.8
   pot_spike_ratio: 2.0
   pot_spike_confirm_frames: 2
+  amount_recheck_enabled: true
+  amount_recheck_min_bb: 50
+  amount_recheck_pot_ratio: 5.0
+  amount_recheck_max_frames: 2
   new_hand_confirm_frames: 2
 
 action_estimation:

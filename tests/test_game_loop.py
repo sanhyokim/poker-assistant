@@ -326,7 +326,9 @@ def test_process_game_state_after_frame_filters_huge_preflop_raise_during_pot_sp
 
     assert state.actions_since_last_frame == []
     assert received_actions == []
-    assert "Ignored suspicious preflop action during pot spike hold" in caplog.text
+    assert state.strategy_defer_reason == "amount_recheck_pending"
+    assert state.amount_recheck_pending is True
+    assert "Amount recheck requested" in caplog.text
 
 
 def test_process_game_state_after_frame_filters_100bb_all_in_during_pot_spike(
@@ -359,6 +361,7 @@ def test_process_game_state_after_frame_filters_100bb_all_in_during_pot_spike(
 
     assert state.actions_since_last_frame == []
     assert received_actions == []
+    assert state.strategy_defer_reason == "amount_recheck_pending"
 
 
 def test_process_game_state_after_frame_keeps_normal_preflop_raise(
@@ -422,7 +425,9 @@ def test_process_game_state_after_frame_filters_huge_flop_all_in_during_pot_spik
 
     assert state.actions_since_last_frame == []
     assert received_actions == []
-    assert "Ignored suspicious postflop action during pot spike hold" in caplog.text
+    assert state.strategy_defer_reason == "amount_recheck_pending"
+    assert state.amount_recheck_pending is True
+    assert "Amount recheck requested" in caplog.text
 
 
 def test_process_game_state_after_frame_keeps_normal_flop_bet_during_pot_spike(
@@ -488,7 +493,178 @@ def test_process_game_state_after_frame_filters_huge_postflop_action_during_reco
 
     assert state.actions_since_last_frame == []
     assert received_actions == []
-    assert "Ignored suspicious postflop action during pot spike recovery" in caplog.text
+    assert state.strategy_defer_reason == "amount_recheck_pending"
+    assert "Amount recheck requested" in caplog.text
+
+
+def test_process_game_state_after_frame_accepts_amount_recheck_by_bet_stack(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A pending large action is accepted when seat bet and stack reread match."""
+    caplog.set_level(logging.WARNING, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._pending_amount_rechecks[3] = {
+        "seat": 3,
+        "action": "ALL_IN",
+        "amount": 17382,
+        "confidence": "high",
+        "first_seen_frame": 10,
+        "phase": "flop",
+        "board_count": 3,
+        "candidate_pot": 480,
+        "confirmed_pot": 480,
+        "candidate_bet": 17382,
+        "candidate_stack": 2618,
+        "previous_stack": 20000,
+    }
+    state = create_empty_game_state()
+    state.frame_number = 11
+    state.phase = "flop"
+    state.board_card_count = 3
+    state.pot = 17862
+    state.players["3"].bet = 17382
+    state.players["3"].stack = 2618
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert received_actions == [
+        ActionRecord(seat=3, action="ALL_IN", amount=17382, confidence="high")
+    ]
+    assert 3 not in loop._pending_amount_rechecks
+    assert "Amount recheck accepted" in caplog.text
+
+
+def test_process_game_state_after_frame_fails_amount_recheck_without_bet_or_stack(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A pending large action is not passed through when reread contradicts it."""
+    caplog.set_level(logging.WARNING, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._pending_amount_rechecks[3] = {
+        "seat": 3,
+        "action": "ALL_IN",
+        "amount": 17382,
+        "confidence": "high",
+        "first_seen_frame": 10,
+        "phase": "flop",
+        "board_count": 3,
+        "candidate_pot": 480,
+        "confirmed_pot": 480,
+        "candidate_bet": 17382,
+        "candidate_stack": 2618,
+        "previous_stack": 20000,
+    }
+    stale_action = ActionRecord(seat=3, action="ALL_IN", amount=17382)
+    state = create_empty_game_state()
+    state.frame_number = 11
+    state.phase = "flop"
+    state.board_card_count = 3
+    state.pot = 480
+    state.players["3"].bet = 0
+    state.players["3"].stack = 20000
+    state.actions_since_last_frame = [stale_action]
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert state.actions_since_last_frame == []
+    assert received_actions == []
+    assert state.strategy_defer_reason == "amount_recheck_failed"
+    assert state.amount_recheck_pending is False
+    assert 3 not in loop._pending_amount_rechecks
+    assert "Amount recheck failed" in caplog.text
+
+
+def test_process_game_state_after_frame_rechecks_seats_independently(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One seat failing reread does not block another seat's accepted amount."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._pending_amount_rechecks[2] = {
+        "seat": 2,
+        "action": "BET",
+        "amount": 6000,
+        "confidence": "high",
+        "first_seen_frame": 20,
+        "phase": "flop",
+        "board_count": 3,
+        "candidate_pot": 900,
+        "confirmed_pot": 900,
+        "candidate_bet": 6000,
+        "candidate_stack": 4000,
+        "previous_stack": 10000,
+    }
+    loop._pending_amount_rechecks[3] = {
+        "seat": 3,
+        "action": "ALL_IN",
+        "amount": 17382,
+        "confidence": "high",
+        "first_seen_frame": 20,
+        "phase": "flop",
+        "board_count": 3,
+        "candidate_pot": 900,
+        "confirmed_pot": 900,
+        "candidate_bet": 17382,
+        "candidate_stack": 2618,
+        "previous_stack": 20000,
+    }
+    state = create_empty_game_state()
+    state.frame_number = 21
+    state.phase = "flop"
+    state.board_card_count = 3
+    state.pot = 6900
+    state.players["2"].bet = 6000
+    state.players["2"].stack = 4000
+    state.players["3"].bet = 0
+    state.players["3"].stack = 20000
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert received_actions == [
+        ActionRecord(seat=2, action="BET", amount=6000, confidence="high")
+    ]
+    assert loop._pending_amount_rechecks == {}
+    assert state.strategy_defer_reason == "amount_recheck_failed"
 
 
 @pytest.mark.parametrize(

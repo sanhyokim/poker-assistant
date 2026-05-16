@@ -1284,13 +1284,11 @@ class TestActionAccumulation:
         assert manager.get_all_actions() == [action]
         assert manager.get_preflop_actions() == [action]
 
-    def test_huge_preflop_raise_is_not_saved(
+    def test_huge_preflop_raise_is_saved_after_game_loop_recheck(
         self,
         manager: HandManager,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Clearly impossible preflop amounts are not persisted."""
-        caplog.set_level(logging.WARNING, logger="core.hand_manager")
+        """HandManager does not reject rechecked preflop size by BB threshold."""
         start_hand(manager)
         action = ActionRecord(seat=3, action="RAISE", amount=25000, confidence="high")
 
@@ -1298,10 +1296,9 @@ class TestActionAccumulation:
 
         current_street = manager.get_current_street_actions()
         assert current_street is not None
-        assert action not in current_street.actions
-        assert action not in manager.get_all_actions()
-        assert action not in manager.get_preflop_actions()
-        assert "Ignored invalid preflop action amount" in caplog.text
+        assert current_street.actions == [action]
+        assert manager.get_all_actions() == [action]
+        assert manager.get_preflop_actions() == [action]
 
     def test_normal_preflop_raise_is_still_saved(
         self,
@@ -1333,13 +1330,11 @@ class TestActionAccumulation:
         assert current_street.actions == [action]
         assert manager.get_preflop_actions() == [action]
 
-    def test_huge_postflop_amount_is_not_saved(
+    def test_huge_postflop_amount_is_saved_after_game_loop_recheck(
         self,
         manager: HandManager,
-        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Postflop actions at 300BB or above are rejected as implausible."""
-        caplog.set_level(logging.WARNING, logger="core.hand_manager")
+        """HandManager does not reject rechecked postflop size by BB threshold."""
         start_hand(manager)
         manager._phase = "flop"
         action = ActionRecord(seat=3, action="ALL_IN", amount=30000, confidence="high")
@@ -1348,9 +1343,8 @@ class TestActionAccumulation:
 
         current_street = manager.get_current_street_actions()
         assert current_street is not None
-        assert action not in current_street.actions
-        assert action not in manager.get_all_actions()
-        assert "Ignored invalid postflop action amount" in caplog.text
+        assert current_street.actions == [action]
+        assert manager.get_all_actions() == [action]
 
     def test_normal_postflop_bet_is_saved(
         self,
