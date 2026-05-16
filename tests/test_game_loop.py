@@ -203,6 +203,79 @@ def test_game_loop_instantiates(
     assert loop._prev_state is None
 
 
+def test_process_game_state_after_frame_uses_canonical_order(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Post-frame processing runs fold recovery and position lock before strategy."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    calls: list[str] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: calls.append("process_frame"),
+    )
+    monkeypatch.setattr(
+        loop,
+        "_recover_pending_hero_fold_badge",
+        lambda game_state: calls.append("recover_pending_hero_fold_badge"),
+    )
+    monkeypatch.setattr(
+        loop,
+        "_sync_game_state_with_hand_manager",
+        lambda game_state: calls.append("sync_game_state_with_hand_manager"),
+    )
+    monkeypatch.setattr(
+        loop,
+        "_update_hand_position_lock",
+        lambda game_state: calls.append("update_hand_position_lock"),
+    )
+    monkeypatch.setattr(
+        loop,
+        "_handle_strategy",
+        lambda game_state: calls.append("handle_strategy"),
+    )
+
+    loop.process_game_state_after_frame(state)
+
+    assert calls == [
+        "process_frame",
+        "recover_pending_hero_fold_badge",
+        "sync_game_state_with_hand_manager",
+        "update_hand_position_lock",
+        "handle_strategy",
+    ]
+
+
+def test_start_uses_canonical_post_frame_processing(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """GameLoop.start delegates post-frame processing to the shared method."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    calls: list[str] = []
+
+    def process_one_frame_once() -> Any:
+        calls.append("process_one_frame")
+        return state
+
+    def process_after_frame(game_state: Any) -> None:
+        calls.append("process_game_state_after_frame")
+        assert game_state is state
+        loop.stop()
+
+    monkeypatch.setattr(loop, "process_one_frame", process_one_frame_once)
+    monkeypatch.setattr(loop, "process_game_state_after_frame", process_after_frame)
+    monkeypatch.setattr("core.game_loop.time.sleep", lambda _seconds: None)
+
+    loop.start()
+
+    assert calls == ["process_one_frame", "process_game_state_after_frame"]
+
+
 def test_stop_abandons_active_hand_before_close(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

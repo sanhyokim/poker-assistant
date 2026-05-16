@@ -197,11 +197,7 @@ class GameLoop:
             try:
                 game_state = self.process_one_frame()
                 if game_state is not None:
-                    self._hand_manager.process_frame(game_state)
-                    self._recover_pending_hero_fold_badge(game_state)
-                    self._sync_game_state_with_hand_manager(game_state)
-                    self._update_hand_position_lock(game_state)
-                    self._handle_strategy(game_state)
+                    self.process_game_state_after_frame(game_state)
                     if self._on_game_state is not None:
                         self._on_game_state(game_state)
             except Exception:
@@ -211,6 +207,18 @@ class GameLoop:
             sleep_time = max(0.0, self._polling_interval - elapsed)
             if sleep_time > 0:
                 time.sleep(sleep_time)
+
+    def process_game_state_after_frame(self, game_state: GameState) -> None:
+        """Run canonical post-frame processing for CLI and GUI loops.
+
+        Args:
+            game_state: Frame recognition result returned by process_one_frame().
+        """
+        self._hand_manager.process_frame(game_state)
+        self._recover_pending_hero_fold_badge(game_state)
+        self._sync_game_state_with_hand_manager(game_state)
+        self._update_hand_position_lock(game_state)
+        self._handle_strategy(game_state)
 
     def stop(self, reason: str = "user_stop") -> None:
         """Request polling loop stop."""

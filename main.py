@@ -163,8 +163,9 @@ class GameLoopWorker(QObject):
             try:
                 game_state = self._game_loop.process_one_frame()
                 if game_state is not None:
-                    self._game_loop._hand_manager.process_frame(game_state)
-                    self._game_loop._sync_game_state_with_hand_manager(game_state)
+                    # Keep this processing order in sync with GameLoop.start().
+                    # GUI mode uses GameLoopWorker.run(), not GameLoop.start().
+                    self._game_loop.process_game_state_after_frame(game_state)
                     saved_hand_id = self._game_loop._hand_manager.last_saved_hand_id
                     if (
                         saved_hand_id is not None
@@ -172,7 +173,6 @@ class GameLoopWorker(QObject):
                     ):
                         self.hand_saved.emit(saved_hand_id)
                         self._last_emitted_saved_hand_id = saved_hand_id
-                    self._game_loop._handle_strategy(game_state)
                     recommendation = self._game_loop.current_recommendation
                     self.recommendation_ready.emit(recommendation)
                     self.game_state_ready.emit(game_state)
