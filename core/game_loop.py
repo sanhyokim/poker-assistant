@@ -217,6 +217,12 @@ class GameLoop:
         game_state.actions_since_last_frame = self._filter_invalid_actions(
             game_state.actions_since_last_frame,
         )
+        game_state.actions_since_last_frame = (
+            self._filter_suspicious_preflop_amount_actions(
+                game_state,
+                game_state.actions_since_last_frame,
+            )
+        )
         self._hand_manager.process_frame(game_state)
         self._recover_pending_hero_fold_badge(game_state)
         self._sync_game_state_with_hand_manager(game_state)
@@ -240,6 +246,138 @@ class GameLoop:
                 continue
             filtered.append(action)
         return filtered
+
+    def _filter_suspicious_preflop_amount_actions(
+        self,
+        game_state: GameState,
+        actions: list[ActionRecord],
+    ) -> list[ActionRecord]:
+        """Drop implausible preflop amount actions before hand processing."""
+        phase = game_state.phase
+        if phase != "preflop" and self._hand_manager is not None:
+            phase = self._hand_manager.phase
+        if phase != "preflop":
+            return actions
+
+        blind_bb = self._blind_bb()
+        spike_threshold = self._preflop_spike_action_threshold(blind_bb)
+        absolute_threshold = self._max_reasonable_preflop_action_amount(blind_bb)
+        known_max_stack = self._known_max_stack(game_state)
+        spike_context = game_state.strategy_defer_reason in {
+            "pot_spike_hold",
+            "suspicious_pot_spike",
+        }
+        filtered: list[ActionRecord] = []
+
+        for action in actions:
+            action_name = action.action.upper()
+            if action_name not in {"BET", "RAISE", "ALL_IN", "CALL"}:
+                filtered.append(action)
+                continue
+
+            if action_name in {"BET", "RAISE", "ALL_IN"} and action.amount <= 0:
+                logger.warning(
+                    "Ignored invalid preflop action amount: hand_id=%s phase=%s "
+                    "seat=%s action=%s amount=%s pot=%s blind_bb=%s reason=%s",
+                    game_state.hand_id,
+                    phase,
+                    action.seat,
+                    action.action,
+                    action.amount,
+                    game_state.pot,
+                    blind_bb,
+                    "non_positive_amount",
+                )
+                continue
+
+            if spike_context and action.amount >= spike_threshold:
+                logger.warning(
+                    "Ignored suspicious preflop action during pot spike hold: "
+                    "hand_id=%s phase=%s seat=%s action=%s amount=%s pot=%s "
+                    "blind_bb=%s defer_reason=%s",
+                    game_state.hand_id,
+                    phase,
+                    action.seat,
+                    action.action,
+                    action.amount,
+                    game_state.pot,
+                    blind_bb,
+                    game_state.strategy_defer_reason,
+                )
+                continue
+
+            if action.amount >= absolute_threshold:
+                logger.warning(
+                    "Ignored invalid preflop action amount: hand_id=%s phase=%s "
+                    "seat=%s action=%s amount=%s pot=%s blind_bb=%s reason=%s",
+                    game_state.hand_id,
+                    phase,
+                    action.seat,
+                    action.action,
+                    action.amount,
+                    game_state.pot,
+                    blind_bb,
+                    "absolute_threshold",
+                )
+                continue
+
+            if known_max_stack is not None and action.amount > known_max_stack * 1.2:
+                logger.warning(
+                    "Ignored invalid preflop action amount: hand_id=%s phase=%s "
+                    "seat=%s action=%s amount=%s pot=%s blind_bb=%s "
+                    "known_max_stack=%s reason=%s",
+                    game_state.hand_id,
+                    phase,
+                    action.seat,
+                    action.action,
+                    action.amount,
+                    game_state.pot,
+                    blind_bb,
+                    known_max_stack,
+                    "stack_threshold",
+                )
+                continue
+
+            filtered.append(action)
+
+        return filtered
+
+    def _blind_bb(self) -> int:
+        """Return the configured big blind for amount sanity checks."""
+        return int(self._config.get("game", {}).get("blind_bb", 100))
+
+    def _preflop_spike_action_threshold(self, blind_bb: int) -> int:
+        """Return the pot-spike-context preflop amount threshold."""
+        recognition_config = self._config.get("recognition", {})
+        return int(
+            recognition_config.get(
+                "preflop_pot_spike_action_amount",
+                blind_bb * 50,
+            )
+        )
+
+    def _max_reasonable_preflop_action_amount(self, blind_bb: int) -> int:
+        """Return the absolute preflop amount guardrail."""
+        recognition_config = self._config.get("recognition", {})
+        return int(
+            recognition_config.get(
+                "max_reasonable_preflop_action_amount",
+                blind_bb * 200,
+            )
+        )
+
+    @staticmethod
+    def _known_max_stack(game_state: GameState) -> int | None:
+        """Return the largest visible stack for amount sanity checks."""
+        stack_values: list[int] = []
+        if game_state.hero.stack is not None:
+            stack_values.append(game_state.hero.stack)
+        for player in game_state.players.values():
+            if player.stack is not None:
+                stack_values.append(player.stack)
+        if not stack_values:
+            return None
+        return max(stack_values)
 
     def stop(self, reason: str = "user_stop") -> None:
         """Request polling loop stop."""
@@ -382,6 +520,8 @@ class GameLoop:
                 game_state.pot = filtered_pot
             if estimation.get("pot_spike_hold"):
                 game_state.strategy_defer_reason = "pot_spike_hold"
+            if estimation.get("suspicious_pot_spike"):
+                game_state.strategy_defer_reason = "suspicious_pot_spike"
         else:
             game_state.game_event = None
             game_state.actions_since_last_frame = []
@@ -832,6 +972,7 @@ class GameLoop:
                     self._previous_recommendation, game_state
                 )
                 if changed:
+                    self._log_preflop_recommendation_context(game_state)
                     self._log_recommendation(
                         "Preflop recommendation",
                         self._previous_recommendation,
@@ -866,6 +1007,7 @@ class GameLoop:
                     self._last_strategy_phase = phase
                     self._last_strategy_is_my_turn = True
                     return
+                self._log_preflop_recommendation_context(game_state)
                 self._log_recommendation("Preflop recommendation", recommendation)
                 self._log_recommendation_change(recommendation)
                 self._save_recommendation_to_hand_manager(
@@ -1123,6 +1265,35 @@ class GameLoop:
             prefix,
             recommendation_text,
             street,
+        )
+
+    @staticmethod
+    def _log_preflop_recommendation_context(game_state: GameState) -> None:
+        """Log the preflop state used by the recommendation engine."""
+        max_bet = max(
+            [game_state.hero.bet]
+            + [player.bet for player in game_state.players.values()]
+        )
+        logger.info(
+            "Preflop recommendation context: hand_id=%s hero_position=%s "
+            "hero_cards=%s pot=%s hero_bet=%s max_bet=%s preflop_actions=%s "
+            "strategy_defer_reason=%s",
+            game_state.hand_id,
+            game_state.hero.position,
+            game_state.hero.cards,
+            game_state.pot,
+            game_state.hero.bet,
+            max_bet,
+            [
+                {
+                    "seat": action.seat,
+                    "action": action.action,
+                    "amount": action.amount,
+                    "confidence": action.confidence,
+                }
+                for action in game_state.preflop_actions
+            ],
+            game_state.strategy_defer_reason,
         )
 
     @staticmethod

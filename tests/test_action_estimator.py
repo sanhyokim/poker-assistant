@@ -178,6 +178,7 @@ class TestGameEvents:
             "actions": [],
             "filtered_pot": None,
             "pot_spike_hold": False,
+            "suspicious_pot_spike": False,
         }
 
     def test_new_hand_detected(self, estimator: ActionEstimator) -> None:
@@ -831,6 +832,7 @@ class TestPotSpikeFilter:
         assert result["actions"] == []
         assert result["filtered_pot"] == 400
         assert result["pot_spike_hold"] is True
+        assert result["suspicious_pot_spike"] is False
 
     def test_pot_spike_held_returns_filtered_pot(
         self,
@@ -916,9 +918,28 @@ class TestPotSpikeFilter:
         assert first_result["game_event"] is None
         assert first_result["filtered_pot"] == 7740
         assert first_result["pot_spike_hold"] is False
+        assert first_result["suspicious_pot_spike"] is True
         assert second_result["game_event"] is None
         assert second_result["filtered_pot"] == 7740
         assert second_result["pot_spike_hold"] is False
+        assert second_result["suspicious_pot_spike"] is True
+
+    def test_suspicious_pot_spike_sets_flag(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """Suspicious OCR-like pot spikes are visible to downstream guards."""
+        previous = create_empty_game_state()
+        previous.pot = 330
+
+        current = create_empty_game_state()
+        current.pot = 5950
+
+        result = estimator.estimate(previous, current)
+
+        assert result["filtered_pot"] == 330
+        assert result["pot_spike_hold"] is False
+        assert result["suspicious_pot_spike"] is True
 
     def test_natural_pot_increase_is_not_suspicious(
         self,
@@ -954,6 +975,8 @@ class TestPotSpikeFilter:
         second_result = estimator.estimate(first_spike, second_spike)
 
         assert first_result["filtered_pot"] == 1000
+        assert first_result["pot_spike_hold"] is True
+        assert first_result["suspicious_pot_spike"] is False
         assert second_result["filtered_pot"] is None
 
     def test_no_spike_returns_none_filtered_pot(

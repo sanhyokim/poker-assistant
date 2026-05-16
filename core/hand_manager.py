@@ -792,6 +792,18 @@ class HandManager:
                 )
                 continue
             action_name = action.action.upper()
+            if self._is_invalid_preflop_action_amount(action):
+                logger.warning(
+                    "Ignored invalid preflop action amount: hand_id=%s phase=%s "
+                    "seat=%s action=%s amount=%s blind_bb=%s",
+                    self._hand_id,
+                    self._phase,
+                    action.seat,
+                    action.action,
+                    action.amount,
+                    self._blind_bb(),
+                )
+                continue
             if (
                 not allow_hero_boundary_actions
                 and action.seat == 1
@@ -837,6 +849,18 @@ class HandManager:
     def _is_valid_action_seat(seat: int) -> bool:
         """Return whether an action seat maps to a real table seat."""
         return 1 <= seat <= 6
+
+    def _is_invalid_preflop_action_amount(self, action: ActionRecord) -> bool:
+        """Return whether a preflop action amount is too large to persist."""
+        if self._phase != "preflop":
+            return False
+        if action.action.upper() not in {"BET", "RAISE", "ALL_IN", "CALL"}:
+            return False
+        return action.amount >= self._blind_bb() * 200
+
+    def _blind_bb(self) -> int:
+        """Return the configured big blind for action sanity checks."""
+        return int(self._config.get("game", {}).get("blind_bb", 100))
 
     def replace_recent_hero_check_with_fold(self, *, max_age_sec: float = 1.5) -> bool:
         """Replace a very recent Hero CHECK with a fold-badge confirmed FOLD."""

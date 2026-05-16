@@ -289,6 +289,107 @@ def test_process_game_state_after_frame_filters_invalid_actions_before_manager(
     assert "Ignored invalid action before hand manager: seat=0" in caplog.text
 
 
+def test_process_game_state_after_frame_filters_huge_preflop_raise_during_pot_spike(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Huge preflop raises during pot-spike hold are not sent to HandManager."""
+    caplog.set_level(logging.WARNING, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    state = create_empty_game_state()
+    state.phase = "preflop"
+    state.hand_id = 2
+    state.pot = 314
+    state.strategy_defer_reason = "pot_spike_hold"
+    huge_raise = ActionRecord(
+        seat=3,
+        action="RAISE",
+        amount=21840,
+        confidence="high",
+    )
+    state.actions_since_last_frame = [huge_raise]
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert state.actions_since_last_frame == []
+    assert received_actions == []
+    assert "Ignored suspicious preflop action during pot spike hold" in caplog.text
+
+
+def test_process_game_state_after_frame_filters_100bb_all_in_during_pot_spike(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A 100BB all-in is blocked only in pot-spike context at the GameLoop layer."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    state = create_empty_game_state()
+    state.phase = "preflop"
+    state.hand_id = 3
+    state.pot = 330
+    state.strategy_defer_reason = "pot_spike_hold"
+    all_in = ActionRecord(seat=2, action="ALL_IN", amount=9984, confidence="high")
+    state.actions_since_last_frame = [all_in]
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert state.actions_since_last_frame == []
+    assert received_actions == []
+
+
+def test_process_game_state_after_frame_keeps_normal_preflop_raise(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Normal preflop raise sizes remain available to HandManager."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    state = create_empty_game_state()
+    state.phase = "preflop"
+    action = ActionRecord(seat=3, action="RAISE", amount=300, confidence="high")
+    state.actions_since_last_frame = [action]
+    received_actions: list[ActionRecord] = []
+
+    monkeypatch.setattr(
+        loop._hand_manager,
+        "process_frame",
+        lambda game_state: received_actions.extend(game_state.actions_since_last_frame),
+    )
+    monkeypatch.setattr(loop, "_recover_pending_hero_fold_badge", lambda _state: None)
+    monkeypatch.setattr(loop, "_sync_game_state_with_hand_manager", lambda _state: None)
+    monkeypatch.setattr(loop, "_update_hand_position_lock", lambda _state: None)
+    monkeypatch.setattr(loop, "_handle_strategy", lambda _state: None)
+
+    loop.process_game_state_after_frame(state)
+
+    assert state.actions_since_last_frame == [action]
+    assert received_actions == [action]
+
+
 def test_start_uses_canonical_post_frame_processing(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
