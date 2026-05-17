@@ -205,6 +205,127 @@ def test_add_preflop_buffered_actions_ignored_outside_preflop(
     assert manager.get_all_actions() == []
 
 
+def prepare_preflop_buffer_commit_test(
+    manager: HandManager,
+    blind_action: ActionRecord,
+) -> None:
+    """Prepare a preflop street with one recorded blind."""
+    manager._phase = "preflop"
+    manager._hand_id = 1
+    manager._street_actions["preflop"] = StreetActions(
+        street="preflop",
+        board=[],
+        actions=[blind_action],
+    )
+    manager._all_actions = [blind_action]
+
+
+def test_add_preflop_buffered_actions_drops_bb_duplicate_call(
+    manager: HandManager,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """BB blind and same-seat CALL for the same amount are not double recorded."""
+    prepare_preflop_buffer_commit_test(
+        manager,
+        ActionRecord(seat=5, action="BLIND_BB", amount=100),
+    )
+
+    with caplog.at_level(logging.INFO):
+        manager.add_preflop_buffered_actions(
+            [ActionRecord(seat=5, action="CALL", amount=100)]
+        )
+
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in manager.get_all_actions()
+    ] == [(5, "BLIND_BB", 100)]
+    assert "PRE_HAND_BUFFER_ACTION_DROPPED: reason=duplicate_blind" in caplog.text
+
+
+def test_add_preflop_buffered_actions_drops_bb_duplicate_bet_raise(
+    manager: HandManager,
+) -> None:
+    """BB blind and same-seat BET/RAISE not exceeding the blind are dropped."""
+    prepare_preflop_buffer_commit_test(
+        manager,
+        ActionRecord(seat=5, action="BLIND_BB", amount=100),
+    )
+
+    manager.add_preflop_buffered_actions(
+        [
+            ActionRecord(seat=5, action="BET", amount=100),
+            ActionRecord(seat=5, action="RAISE", amount=80),
+        ]
+    )
+
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in manager.get_all_actions()
+    ] == [(5, "BLIND_BB", 100)]
+
+
+def test_add_preflop_buffered_actions_keeps_bb_larger_action(
+    manager: HandManager,
+) -> None:
+    """A same-seat BB action above the blind amount is preserved."""
+    prepare_preflop_buffer_commit_test(
+        manager,
+        ActionRecord(seat=5, action="BLIND_BB", amount=100),
+    )
+
+    manager.add_preflop_buffered_actions(
+        [ActionRecord(seat=5, action="RAISE", amount=300)]
+    )
+
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in manager.get_all_actions()
+    ] == [(5, "BLIND_BB", 100), (5, "RAISE", 300)]
+
+
+def test_add_preflop_buffered_actions_keeps_sb_call_to_big_blind(
+    manager: HandManager,
+) -> None:
+    """SB CALL to complete to the big blind is preserved."""
+    prepare_preflop_buffer_commit_test(
+        manager,
+        ActionRecord(seat=4, action="BLIND_SB", amount=50),
+    )
+
+    manager.add_preflop_buffered_actions(
+        [ActionRecord(seat=4, action="CALL", amount=100)]
+    )
+
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in manager.get_all_actions()
+    ] == [(4, "BLIND_SB", 50), (4, "CALL", 100)]
+
+
+def test_add_preflop_buffered_actions_logs_committed_and_dropped(
+    manager: HandManager,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PRE-HAND buffer commit logs committed and dropped action details."""
+    prepare_preflop_buffer_commit_test(
+        manager,
+        ActionRecord(seat=5, action="BLIND_BB", amount=100),
+    )
+
+    with caplog.at_level(logging.INFO):
+        manager.add_preflop_buffered_actions(
+            [
+                ActionRecord(seat=5, action="CALL", amount=100),
+                ActionRecord(seat=3, action="RAISE", amount=300),
+            ]
+        )
+
+    assert "PRE_HAND_BUFFER_COMMIT_REQUESTED" in caplog.text
+    assert "PRE_HAND_BUFFER_COMMITTED" in caplog.text
+    assert "'action': 'RAISE'" in caplog.text
+    assert "'reason': 'duplicate_blind'" in caplog.text
+
+
 def finish_hand_by_pot_decrease(
     manager: HandManager,
     board: list[str] | None = None,

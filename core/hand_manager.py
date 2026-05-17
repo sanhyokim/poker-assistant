@@ -379,22 +379,110 @@ class HandManager:
         if "preflop" not in self._street_actions:
             self._street_actions["preflop"] = StreetActions(street="preflop", board=[])
 
+        logger.info(
+            "PRE_HAND_BUFFER_COMMIT_REQUESTED: hand_id=%s actions=%s",
+            self._hand_id,
+            self._action_records_for_log(actions),
+        )
         preflop_actions = self._street_actions["preflop"].actions
         existing_keys = {
             (action.seat, action.action.upper(), action.amount)
             for action in preflop_actions + self._all_actions
         }
         unique_actions: list[ActionRecord] = []
+        dropped_actions: list[dict[str, object]] = []
         for action in actions:
             key = (action.seat, action.action.upper(), action.amount)
             if key in existing_keys:
                 logger.debug("Duplicate PRE-HAND buffered action ignored: %s", action)
+                dropped_actions.append(
+                    self._dropped_pre_hand_action_for_log(action, "duplicate")
+                )
+                continue
+            drop_reason = self._pre_hand_buffer_drop_reason(action, preflop_actions)
+            if drop_reason is not None:
+                dropped_actions.append(
+                    self._dropped_pre_hand_action_for_log(action, drop_reason)
+                )
+                logger.info(
+                    "PRE_HAND_BUFFER_ACTION_DROPPED: reason=%s seat=%s "
+                    "blind_action=%s action=%s amount=%s",
+                    drop_reason,
+                    action.seat,
+                    self._blind_action_for_seat(action.seat, preflop_actions),
+                    action.action,
+                    action.amount,
+                )
                 continue
             existing_keys.add(key)
             unique_actions.append(action)
 
         if unique_actions:
             self._add_actions(unique_actions)
+        logger.info(
+            "PRE_HAND_BUFFER_COMMITTED: hand_id=%s committed=%s dropped=%s",
+            self._hand_id,
+            self._action_records_for_log(unique_actions),
+            dropped_actions,
+        )
+
+    @staticmethod
+    def _action_records_for_log(actions: list[ActionRecord]) -> list[dict[str, object]]:
+        """Return compact action dictionaries for structured logs."""
+        return [
+            {
+                "seat": action.seat,
+                "action": action.action,
+                "amount": action.amount,
+                "confidence": action.confidence,
+            }
+            for action in actions
+        ]
+
+    @staticmethod
+    def _dropped_pre_hand_action_for_log(
+        action: ActionRecord,
+        reason: str,
+    ) -> dict[str, object]:
+        """Return compact dropped-action details for commit logs."""
+        return {
+            "reason": reason,
+            "seat": action.seat,
+            "action": action.action,
+            "amount": action.amount,
+            "confidence": action.confidence,
+        }
+
+    @staticmethod
+    def _blind_action_for_seat(
+        seat: int,
+        preflop_actions: list[ActionRecord],
+    ) -> str | None:
+        """Return the existing blind action for a seat, if any."""
+        for action in preflop_actions:
+            if action.seat == seat and action.action.upper() in {"BLIND_SB", "BLIND_BB"}:
+                return action.action.upper()
+        return None
+
+    @classmethod
+    def _pre_hand_buffer_drop_reason(
+        cls,
+        action: ActionRecord,
+        preflop_actions: list[ActionRecord],
+    ) -> str | None:
+        """Return why a PRE-HAND buffered action should not be committed."""
+        action_name = action.action.upper()
+        if action_name not in {"CALL", "BET", "RAISE"}:
+            return None
+        for existing in preflop_actions:
+            blind_name = existing.action.upper()
+            if existing.seat != action.seat:
+                continue
+            if blind_name == "BLIND_BB" and action.amount <= existing.amount:
+                return "duplicate_blind"
+            if blind_name == "BLIND_SB" and action.amount <= existing.amount:
+                return "duplicate_blind"
+        return None
 
     @property
     def hero_turn_started_monotonic(self) -> float | None:

@@ -518,6 +518,145 @@ def test_pre_hand_candidate_discards_on_board_visible(
     assert "PRE_HAND_CANDIDATE_DISCARDED: reason=board_visible" in caplog.text
 
 
+def test_pre_hand_candidate_soft_timeout_holds_buffered_actions(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Candidate soft timeout preserves buffered actions near hand start."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_candidate_active = True
+    loop._pre_hand_candidate_started_at = (
+        time.monotonic() - loop._pre_hand_candidate_timeout_sec - 0.1
+    )
+    loop._pre_hand_candidate_action_buffer = [
+        ActionRecord(seat=2, action="BET", amount=100),
+    ]
+    state = create_empty_game_state()
+    state.frame_number = 24
+    state.table_visible = True
+    state.dealer_seat = 3
+    state.board_card_count = 0
+    state.hero.cards = ["Ah", "Kd"]
+
+    with caplog.at_level(logging.INFO):
+        loop._update_pre_hand_candidate_state(state)
+
+    assert loop._pre_hand_candidate_active is True
+    assert loop._pre_hand_candidate_action_buffer
+    assert "PRE_HAND_CANDIDATE_TIMEOUT_HELD" in caplog.text
+
+
+def test_pre_hand_candidate_hard_timeout_discards_buffered_actions(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Candidate hard timeout discards stale buffered actions."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_candidate_active = True
+    loop._pre_hand_candidate_started_at = (
+        time.monotonic() - loop._pre_hand_candidate_hard_timeout_sec - 0.1
+    )
+    loop._pre_hand_candidate_action_buffer = [
+        ActionRecord(seat=2, action="BET", amount=100),
+    ]
+    state = create_empty_game_state()
+    state.frame_number = 25
+    state.table_visible = True
+    state.dealer_seat = 3
+    state.board_card_count = 0
+    state.hero.cards = ["Ah", "Kd"]
+
+    with caplog.at_level(logging.INFO):
+        loop._update_pre_hand_candidate_state(state)
+
+    assert loop._pre_hand_candidate_active is False
+    assert loop._pre_hand_candidate_action_buffer == []
+    assert "PRE_HAND_CANDIDATE_DISCARDED: reason=hard_timeout" in caplog.text
+
+
+def test_pre_hand_soft_timeout_holds_buffered_actions(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PRE-HAND soft timeout preserves buffered actions near hand start."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_active = True
+    loop._pre_hand_started_at = time.monotonic() - loop._pre_hand_timeout_sec - 0.1
+    loop._waiting_preflop_action_buffer = [
+        ActionRecord(seat=2, action="BET", amount=100),
+    ]
+    state = create_empty_game_state()
+    state.frame_number = 26
+    state.table_visible = True
+    state.dealer_seat = 3
+    state.board_card_count = 0
+    state.hero.cards = ["Ah", "Kd"]
+
+    with caplog.at_level(logging.INFO):
+        loop._update_pre_hand_state(state)
+
+    assert loop._pre_hand_active is True
+    assert loop._waiting_preflop_action_buffer
+    assert "PRE_HAND_TIMEOUT_HELD" in caplog.text
+
+
+def test_pre_hand_hard_timeout_discards_buffered_actions(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PRE-HAND hard timeout discards stale buffered actions."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_active = True
+    loop._pre_hand_started_at = time.monotonic() - loop._pre_hand_hard_timeout_sec - 0.1
+    loop._waiting_preflop_action_buffer = [
+        ActionRecord(seat=2, action="BET", amount=100),
+    ]
+    state = create_empty_game_state()
+    state.frame_number = 27
+    state.table_visible = True
+    state.dealer_seat = 3
+    state.board_card_count = 0
+    state.hero.cards = ["Ah", "Kd"]
+
+    with caplog.at_level(logging.INFO):
+        loop._update_pre_hand_state(state)
+
+    assert loop._pre_hand_active is False
+    assert loop._waiting_preflop_action_buffer == []
+    assert "PRE-HAND discarded: reason=hard_timeout" in caplog.text
+
+
+def test_pre_hand_candidate_drops_hero_and_low_confidence_actions(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Candidate buffer rejects hero-seat and low-confidence actions."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_candidate_active = True
+    state = create_empty_game_state()
+    state.frame_number = 28
+    state.actions_since_last_frame = [
+        ActionRecord(seat=1, action="RAISE", amount=100, confidence="high"),
+        ActionRecord(seat=2, action="BET", amount=100, confidence="low"),
+        ActionRecord(seat=3, action="BET", amount=100, confidence="high"),
+    ]
+
+    with caplog.at_level(logging.INFO):
+        loop._buffer_pre_hand_candidate_actions(state)
+
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in loop._pre_hand_candidate_action_buffer
+    ] == [(3, "BET", 100)]
+    assert "PRE_HAND_ACTION_DROPPED: reason=hero_seat_waiting" in caplog.text
+    assert "PRE_HAND_ACTION_DROPPED: reason=low_confidence" in caplog.text
+
+
 def test_process_one_frame_starts_pre_hand_in_execution_flow(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

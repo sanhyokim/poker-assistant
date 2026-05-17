@@ -170,8 +170,14 @@ class GameLoop:
         self._pre_hand_timeout_sec: float = float(
             recognition_config.get("pre_hand_timeout_sec", 5.0)
         )
+        self._pre_hand_hard_timeout_sec: float = float(
+            recognition_config.get("pre_hand_hard_timeout_sec", 9.0)
+        )
         self._pre_hand_candidate_timeout_sec: float = float(
             recognition_config.get("pre_hand_candidate_timeout_sec", 5.0)
+        )
+        self._pre_hand_candidate_hard_timeout_sec: float = float(
+            recognition_config.get("pre_hand_candidate_hard_timeout_sec", 9.0)
         )
         self._pre_hand_active: bool = False
         self._pre_hand_started_at: float | None = None
@@ -188,6 +194,8 @@ class GameLoop:
         self._pre_hand_candidate_action_buffer: list[ActionRecord] = []
         self._pre_hand_candidate_action_keys: set[tuple[int, str, int]] = set()
         self._pre_hand_candidate_no_card_frames: int = 0
+        self._pre_hand_timeout_held_logged: bool = False
+        self._pre_hand_candidate_timeout_held_logged: bool = False
         self._last_hero_non_fold_action_time: float | None = None
         self._last_hero_non_fold_action_name: str | None = None
         self._hero_fold_badge_ignored_for_hand: bool = False
@@ -313,6 +321,7 @@ class GameLoop:
             self._pre_hand_started_frame = game_state.frame_number
             self._pre_hand_dealer_seat = game_state.dealer_seat
             self._pre_hand_cards_visible_seats = set(carded_seats)
+            self._pre_hand_timeout_held_logged = False
             logger.info(
                 "PRE-HAND started: frame=%s dealer=%s cards_visible_seats=%s "
                 "pot=%s board_count=%s",
@@ -363,6 +372,7 @@ class GameLoop:
             self._pre_hand_candidate_dealer_seat = dealer_seat
             self._pre_hand_candidate_cards_visible_seats = set(carded_seats)
             self._pre_hand_candidate_no_card_frames = 0
+            self._pre_hand_candidate_timeout_held_logged = False
             game_state.hand_start_status = "PRE-HAND-CANDIDATE"
             logger.info(
                 "PRE_HAND_CANDIDATE_STARTED: frame=%s dealer=%s "
@@ -407,8 +417,30 @@ class GameLoop:
         if (
             self._pre_hand_candidate_started_at is not None
             and time.monotonic() - self._pre_hand_candidate_started_at
+            > self._pre_hand_candidate_hard_timeout_sec
+        ):
+            return "hard_timeout"
+        if (
+            self._pre_hand_candidate_started_at is not None
+            and time.monotonic() - self._pre_hand_candidate_started_at
             > self._pre_hand_candidate_timeout_sec
         ):
+            if self._should_hold_pre_hand_timeout(
+                game_state,
+                self._pre_hand_candidate_action_buffer,
+            ):
+                if not self._pre_hand_candidate_timeout_held_logged:
+                    logger.info(
+                        "PRE_HAND_CANDIDATE_TIMEOUT_HELD: frame=%s "
+                        "buffered_actions=%s "
+                        "reason=hero_or_cards_still_candidate",
+                        game_state.frame_number,
+                        self._action_records_for_log(
+                            self._pre_hand_candidate_action_buffer
+                        ),
+                    )
+                    self._pre_hand_candidate_timeout_held_logged = True
+                return None
             return "timeout"
         if len(self._pre_hand_carded_seats(game_state)) == 0:
             self._pre_hand_candidate_no_card_frames += 1
@@ -427,7 +459,9 @@ class GameLoop:
 
         game_state.hand_start_status = "PRE-HAND-CANDIDATE"
         for action in game_state.actions_since_last_frame:
-            if not self._is_pre_hand_buffer_action(action):
+            drop_reason = self._pre_hand_buffer_action_drop_reason(action)
+            if drop_reason is not None:
+                self._log_pre_hand_action_dropped(drop_reason, action)
                 continue
             action_name = action.action.upper()
             key = (action.seat, action_name, action.amount)
@@ -467,6 +501,7 @@ class GameLoop:
         self._pre_hand_started_frame = game_state.frame_number
         self._pre_hand_dealer_seat = game_state.dealer_seat
         self._pre_hand_cards_visible_seats = set(carded_seats)
+        self._pre_hand_timeout_held_logged = False
         game_state.hand_start_status = "PRE-HAND"
         logger.info(
             "PRE_HAND_CANDIDATE_PROMOTED: frame=%s moved_actions=%s "
@@ -518,8 +553,29 @@ class GameLoop:
         if (
             self._pre_hand_started_at is not None
             and time.monotonic() - self._pre_hand_started_at
+            > self._pre_hand_hard_timeout_sec
+        ):
+            return "hard_timeout"
+        if (
+            self._pre_hand_started_at is not None
+            and time.monotonic() - self._pre_hand_started_at
             > self._pre_hand_timeout_sec
         ):
+            if self._should_hold_pre_hand_timeout(
+                game_state,
+                self._waiting_preflop_action_buffer,
+            ):
+                if not self._pre_hand_timeout_held_logged:
+                    logger.info(
+                        "PRE_HAND_TIMEOUT_HELD: frame=%s buffered_actions=%s "
+                        "reason=hero_or_cards_still_candidate",
+                        game_state.frame_number,
+                        self._action_records_for_log(
+                            self._waiting_preflop_action_buffer
+                        ),
+                    )
+                    self._pre_hand_timeout_held_logged = True
+                return None
             return "timeout"
         if len(self._pre_hand_carded_seats(game_state)) == 0:
             return "cards_disappeared"
@@ -534,7 +590,9 @@ class GameLoop:
 
         game_state.hand_start_status = "PRE-HAND"
         for action in game_state.actions_since_last_frame:
-            if not self._is_pre_hand_buffer_action(action):
+            drop_reason = self._pre_hand_buffer_action_drop_reason(action)
+            if drop_reason is not None:
+                self._log_pre_hand_action_dropped(drop_reason, action)
                 continue
             action_name = action.action.upper()
             key = (action.seat, action_name, action.amount)
@@ -622,6 +680,7 @@ class GameLoop:
         self._pre_hand_cards_visible_seats.clear()
         self._waiting_preflop_action_buffer.clear()
         self._waiting_preflop_action_keys.clear()
+        self._pre_hand_timeout_held_logged = False
 
     def _clear_pre_hand_candidate_state(self) -> None:
         """Clear PRE-HAND candidate state and action buffers."""
@@ -633,6 +692,7 @@ class GameLoop:
         self._pre_hand_candidate_action_buffer.clear()
         self._pre_hand_candidate_action_keys.clear()
         self._pre_hand_candidate_no_card_frames = 0
+        self._pre_hand_candidate_timeout_held_logged = False
 
     def _candidate_dealer_seat(self, game_state: GameState) -> int | None:
         """Return dealer seat usable for early PRE-HAND candidate detection."""
@@ -655,26 +715,58 @@ class GameLoop:
         """Return the maximum pot that can start PRE-HAND buffering."""
         return self._blind_bb() * 10
 
+    def _should_hold_pre_hand_timeout(
+        self,
+        game_state: GameState,
+        actions: list[ActionRecord],
+    ) -> bool:
+        """Return whether a soft timeout should preserve buffered actions."""
+        if not actions or not game_state.table_visible or game_state.board_card_count != 0:
+            return False
+        hero_cards_visible = not self._hero_cards_missing(game_state.hero.cards)
+        if hero_cards_visible or self._hero_card_candidate is not None:
+            return True
+        return len(self._pre_hand_carded_seats(game_state)) >= self._pre_hand_min_carded_seats
+
     @staticmethod
-    def _is_pre_hand_buffer_action(action: ActionRecord) -> bool:
-        """Return whether an action is safe to buffer during PRE-HAND."""
+    def _pre_hand_buffer_action_drop_reason(action: ActionRecord) -> str | None:
+        """Return why an action cannot be buffered before a formal hand."""
         action_name = action.action.upper()
         if action.seat < 1 or action.seat > 6:
-            return False
+            return "invalid_seat"
+        if action.seat == 1:
+            return "hero_seat_waiting"
+        if action.confidence != "high":
+            return "low_confidence"
         if action_name in {"CHECK", "FOLD"}:
-            return False
+            return "unsupported_action"
         if action.amount < 0:
-            return False
+            return "negative_amount"
         if action_name in {"BET", "RAISE", "ALL_IN", "CALL"} and action.amount <= 0:
-            return False
-        return action_name in {
+            return "non_positive_amount"
+        if action_name not in {
             "CALL",
             "BET",
             "RAISE",
             "ALL_IN",
             "BLIND_SB",
             "BLIND_BB",
-        }
+        }:
+            return "unsupported_action"
+        return None
+
+    @staticmethod
+    def _log_pre_hand_action_dropped(reason: str, action: ActionRecord) -> None:
+        """Log dropped PRE-HAND buffer actions."""
+        if reason not in {"hero_seat_waiting", "low_confidence"}:
+            return
+        logger.info(
+            "PRE_HAND_ACTION_DROPPED: reason=%s seat=%s action=%s amount=%s",
+            reason,
+            action.seat,
+            action.action,
+            action.amount,
+        )
 
     @staticmethod
     def _action_records_for_log(actions: list[ActionRecord]) -> list[dict[str, object]]:
@@ -2083,6 +2175,7 @@ class GameLoop:
     @staticmethod
     def _log_preflop_recommendation_context(game_state: GameState) -> None:
         """Log the preflop state used by the recommendation engine."""
+        GameLoop._log_preflop_action_integrity(game_state)
         max_bet = max(
             [game_state.hero.bet]
             + [player.bet for player in game_state.players.values()]
@@ -2107,6 +2200,56 @@ class GameLoop:
                 for action in game_state.preflop_actions
             ],
             game_state.strategy_defer_reason,
+        )
+
+    @staticmethod
+    def _log_preflop_action_integrity(game_state: GameState) -> None:
+        """Log preflop blind/action consistency diagnostics."""
+        positions: dict[int, str | None] = {1: game_state.hero.position}
+        for seat in range(2, 7):
+            player = game_state.players.get(str(seat))
+            positions[seat] = (
+                getattr(player, "position", None)
+                if player is not None
+                else None
+            )
+
+        street_actions = list(game_state.current_street_actions)
+        blinds = [
+            action
+            for action in street_actions
+            if action.action.upper() in {"BLIND_SB", "BLIND_BB"}
+        ]
+        warnings: list[str] = []
+        blind_by_seat = {action.seat: action for action in blinds}
+
+        if not any(action.action.upper() == "BLIND_SB" for action in blinds):
+            warnings.append("sb_missing")
+        if not any(action.action.upper() == "BLIND_BB" for action in blinds):
+            warnings.append("bb_missing")
+        for action in street_actions:
+            action_name = action.action.upper()
+            blind = blind_by_seat.get(action.seat)
+            if blind is None or action_name not in {"CALL", "BET", "RAISE"}:
+                continue
+            if action.amount == blind.amount:
+                warnings.append("same_seat_blind_and_call_same_amount")
+        for blind in blinds:
+            blind_name = blind.action.upper()
+            expected_position = "SB" if blind_name == "BLIND_SB" else "BB"
+            if positions.get(blind.seat) not in {None, expected_position}:
+                warnings.append("blind_seat_mismatch_position")
+        if game_state.hero.position == "BB" and 1 not in blind_by_seat:
+            warnings.append("hero_bb_but_no_blind")
+
+        logger.info(
+            "PREFLOP_ACTION_INTEGRITY: hand_id=%s positions=%s blinds=%s "
+            "preflop_actions=%s warnings=%s",
+            game_state.hand_id,
+            positions,
+            GameLoop._action_records_for_log(blinds),
+            GameLoop._action_records_for_log(game_state.preflop_actions),
+            sorted(set(warnings)),
         )
 
     @staticmethod
