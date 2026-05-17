@@ -3746,6 +3746,168 @@ def test_async_fallback_recommendation_accepted_logs_warning(
     assert "latency={'headsup_total_ms': 25.0}" in caplog.text
 
 
+def make_hu_solver_state() -> Any:
+    """Return a HU postflop state for async solver tests."""
+    state = create_empty_game_state()
+    state.hand_id = 6
+    state.phase = "flop"
+    state.board = ["2h", "3d", "5c"]
+    state.pot = 600
+    state.hero.cards = ["Ah", "Kd"]
+    state.hero.bet = 0
+    state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+    state.active_player_count = 2
+    state.players["2"] = PlayerState(
+        stack=4400,
+        bet=120,
+        is_seated=True,
+        in_current_hand=True,
+    )
+    state.current_street_actions = [
+        ActionRecord(seat=2, action="BET", amount=120),
+    ]
+    return state
+
+
+def test_hu_solver_timeout_context_is_recorded(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Accepted solver timeout results record the context key."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = make_hu_solver_state()
+    monkeypatch.setattr(
+        loop,
+        "_is_recommendation_context_still_valid",
+        lambda _ctx, _state: True,
+    )
+    recommendation = Recommendation(
+        action="SOLVER_TIMEOUT",
+        reason="Solver timeout: no reliable solver result",
+        confidence="low",
+        strategy_source="solver_timeout",
+    )
+    loop._pending_recommendation_active_id = 12
+    loop._pending_recommendation_context = {"hand_id": 6}
+    loop._pending_recommendation_completed[12] = _AsyncRecommendationResult(
+        request_id=12,
+        recommendation=recommendation,
+    )
+
+    result = loop._poll_async_recommendation_result(state)
+
+    assert result is recommendation
+    assert loop._solver_context_key(state) in loop._solver_timeout_contexts
+    assert "SOLVER_TIMEOUT_CONTEXT_RECORDED" in caplog.text
+
+
+def test_same_solver_timeout_context_suppresses_retry(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The same timed-out HU solver context is not launched again."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._recommendation_engine = MagicMock()
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    state = make_hu_solver_state()
+    loop._record_solver_timeout_context(state)
+    loop._start_async_postflop_recommendation = MagicMock()  # type: ignore[method-assign]
+    hud_callback = MagicMock()
+    loop._hud_callback = hud_callback
+
+    loop._handle_strategy(state)
+
+    loop._start_async_postflop_recommendation.assert_not_called()
+    assert loop.current_recommendation is not None
+    assert loop.current_recommendation.strategy_source == "solver_timeout"
+    hud_callback.assert_called_with(loop.current_recommendation)
+    assert "SOLVER_RETRY_SUPPRESSED" in caplog.text
+
+
+def test_changed_solver_context_allows_retry(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A changed board/context can launch the solver after a previous timeout."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._recommendation_engine = MagicMock()
+    loop._hand_manager._phase = "turn"
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    timed_out_state = make_hu_solver_state()
+    loop._record_solver_timeout_context(timed_out_state)
+    state = make_hu_solver_state()
+    state.phase = "turn"
+    state.board = ["2h", "3d", "5c", "9s"]
+    loop._start_async_postflop_recommendation = MagicMock()  # type: ignore[method-assign]
+
+    loop._handle_strategy(state)
+
+    loop._start_async_postflop_recommendation.assert_called_once()
+
+
+def test_new_street_clears_solver_timeout_context(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """NEW_STREET clears recorded solver timeout contexts."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._recommendation_engine = MagicMock()
+    loop._hand_manager._phase = "turn"
+    state = make_hu_solver_state()
+    loop._record_solver_timeout_context(state)
+    state.game_event = "NEW_STREET"
+    state.hero.is_my_turn = False
+
+    loop._handle_strategy(state)
+
+    assert loop._solver_timeout_contexts == {}
+
+
+def test_hu_preflop_integrity_allows_button_small_blind(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """HU integrity accepts BTN=BLIND_SB and BB=BLIND_BB."""
+    state = create_empty_game_state()
+    state.hand_id = 8
+    state.hero.position = "BTN"
+    state.players["2"].position = "BB"
+    state.current_street_actions = [
+        ActionRecord(seat=1, action="BLIND_SB", amount=50),
+        ActionRecord(seat=2, action="BLIND_BB", amount=100),
+    ]
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        GameLoop._log_preflop_action_integrity(state)
+
+    assert "blind_seat_mismatch_position" not in caplog.text
+
+
+def test_three_way_preflop_integrity_still_detects_blind_mismatch(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Three-way integrity still warns when a blind seat mismatches position."""
+    state = create_empty_game_state()
+    state.hand_id = 9
+    state.hero.position = "BTN"
+    state.players["2"].position = "SB"
+    state.players["3"].position = "BB"
+    state.current_street_actions = [
+        ActionRecord(seat=1, action="BLIND_SB", amount=50),
+        ActionRecord(seat=3, action="BLIND_BB", amount=100),
+    ]
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        GameLoop._log_preflop_action_integrity(state)
+
+    assert "blind_seat_mismatch_position" in caplog.text
+
+
 def test_active_hero_card_single_mismatch_does_not_abandon(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

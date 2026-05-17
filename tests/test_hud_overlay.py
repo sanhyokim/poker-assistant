@@ -46,7 +46,8 @@ def test_hud_overlay_updates_recommendation(qapp: QApplication) -> None:
     assert overlay._action_label.text() == "RAISE 300 (3.0BB) [3.0X]"
     assert overlay._confidence_label.text() == "HIGH"
     assert overlay._source_label.text() == "Source: Solver"
-    assert "RAISE 300: 75%" in overlay._probabilities_label.text()
+    assert "Solver Mix:" in overlay._probabilities_label.text()
+    assert "RAISE 300 75%" in overlay._probabilities_label.text()
     assert overlay._reason_label.text() == "Strong value spot"
     assert "#ffa500" in overlay._action_label.styleSheet()
 
@@ -153,6 +154,58 @@ def test_hud_overlay_waiting_and_computing_states(qapp: QApplication) -> None:
     QApplication.processEvents()
     assert overlay._status_label.text() == "Waiting for hand..."
     assert overlay._probabilities_label.isHidden() is True
+
+
+def test_hud_overlay_solver_probabilities_are_sorted_and_limited(
+    qapp: QApplication,
+) -> None:
+    """Solver probabilities are sorted, capped at three, and label ALL_IN clearly."""
+    _ = qapp
+    overlay = HudOverlay()
+    recommendation = Recommendation(
+        action="FOLD",
+        strategy_source="solver",
+        action_probabilities={
+            "CALL": 0.31,
+            "FOLD": 0.52,
+            "ALL_IN 2934": 0.17,
+            "RAISE 700": 0.01,
+        },
+        reason="solver result",
+    )
+
+    overlay.update_recommendation(recommendation)
+    QApplication.processEvents()
+
+    lines = overlay._probabilities_label.text().splitlines()
+    assert lines == [
+        "Solver Mix:",
+        "FOLD 52%",
+        "CALL 31%",
+        "ALL-IN 2934 17%",
+    ]
+    probability_index = overlay.layout().indexOf(overlay._probabilities_label)
+    reason_index = overlay.layout().indexOf(overlay._reason_label)
+    assert probability_index < reason_index
+
+
+def test_hud_overlay_solver_timeout_message(qapp: QApplication) -> None:
+    """Solver timeout recommendations render as an explicit non-strategy result."""
+    _ = qapp
+    overlay = HudOverlay()
+    recommendation = Recommendation(
+        action="SOLVER_TIMEOUT",
+        reason="Solver timeout: no reliable solver result",
+        confidence="low",
+        strategy_source="solver_timeout",
+    )
+
+    overlay.update_recommendation(recommendation)
+    QApplication.processEvents()
+
+    assert overlay._action_label.text() == "SOLVER TIMEOUT"
+    assert overlay._source_label.text() == "Source: Solver Timeout"
+    assert overlay._reason_label.text() == "Solver timeout: no reliable solver result"
 
 
 @pytest.mark.parametrize(

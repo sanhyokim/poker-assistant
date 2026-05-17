@@ -2,6 +2,7 @@
 
 import copy
 import inspect
+import json
 import logging
 import threading
 import time
@@ -225,6 +226,7 @@ class GameLoop:
             int, _AsyncRecommendationResult
         ] = {}
         self._pending_recommendation_cancelled_ids: set[int] = set()
+        self._solver_timeout_contexts: dict[str, float] = {}
 
         if enable_strategy:
             self._init_strategy_modules()
@@ -258,6 +260,9 @@ class GameLoop:
         """
         if game_state.game_event == "NEW_HAND":
             self._pending_amount_rechecks.clear()
+            self._clear_solver_timeout_contexts("new_hand")
+        if game_state.game_event == "NEW_STREET":
+            self._clear_solver_timeout_contexts("new_street")
         game_state.actions_since_last_frame = self._filter_invalid_actions(
             game_state.actions_since_last_frame,
         )
@@ -1755,6 +1760,7 @@ class GameLoop:
             self._previous_recommendation = None
             self._previous_recommendation_context = None
             self._clear_pending_state()
+            self._clear_solver_timeout_contexts(str(phase or "inactive_phase"))
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = False
             if game_state.hand_start_status == "PRE-HAND":
@@ -1797,6 +1803,7 @@ class GameLoop:
             self._previous_recommendation = None
             self._previous_recommendation_context = None
             self._clear_pending_state()
+            self._clear_solver_timeout_contexts("new_hand")
 
         if phase == "preflop" and self._last_strategy_phase != "preflop":
             self._previous_recommendation = None
@@ -1806,6 +1813,7 @@ class GameLoop:
         if game_state.game_event == "NEW_STREET":
             self._last_recommendation_log = None
             self._clear_pending_state()
+            self._clear_solver_timeout_contexts("new_street")
             if self._hand_manager is not None:
                 game_state.phase = self._hand_manager.phase
 
@@ -2019,9 +2027,15 @@ class GameLoop:
                                     game_state,
                                 )
                             )
-                            self._start_async_postflop_recommendation(
-                                game_state, snapshot,
-                            )
+                            if self._is_solver_retry_suppressed(game_state):
+                                recommendation = self._solver_timeout_recommendation()
+                                self._previous_recommendation = recommendation
+                                self._previous_recommendation_context = snapshot
+                                self._notify_hud(recommendation)
+                            else:
+                                self._start_async_postflop_recommendation(
+                                    game_state, snapshot,
+                                )
                         else:
                             with self._pending_recommendation_lock:
                                 request_id = self._pending_recommendation_active_id
@@ -2236,7 +2250,13 @@ class GameLoop:
                 warnings.append("same_seat_blind_and_call_same_amount")
         for blind in blinds:
             blind_name = blind.action.upper()
-            expected_position = "SB" if blind_name == "BLIND_SB" else "BB"
+            active_position_count = sum(
+                1 for position in positions.values() if position is not None
+            )
+            if active_position_count == 2 and blind_name == "BLIND_SB":
+                expected_position = "BTN"
+            else:
+                expected_position = "SB" if blind_name == "BLIND_SB" else "BB"
             if positions.get(blind.seat) not in {None, expected_position}:
                 warnings.append("blind_seat_mismatch_position")
         if game_state.hero.position == "BB" and 1 not in blind_by_seat:
@@ -2752,6 +2772,96 @@ class GameLoop:
             thread = self._pending_recommendation_thread
             return thread is not None and thread.is_alive()
 
+    def _solver_context_key(self, game_state: GameState) -> str:
+        """Return a stable key for HU solver retry suppression."""
+        max_opponent_bet = max(
+            [
+                int(player.bet or 0)
+                for seat, player in game_state.players.items()
+                if seat != "1" and player is not None
+            ],
+            default=0,
+        )
+        payload = {
+            "hand_id": game_state.hand_id,
+            "phase": game_state.phase,
+            "board": list(game_state.board or []),
+            "pot": int(game_state.pot or 0),
+            "hero_bet": int(game_state.hero.bet or 0),
+            "max_opponent_bet": max_opponent_bet,
+            "current_street_actions": [
+                {
+                    "seat": action.seat,
+                    "action": action.action,
+                    "amount": action.amount,
+                }
+                for action in game_state.current_street_actions
+            ],
+            "active_player_count": game_state.active_player_count,
+            "hero_cards": list(game_state.hero.cards or []),
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    def _record_solver_timeout_context(self, game_state: GameState) -> None:
+        """Remember a solver timeout context to suppress immediate retries."""
+        if not hasattr(self, "_solver_timeout_contexts"):
+            self._solver_timeout_contexts = {}
+        key = self._solver_context_key(game_state)
+        self._solver_timeout_contexts[key] = time.monotonic()
+        logger.info(
+            "SOLVER_TIMEOUT_CONTEXT_RECORDED: key=%s hand_id=%s phase=%s "
+            "board=%s pot=%s actions=%s",
+            key,
+            game_state.hand_id,
+            game_state.phase,
+            game_state.board,
+            game_state.pot,
+            [
+                (action.seat, action.action, action.amount)
+                for action in game_state.current_street_actions
+            ],
+        )
+
+    def _is_solver_retry_suppressed(self, game_state: GameState) -> bool:
+        """Return True when the same solver context already timed out."""
+        if not hasattr(self, "_solver_timeout_contexts"):
+            self._solver_timeout_contexts = {}
+        key = self._solver_context_key(game_state)
+        if key not in self._solver_timeout_contexts:
+            return False
+        logger.info(
+            "SOLVER_RETRY_SUPPRESSED: reason=previous_timeout_same_context "
+            "hand_id=%s phase=%s key=%s",
+            game_state.hand_id,
+            game_state.phase,
+            key,
+        )
+        return True
+
+    def _clear_solver_timeout_contexts(self, reason: str) -> None:
+        """Clear timeout retry suppression when the poker context advances."""
+        if not hasattr(self, "_solver_timeout_contexts"):
+            self._solver_timeout_contexts = {}
+        if not self._solver_timeout_contexts:
+            return
+        logger.info(
+            "SOLVER_TIMEOUT_CONTEXTS_CLEARED: reason=%s count=%d",
+            reason,
+            len(self._solver_timeout_contexts),
+        )
+        self._solver_timeout_contexts.clear()
+
+    @staticmethod
+    def _solver_timeout_recommendation() -> Recommendation:
+        """Return a non-strategic HUD recommendation for solver timeout."""
+        return Recommendation(
+            action="SOLVER_TIMEOUT",
+            amount=0,
+            reason="Solver timeout: no reliable solver result",
+            confidence="low",
+            strategy_source="solver_timeout",
+        )
+
     def _cleanup_async_recommendation_state_locked(
         self,
         request_id: int | None = None,
@@ -2959,6 +3069,8 @@ class GameLoop:
                 result.reason,
                 result.latency_breakdown,
             )
+        if result.strategy_source == "solver_timeout":
+            self._record_solver_timeout_context(current_state)
         with self._pending_recommendation_lock:
             self._finish_async_request_locked(active_id)
         return result

@@ -1235,6 +1235,9 @@ def test_headsup_solver_failure_uses_correct_timeout(
 
     engine.solver_bridge.solve.assert_called_once()
     call_kwargs = engine.solver_bridge.solve.call_args[1]
+    assert recommendation.strategy_source == "solver_timeout"
+    assert recommendation.confidence == "low"
+    assert recommendation.reason == "Solver timeout: no reliable solver result"
     assert call_kwargs["timeout"] == 22.0
     assert "timeout_ms=20000" in caplog.text
     assert "bridge_timeout_sec=22.0" in caplog.text
@@ -1242,6 +1245,7 @@ def test_headsup_solver_failure_uses_correct_timeout(
     assert "HU solver fallback reason=solver_failed" in caplog.text
     assert "Solver timeout" in caplog.text
     assert "error=Solver timeout" in caplog.text
+    assert "HU_SOLVER_RESULT_DETAIL" in caplog.text
 
 
 def test_headsup_solver_unavailable_logs_fallback_reason(
@@ -1327,7 +1331,8 @@ def test_generate_postflop_headsup_uses_exploit_only_with_usable_stats() -> None
     recommendation = engine.generate(state, {"2": {"vpip": 30, "total_hands": 50}})
 
     assert recommendation.action == "CALL"
-    assert recommendation.reason == "Enough hands to exploit."
+    assert recommendation.reason.startswith("Enough hands to exploit.")
+    assert "Solver: BET 120 80% / CHECK 20%" in recommendation.reason
     engine.llm_pipeline.estimate_ranges.assert_not_called()
     engine.llm_pipeline.suggest_exploit.assert_called_once()
     engine.llm_pipeline.generate_reason.assert_not_called()
@@ -1352,10 +1357,51 @@ def test_generate_postflop_headsup_exploit_failure_returns_solver() -> None:
 
     assert recommendation.action == "BET"
     assert recommendation.amount == 120
-    assert recommendation.reason == "HU solver recommendation"
-    engine.llm_pipeline.estimate_ranges.assert_not_called()
-    engine.llm_pipeline.suggest_exploit.assert_called_once()
-    engine.llm_pipeline.generate_reason.assert_not_called()
+    assert recommendation.reason.startswith("HU solver recommendation")
+    assert "Solver: BET 120 80% / CHECK 20%" in recommendation.reason
+
+
+def test_solver_recommendation_reason_includes_compact_mix() -> None:
+    """Solver recommendations include top solver probabilities in the reason."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {"board": "Td7c2h"}
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Fold", "Call", "All_in 900", "Raise 1800"],
+            "average_strategy": {
+                "Fold": 0.52,
+                "Call": 0.31,
+                "All_in 900": 0.17,
+                "Raise 1800": 0.01,
+            },
+        },
+    }
+
+    recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "solver"
+    assert "Solver: FOLD 52% / CALL 31% / ALL-IN 900 17%" in recommendation.reason
+    assert recommendation.action_probabilities == {
+        "FOLD": 0.52,
+        "CALL": 0.31,
+        "ALL_IN 900": 0.17,
+        "RAISE 1800": 0.01,
+    }
+
+
+def test_non_solver_recommendation_reason_is_not_modified() -> None:
+    """Non-solver recommendation reasons are not mixed with solver probabilities."""
+    recommendation = Recommendation(
+        action="CHECK",
+        reason="Fallback reason",
+        strategy_source="fallback",
+        action_probabilities={"CHECK": 1.0},
+    )
+
+    assert recommendation.reason == "Fallback reason"
 
 
 def test_generate_postflop_headsup_uses_configured_stats_threshold() -> None:

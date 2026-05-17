@@ -353,11 +353,49 @@ class RecommendationEngine:
             len(game_state.board or []),
             len(request.get("actions_played") or []),
         )
+        logger.info(
+            "HU_SOLVER_REQUEST_DETAIL: hand_id=%s phase=%s board=%s pot=%s "
+            "street_start_pot=%s effective_stack=%s SPR=%.2f timeout_ms=%s "
+            "bridge_timeout_sec=%.1f max_iterations=%s "
+            "target_exploitability_pct=%s bet_sizes=%s raise_sizes=%s "
+            "actions_played=%s hero_position=%s hero_is_ip=%s",
+            game_state.hand_id,
+            game_state.phase,
+            game_state.board,
+            game_state.pot,
+            request.get("starting_pot"),
+            request.get("effective_stack"),
+            spr,
+            timeout_ms,
+            bridge_timeout_sec,
+            request.get("max_iterations"),
+            request.get("target_exploitability_pct"),
+            {
+                "flop_oop": request.get("flop_bet_sizes_oop"),
+                "flop_ip": request.get("flop_bet_sizes_ip"),
+                "turn_oop": request.get("turn_bet_sizes_oop"),
+                "turn_ip": request.get("turn_bet_sizes_ip"),
+                "river_oop": request.get("river_bet_sizes_oop"),
+                "river_ip": request.get("river_bet_sizes_ip"),
+            },
+            {
+                "flop_oop": request.get("flop_raise_sizes_oop"),
+                "flop_ip": request.get("flop_raise_sizes_ip"),
+                "turn_oop": request.get("turn_raise_sizes_oop"),
+                "turn_ip": request.get("turn_raise_sizes_ip"),
+                "river_oop": request.get("river_raise_sizes_oop"),
+                "river_ip": request.get("river_raise_sizes_ip"),
+            },
+            request.get("actions_played"),
+            game_state.hero.position,
+            request.get("hero_is_ip"),
+        )
 
         solve_started = time.perf_counter()
         solver_output = self.solver_bridge.solve(request, timeout=bridge_timeout_sec)
         latency["solver_ms"] = self._elapsed_ms(solve_started)
         if not solver_output.get("success"):
+            error_text = str(solver_output.get("error", "Solver failed"))
             logger.info(
                 "HU solver failed: phase=%s elapsed_ms=%.0f timeout_ms=%d "
                 "bridge_timeout_sec=%.1f error=%s",
@@ -365,7 +403,7 @@ class RecommendationEngine:
                 latency["solver_ms"],
                 timeout_ms,
                 bridge_timeout_sec,
-                solver_output.get("error", "Solver failed"),
+                error_text,
             )
             logger.info(
                 "HU solver fallback reason=solver_failed phase=%s hand_id=%s "
@@ -376,13 +414,36 @@ class RecommendationEngine:
                 latency["solver_ms"],
                 timeout_ms,
                 bridge_timeout_sec,
-                solver_output.get("error", "Solver failed"),
+                error_text,
                 sorted(solver_output.keys()),
             )
+            logger.info(
+                "HU_SOLVER_RESULT_DETAIL: hand_id=%s phase=%s success=%s "
+                "elapsed_ms=%.0f timeout_ms=%s error=%s probabilities=%s "
+                "selected_action=%s",
+                game_state.hand_id,
+                game_state.phase,
+                False,
+                latency["solver_ms"],
+                timeout_ms,
+                error_text,
+                None,
+                None,
+            )
+            if "timeout" in error_text.lower():
+                latency["headsup_total_ms"] = self._elapsed_ms(started_at)
+                return Recommendation(
+                    action="SOLVER_TIMEOUT",
+                    amount=0,
+                    reason="Solver timeout: no reliable solver result",
+                    confidence="low",
+                    strategy_source="solver_timeout",
+                    latency_breakdown=latency,
+                )
             return self._llm_headsup_fallback(
                 game_state,
                 opponent_stats,
-                str(solver_output.get("error", "Solver failed")),
+                error_text,
                 latency,
                 started_at,
             )
@@ -443,7 +504,10 @@ class RecommendationEngine:
                 sorted(solver_output.keys()),
             )
 
+        solver_mix = self._format_solver_mix(probabilities)
         reason = "HU solver recommendation"
+        if solver_mix:
+            reason = f"{reason}\nSolver: {solver_mix}"
         latency["exploit_adjustment_ms"] = 0.0
         latency["reason_generation_ms"] = 0.0
         first_stats = self._first_stats(opponent_stats)
@@ -468,6 +532,8 @@ class RecommendationEngine:
                     action = adjusted_action
                     amount = self._parse_amount(exploit.get("adjusted_size"), amount)
                 reason = str(exploit.get("reasoning") or "DB stats exploit adjustment")
+                if solver_mix and "Solver:" not in reason:
+                    reason = f"{reason}\nSolver: {solver_mix}"
             except Exception as exc:
                 latency["exploit_adjustment_ms"] = self._elapsed_ms(exploit_started)
                 logger.warning("HU exploit LLM failed; using solver result: %s", exc)
@@ -480,6 +546,19 @@ class RecommendationEngine:
             )
 
         latency["headsup_total_ms"] = self._elapsed_ms(started_at)
+        logger.info(
+            "HU_SOLVER_RESULT_DETAIL: hand_id=%s phase=%s success=%s "
+            "elapsed_ms=%.0f timeout_ms=%s error=%s probabilities=%s "
+            "selected_action=%s",
+            game_state.hand_id,
+            game_state.phase,
+            True,
+            latency["solver_ms"],
+            timeout_ms,
+            None,
+            probabilities,
+            action,
+        )
         self._save_solver_debug(
             game_state=game_state,
             solver_request=request,
@@ -1010,6 +1089,27 @@ class RecommendationEngine:
             for action_text, probability in probabilities.items()
         }
         return action, amount, normalized_probabilities
+
+    @staticmethod
+    def _format_solver_mix(probabilities: dict[str, float]) -> str:
+        """Return a compact top-three solver mix for logs and reason text."""
+        if not probabilities:
+            return ""
+        ordered = sorted(
+            probabilities.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:3]
+        return " / ".join(
+            f"{RecommendationEngine._format_solver_action_label(action)} "
+            f"{probability:.0%}"
+            for action, probability in ordered
+        )
+
+    @staticmethod
+    def _format_solver_action_label(action: str) -> str:
+        """Return a display-friendly solver action label."""
+        return action.replace("ALL_IN", "ALL-IN").replace("_", "-")
 
     def _get_preflop_scenario(
         self,

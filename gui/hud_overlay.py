@@ -31,6 +31,7 @@ SOURCE_LABELS: dict[str, str] = {
     "preflop_chart": "Chart",
     "preflop_chart_fallback": "Chart",
     "fallback": "Fallback",
+    "solver_timeout": "Solver Timeout",
 }
 
 
@@ -140,11 +141,9 @@ class HudOverlay(QWidget):
         self._set_label_color(self._source_label, QColor(170, 170, 170))
 
         if recommendation.action_probabilities:
-            lines = [
-                f"  {action}: {probability:.0%}"
-                for action, probability in recommendation.action_probabilities.items()
-            ]
-            self._probabilities_label.setText("\n".join(lines))
+            self._probabilities_label.setText(
+                self._format_probabilities(recommendation.action_probabilities),
+            )
             self._probabilities_label.show()
         else:
             self._probabilities_label.hide()
@@ -269,6 +268,8 @@ class HudOverlay(QWidget):
 
     @staticmethod
     def _format_action(recommendation: Recommendation) -> str:
+        if recommendation.strategy_source == "solver_timeout":
+            return "SOLVER TIMEOUT"
         action = recommendation.action.upper()
         if action in {"FOLD", "CHECK"} or recommendation.amount <= 0:
             return action
@@ -283,6 +284,26 @@ class HudOverlay(QWidget):
         elif action == "BET" and recommendation.pot_percentage is not None:
             text += f" [{int(recommendation.pot_percentage)}%pot]"
         return text
+
+    @staticmethod
+    def _format_probabilities(probabilities: dict[str, float]) -> str:
+        """Return top-three solver probabilities for prominent HUD display."""
+        ordered = sorted(
+            probabilities.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:3]
+        lines = ["Solver Mix:"]
+        lines.extend(
+            f"{HudOverlay._format_probability_action(action)} {probability:.0%}"
+            for action, probability in ordered
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_probability_action(action: str) -> str:
+        """Return a display-friendly action label for solver mix rows."""
+        return action.replace("ALL_IN", "ALL-IN").replace("_", "-")
 
     @staticmethod
     def _source_display_label(strategy_source: str) -> str:
