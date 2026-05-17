@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from core.game_state import ActionRecord, GameState
+from core.position_calculator import calculate_positions
 
 logger = logging.getLogger(__name__)
 
@@ -1304,35 +1305,100 @@ class HandManager:
                 active_seats.append(int(seat_key))
         active_seats = sorted(set(active_seats))
 
-        sb_seat, bb_seat = self._find_blind_seats(dealer_seat, active_seats)
+        positions = calculate_positions(
+            dealer_seat=dealer_seat,
+            active_seats=active_seats,
+        )
+        sb_seat, bb_seat = self._blind_seats_from_positions(
+            dealer_seat,
+            active_seats,
+            positions,
+        )
+        sb_bet = self._get_seat_bet(game_state, sb_seat) if sb_seat else None
+        bb_bet = self._get_seat_bet(game_state, bb_seat) if bb_seat else None
+        logger.info(
+            "BLIND_RECORD_CONTEXT: hand_id=%s dealer=%s active_seats=%s "
+            "positions=%s sb_seat=%s sb_bet=%s bb_seat=%s bb_bet=%s",
+            self._hand_id,
+            dealer_seat,
+            active_seats,
+            positions,
+            sb_seat,
+            sb_bet,
+            bb_seat,
+            bb_bet,
+        )
+
+        if sb_seat is None or bb_seat is None:
+            logger.info(
+                "BLIND_RECORD_SKIPPED: reason=missing_sb_or_bb dealer=%s "
+                "active_seats=%s positions=%s",
+                dealer_seat,
+                active_seats,
+                positions,
+            )
+            return
+
         blind_actions: list[ActionRecord] = []
 
-        if sb_seat is not None:
-            sb_bet = self._get_seat_bet(game_state, sb_seat)
-            if sb_bet is not None and sb_bet > 0:
-                blind_actions.append(
-                    ActionRecord(
-                        seat=sb_seat,
-                        action="BLIND_SB",
-                        amount=sb_bet,
-                        confidence="high",
-                    )
+        if sb_bet is not None and sb_bet > 0:
+            blind_actions.append(
+                ActionRecord(
+                    seat=sb_seat,
+                    action="BLIND_SB",
+                    amount=sb_bet,
+                    confidence="high",
                 )
+            )
 
-        if bb_seat is not None:
-            bb_bet = self._get_seat_bet(game_state, bb_seat)
-            if bb_bet is not None and bb_bet > 0:
-                blind_actions.append(
-                    ActionRecord(
-                        seat=bb_seat,
-                        action="BLIND_BB",
-                        amount=bb_bet,
-                        confidence="high",
-                    )
+        if bb_bet is not None and bb_bet > 0:
+            blind_actions.append(
+                ActionRecord(
+                    seat=bb_seat,
+                    action="BLIND_BB",
+                    amount=bb_bet,
+                    confidence="high",
                 )
+            )
 
         if blind_actions:
             self._add_actions(blind_actions)
+        logger.info(
+            "BLIND_RECORD_COMMITTED: hand_id=%s actions=%s",
+            self._hand_id,
+            self._action_records_for_log(blind_actions),
+        )
+
+    @staticmethod
+    def _blind_seats_from_positions(
+        dealer_seat: int,
+        active_seats: list[int],
+        positions: dict[int, str],
+    ) -> tuple[int | None, int | None]:
+        """Return blind seats from position-calculator output."""
+        sb_seat = next(
+            (seat for seat, position in positions.items() if position == "SB"),
+            None,
+        )
+        bb_seat = next(
+            (seat for seat, position in positions.items() if position == "BB"),
+            None,
+        )
+
+        if sb_seat is None and len(set(active_seats)) == 2:
+            if dealer_seat in active_seats:
+                sb_seat = dealer_seat
+            else:
+                sb_seat = next(
+                    (
+                        seat
+                        for seat, position in positions.items()
+                        if position == "BTN"
+                    ),
+                    None,
+                )
+
+        return sb_seat, bb_seat
 
     def _find_blind_seats(
         self,

@@ -14,6 +14,7 @@ import pytest
 import core.hand_manager as hand_manager_module
 from core.game_state import ActionRecord, GameState, PlayerState, create_empty_game_state
 from core.hand_manager import HandManager, StreetActions
+from core.position_calculator import calculate_positions
 
 
 @pytest.fixture
@@ -158,6 +159,116 @@ def make_manager(tmp_path: Path, db_path: str | None = ":memory:") -> HandManage
 def start_hand(manager: HandManager) -> None:
     """Move a manager from waiting to preflop."""
     manager.process_frame(make_state(hero_cards=["Ah", "Kd"]))
+
+
+def blind_action_tuples(manager: HandManager) -> list[tuple[int, str, int]]:
+    """Return recorded blind actions as compact tuples."""
+    return [
+        (action.seat, action.action, action.amount)
+        for action in manager.get_all_actions()
+        if action.action in {"BLIND_SB", "BLIND_BB"}
+    ]
+
+
+def test_record_blinds_uses_positions_for_four_way_hero_sb(
+    manager: HandManager,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A four-way dealer=4 hand records Hero as SB from position calculation."""
+    state = make_state(
+        hero_cards=["Ah", "Kd"],
+        hero_bet=50,
+        dealer_seat=4,
+        players={
+            "4": (5000, 0),
+            "5": (4762, 238),
+            "6": (4900, 100),
+        },
+        player_cards_visible={"4", "5", "6"},
+    )
+
+    with caplog.at_level(logging.INFO):
+        manager.process_frame(state)
+
+    recorded_blinds = blind_action_tuples(manager)
+    assert (1, "BLIND_SB", 50) in recorded_blinds
+    assert (6, "BLIND_BB", 100) in recorded_blinds
+    assert (5, "BLIND_SB", 238) not in recorded_blinds
+    assert "BLIND_RECORD_CONTEXT" in caplog.text
+    assert "BLIND_RECORD_COMMITTED" in caplog.text
+
+
+def test_record_blinds_matches_position_calculator(
+    manager: HandManager,
+) -> None:
+    """Recorded SB/BB seats match calculate_positions output."""
+    active_seats = [1, 4, 5, 6]
+    positions = calculate_positions(dealer_seat=4, active_seats=active_seats)
+    expected_sb = next(
+        seat for seat, position in positions.items() if position == "SB"
+    )
+    expected_bb = next(
+        seat for seat, position in positions.items() if position == "BB"
+    )
+
+    manager.process_frame(
+        make_state(
+            hero_cards=["Ah", "Kd"],
+            hero_bet=50,
+            dealer_seat=4,
+            players={
+                "4": (5000, 0),
+                "5": (5000, 0),
+                "6": (4900, 100),
+            },
+            player_cards_visible={"4", "5", "6"},
+        )
+    )
+
+    recorded_blinds = blind_action_tuples(manager)
+    assert (expected_sb, "BLIND_SB", 50) in recorded_blinds
+    assert (expected_bb, "BLIND_BB", 100) in recorded_blinds
+
+
+def test_record_blinds_heads_up_button_is_small_blind(
+    manager: HandManager,
+) -> None:
+    """Heads-up BTN is recorded as SB while the opponent is BB."""
+    manager.process_frame(
+        make_state(
+            hero_cards=["Ah", "Kd"],
+            hero_bet=50,
+            dealer_seat=1,
+            players={"4": (4900, 100)},
+            player_cards_visible={"4"},
+        )
+    )
+
+    assert blind_action_tuples(manager) == [
+        (1, "BLIND_SB", 50),
+        (4, "BLIND_BB", 100),
+    ]
+
+
+def test_record_blinds_skips_zero_bets(
+    manager: HandManager,
+) -> None:
+    """Blind seats with zero bet amounts do not create blind actions."""
+    manager.process_frame(
+        make_state(
+            hero_cards=["Ah", "Kd"],
+            hero_bet=0,
+            dealer_seat=4,
+            players={
+                "4": (5000, 0),
+                "5": (5000, 0),
+                "6": (5000, 0),
+            },
+            player_cards_visible={"4", "5", "6"},
+        )
+    )
+
+    assert blind_action_tuples(manager) == []
 
 
 def test_add_preflop_buffered_actions_records_unique_actions(
@@ -2075,19 +2186,19 @@ class TestBlindRecording:
     """Tests for blind recording during NEW_HAND initialization."""
 
     def test_blinds_recorded_for_three_players(self, tmp_path: Path) -> None:
-        """Dealer seat 1 records seats 2 and 3 as SB and BB."""
+        """Dealer seat 1 records blinds from position-calculator order."""
         manager = make_manager(tmp_path)
         manager.process_frame(
             make_state(
                 hero_cards=["Ah", "Kd"],
                 dealer_seat=1,
-                players={"2": (4950, 50), "3": (4900, 100)},
+                players={"2": (4900, 100), "3": (4950, 50)},
             )
         )
 
         assert [(a.seat, a.action, a.amount) for a in manager.get_all_actions()] == [
-            (2, "BLIND_SB", 50),
-            (3, "BLIND_BB", 100),
+            (3, "BLIND_SB", 50),
+            (2, "BLIND_BB", 100),
         ]
 
     def test_blinds_recorded_for_heads_up(self, tmp_path: Path) -> None:
