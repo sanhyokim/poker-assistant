@@ -170,6 +170,9 @@ class GameLoop:
         self._pre_hand_timeout_sec: float = float(
             recognition_config.get("pre_hand_timeout_sec", 5.0)
         )
+        self._pre_hand_candidate_timeout_sec: float = float(
+            recognition_config.get("pre_hand_candidate_timeout_sec", 5.0)
+        )
         self._pre_hand_active: bool = False
         self._pre_hand_started_at: float | None = None
         self._pre_hand_started_frame: int | None = None
@@ -177,6 +180,14 @@ class GameLoop:
         self._pre_hand_cards_visible_seats: set[int] = set()
         self._waiting_preflop_action_buffer: list[ActionRecord] = []
         self._waiting_preflop_action_keys: set[tuple[int, str, int]] = set()
+        self._pre_hand_candidate_active: bool = False
+        self._pre_hand_candidate_started_at: float | None = None
+        self._pre_hand_candidate_started_frame: int | None = None
+        self._pre_hand_candidate_dealer_seat: int | None = None
+        self._pre_hand_candidate_cards_visible_seats: set[int] = set()
+        self._pre_hand_candidate_action_buffer: list[ActionRecord] = []
+        self._pre_hand_candidate_action_keys: set[tuple[int, str, int]] = set()
+        self._pre_hand_candidate_no_card_frames: int = 0
         self._last_hero_non_fold_action_time: float | None = None
         self._last_hero_non_fold_action_name: str | None = None
         self._hero_fold_badge_ignored_for_hand: bool = False
@@ -316,6 +327,159 @@ class GameLoop:
         if self._pre_hand_active:
             game_state.hand_start_status = "PRE-HAND"
 
+    def _update_pre_hand_candidate_state(self, game_state: GameState) -> None:
+        """Start, maintain, promote, or discard PRE-HAND candidate buffering."""
+        if not self._pre_hand_enabled:
+            return
+
+        if self._hand_manager.phase != "waiting":
+            if (
+                self._pre_hand_candidate_active
+                and not getattr(self._hand_manager, "hand_just_started", False)
+            ):
+                self._discard_pre_hand_candidate("phase_changed", game_state)
+            return
+
+        discard_reason = self._pre_hand_candidate_discard_reason(game_state)
+        if discard_reason is not None:
+            self._discard_pre_hand_candidate(discard_reason, game_state)
+            return
+
+        if self._pre_hand_candidate_active and self._can_start_pre_hand(game_state):
+            self._promote_pre_hand_candidate(game_state)
+            return
+
+        if (
+            not self._pre_hand_candidate_active
+            and not self._pre_hand_active
+            and not self._can_start_pre_hand(game_state)
+            and self._can_start_pre_hand_candidate(game_state)
+        ):
+            carded_seats = self._pre_hand_carded_seats(game_state)
+            dealer_seat = self._candidate_dealer_seat(game_state)
+            self._pre_hand_candidate_active = True
+            self._pre_hand_candidate_started_at = time.monotonic()
+            self._pre_hand_candidate_started_frame = game_state.frame_number
+            self._pre_hand_candidate_dealer_seat = dealer_seat
+            self._pre_hand_candidate_cards_visible_seats = set(carded_seats)
+            self._pre_hand_candidate_no_card_frames = 0
+            game_state.hand_start_status = "PRE-HAND-CANDIDATE"
+            logger.info(
+                "PRE_HAND_CANDIDATE_STARTED: frame=%s dealer=%s "
+                "cards_visible_seats=%s pot=%s board_count=%s "
+                "obstruction_protected=%s",
+                game_state.frame_number,
+                dealer_seat,
+                carded_seats,
+                game_state.pot,
+                game_state.board_card_count,
+                self._is_visual_obstruction_protected(),
+            )
+
+        if self._pre_hand_candidate_active:
+            game_state.hand_start_status = "PRE-HAND-CANDIDATE"
+
+    def _can_start_pre_hand_candidate(self, game_state: GameState) -> bool:
+        """Return whether early PRE-HAND candidate buffering should start."""
+        if game_state.board_card_count != 0:
+            return False
+        if not game_state.table_visible:
+            return False
+        if self._candidate_dealer_seat(game_state) is None:
+            return False
+        if game_state.pot > self._pre_hand_max_start_pot():
+            return False
+        return len(self._pre_hand_carded_seats(game_state)) >= 1
+
+    def _pre_hand_candidate_discard_reason(
+        self,
+        game_state: GameState,
+    ) -> str | None:
+        """Return the reason active PRE-HAND candidate state should be discarded."""
+        if not self._pre_hand_candidate_active:
+            return None
+        if game_state.board_card_count > 0:
+            return "board_visible"
+        if not game_state.table_visible:
+            return "table_not_visible"
+        if game_state.pot > self._pre_hand_max_start_pot():
+            return "pot_too_large"
+        if (
+            self._pre_hand_candidate_started_at is not None
+            and time.monotonic() - self._pre_hand_candidate_started_at
+            > self._pre_hand_candidate_timeout_sec
+        ):
+            return "timeout"
+        if len(self._pre_hand_carded_seats(game_state)) == 0:
+            self._pre_hand_candidate_no_card_frames += 1
+        else:
+            self._pre_hand_candidate_no_card_frames = 0
+        if self._pre_hand_candidate_no_card_frames >= 2:
+            return "cards_disappeared"
+        return None
+
+    def _buffer_pre_hand_candidate_actions(self, game_state: GameState) -> None:
+        """Buffer valid early preflop actions before formal PRE-HAND starts."""
+        if not self._pre_hand_candidate_active or self._pre_hand_active:
+            return
+        if self._hand_manager.phase != "waiting":
+            return
+
+        game_state.hand_start_status = "PRE-HAND-CANDIDATE"
+        for action in game_state.actions_since_last_frame:
+            if not self._is_pre_hand_buffer_action(action):
+                continue
+            action_name = action.action.upper()
+            key = (action.seat, action_name, action.amount)
+            if key in self._pre_hand_candidate_action_keys:
+                continue
+            buffered_action = ActionRecord(
+                seat=action.seat,
+                action=action_name,
+                amount=action.amount,
+                confidence=action.confidence,
+            )
+            self._pre_hand_candidate_action_keys.add(key)
+            self._pre_hand_candidate_action_buffer.append(buffered_action)
+            logger.info(
+                "PRE_HAND_CANDIDATE_ACTION_BUFFERED: frame=%s seat=%s "
+                "action=%s amount=%s candidate_buffer_count=%s",
+                game_state.frame_number,
+                buffered_action.seat,
+                buffered_action.action,
+                buffered_action.amount,
+                len(self._pre_hand_candidate_action_buffer),
+            )
+
+    def _promote_pre_hand_candidate(self, game_state: GameState) -> None:
+        """Promote candidate actions into the formal PRE-HAND buffer."""
+        moved_actions = list(self._pre_hand_candidate_action_buffer)
+        for action in moved_actions:
+            key = (action.seat, action.action.upper(), action.amount)
+            if key in self._waiting_preflop_action_keys:
+                continue
+            self._waiting_preflop_action_keys.add(key)
+            self._waiting_preflop_action_buffer.append(action)
+
+        carded_seats = self._pre_hand_carded_seats(game_state)
+        self._pre_hand_active = True
+        self._pre_hand_started_at = time.monotonic()
+        self._pre_hand_started_frame = game_state.frame_number
+        self._pre_hand_dealer_seat = game_state.dealer_seat
+        self._pre_hand_cards_visible_seats = set(carded_seats)
+        game_state.hand_start_status = "PRE-HAND"
+        logger.info(
+            "PRE_HAND_CANDIDATE_PROMOTED: frame=%s moved_actions=%s "
+            "dealer=%s pot=%s cards_visible_seats=%s",
+            game_state.frame_number,
+            self._action_records_for_log(moved_actions),
+            game_state.dealer_seat,
+            game_state.pot,
+            carded_seats,
+        )
+        self._clear_pre_hand_candidate_state()
+        self._notify_hud_computing("PRE-HAND\nBuffering preflop actions...")
+
     def _can_start_pre_hand(self, game_state: GameState) -> bool:
         """Return whether waiting-state PRE-HAND buffering should start."""
         if game_state.board_card_count != 0:
@@ -398,16 +562,35 @@ class GameLoop:
         """Commit buffered PRE-HAND actions after HandManager starts a hand."""
         if not getattr(self._hand_manager, "hand_just_started", False):
             return
-        if self._waiting_preflop_action_buffer:
-            buffered_actions = list(self._waiting_preflop_action_buffer)
+        buffered_actions = list(self._waiting_preflop_action_buffer)
+        direct_candidate_actions = list(self._pre_hand_candidate_action_buffer)
+        existing_keys = {
+            (action.seat, action.action.upper(), action.amount)
+            for action in buffered_actions
+        }
+        for action in direct_candidate_actions:
+            key = (action.seat, action.action.upper(), action.amount)
+            if key not in existing_keys:
+                existing_keys.add(key)
+                buffered_actions.append(action)
+
+        if buffered_actions:
             self._hand_manager.add_preflop_buffered_actions(buffered_actions)
             logger.info(
                 "PRE-HAND committed: hand_id=%s buffered_actions=%s",
                 self._hand_manager.hand_id,
                 self._action_records_for_log(buffered_actions),
             )
+        if direct_candidate_actions:
+            logger.info(
+                "PRE_HAND_CANDIDATE_COMMITTED_DIRECTLY: hand_id=%s "
+                "buffered_actions=%s",
+                self._hand_manager.hand_id,
+                self._action_records_for_log(direct_candidate_actions),
+            )
         game_state.hand_start_status = None
         self._clear_pre_hand_state()
+        self._clear_pre_hand_candidate_state()
 
     def _discard_pre_hand(self, reason: str, game_state: GameState) -> None:
         """Discard PRE-HAND state and buffered actions."""
@@ -419,6 +602,17 @@ class GameLoop:
         )
         self._clear_pre_hand_state()
 
+    def _discard_pre_hand_candidate(self, reason: str, game_state: GameState) -> None:
+        """Discard PRE-HAND candidate state and buffered actions."""
+        logger.info(
+            "PRE_HAND_CANDIDATE_DISCARDED: reason=%s frame=%s "
+            "buffered_actions=%s",
+            reason,
+            game_state.frame_number,
+            self._action_records_for_log(self._pre_hand_candidate_action_buffer),
+        )
+        self._clear_pre_hand_candidate_state()
+
     def _clear_pre_hand_state(self) -> None:
         """Clear PRE-HAND state and action buffers."""
         self._pre_hand_active = False
@@ -428,6 +622,23 @@ class GameLoop:
         self._pre_hand_cards_visible_seats.clear()
         self._waiting_preflop_action_buffer.clear()
         self._waiting_preflop_action_keys.clear()
+
+    def _clear_pre_hand_candidate_state(self) -> None:
+        """Clear PRE-HAND candidate state and action buffers."""
+        self._pre_hand_candidate_active = False
+        self._pre_hand_candidate_started_at = None
+        self._pre_hand_candidate_started_frame = None
+        self._pre_hand_candidate_dealer_seat = None
+        self._pre_hand_candidate_cards_visible_seats.clear()
+        self._pre_hand_candidate_action_buffer.clear()
+        self._pre_hand_candidate_action_keys.clear()
+        self._pre_hand_candidate_no_card_frames = 0
+
+    def _candidate_dealer_seat(self, game_state: GameState) -> int | None:
+        """Return dealer seat usable for early PRE-HAND candidate detection."""
+        if game_state.dealer_seat is not None:
+            return game_state.dealer_seat
+        return self._cached_dealer_seat
 
     def _pre_hand_carded_seats(self, game_state: GameState) -> list[int]:
         """Return sorted opponent seats with visible cards during waiting."""
@@ -977,6 +1188,7 @@ class GameLoop:
         self._clear_pending_state()
         self._pending_amount_rechecks.clear()
         self._clear_pre_hand_state()
+        self._clear_pre_hand_candidate_state()
         self._last_recommendation_log = None
         self._last_strategy_is_my_turn = False
         self._hero_fold_badge_ignored_for_hand = False
@@ -1117,6 +1329,8 @@ class GameLoop:
             game_state.game_event = None
             game_state.actions_since_last_frame = []
 
+        self._update_pre_hand_candidate_state(game_state)
+        self._buffer_pre_hand_candidate_actions(game_state)
         self._update_pre_hand_state(game_state)
         self._buffer_pre_hand_actions(game_state)
 
@@ -1207,6 +1421,7 @@ class GameLoop:
         self._clear_pending_state()
         self._last_strategy_phase = None
         self._clear_pre_hand_state()
+        self._clear_pre_hand_candidate_state()
         self._last_hero_non_fold_action_time = None
         self._last_hero_non_fold_action_name = None
         self._hero_fold_badge_ignored_for_hand = False

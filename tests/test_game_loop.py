@@ -367,6 +367,157 @@ def test_pre_hand_discards_on_board_visible(
     assert "PRE-HAND discarded: reason=board_visible" in caplog.text
 
 
+def test_pre_hand_candidate_starts_during_visual_obstruction(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PRE-HAND candidate can start while visual obstruction protection is active."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._visual_obstruction_recovery_until = time.monotonic() + 1.0
+    state = create_empty_game_state()
+    state.frame_number = 20
+    state.phase = "waiting"
+    state.table_visible = True
+    state.dealer_seat = 3
+    state.pot = 150
+    state.board_card_count = 0
+    state.players["2"].cards_visible = True
+
+    with caplog.at_level(logging.INFO):
+        loop._update_pre_hand_candidate_state(state)
+
+    assert loop._pre_hand_candidate_active is True
+    assert loop._pre_hand_active is False
+    assert state.hand_start_status == "PRE-HAND-CANDIDATE"
+    assert "PRE_HAND_CANDIDATE_STARTED" in caplog.text
+
+
+def test_pre_hand_candidate_buffers_action_before_formal_pre_hand(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Candidate buffering captures valid actions without saving them to a hand."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_candidate_active = True
+    state = create_empty_game_state()
+    state.frame_number = 21
+    state.actions_since_last_frame = [
+        ActionRecord(seat=2, action="BET", amount=100),
+        ActionRecord(seat=2, action="BET", amount=100),
+        ActionRecord(seat=3, action="CHECK", amount=0),
+        ActionRecord(seat=0, action="RAISE", amount=300),
+    ]
+
+    with caplog.at_level(logging.INFO):
+        loop._buffer_pre_hand_candidate_actions(state)
+
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in loop._pre_hand_candidate_action_buffer
+    ] == [(2, "BET", 100)]
+    assert loop._hand_manager.get_all_actions() == []
+    assert "PRE_HAND_CANDIDATE_ACTION_BUFFERED" in caplog.text
+
+
+def test_pre_hand_candidate_promotes_actions_to_pre_hand_buffer(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Candidate actions move into the formal PRE-HAND buffer on promotion."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_candidate_active = True
+    loop._pre_hand_candidate_action_buffer = [
+        ActionRecord(seat=2, action="BET", amount=100),
+    ]
+    loop._pre_hand_candidate_action_keys = {(2, "BET", 100)}
+    state = create_empty_game_state()
+    state.frame_number = 22
+    state.phase = "waiting"
+    state.table_visible = True
+    state.dealer_seat = 3
+    state.pot = 150
+    state.board_card_count = 0
+    state.players["2"].cards_visible = True
+    state.players["3"].cards_visible = True
+
+    with caplog.at_level(logging.INFO):
+        loop._update_pre_hand_candidate_state(state)
+
+    assert loop._pre_hand_active is True
+    assert loop._pre_hand_candidate_active is False
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in loop._waiting_preflop_action_buffer
+    ] == [(2, "BET", 100)]
+    assert loop._pre_hand_candidate_action_buffer == []
+    assert state.hand_start_status == "PRE-HAND"
+    assert "PRE_HAND_CANDIDATE_PROMOTED" in caplog.text
+
+
+def test_pre_hand_candidate_commits_directly_after_formal_hand_start(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Candidate buffer is committed if a hand starts before formal PRE-HAND."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_candidate_active = True
+    loop._pre_hand_candidate_action_buffer = [
+        ActionRecord(seat=2, action="BET", amount=100),
+    ]
+    loop._pre_hand_candidate_action_keys = {(2, "BET", 100)}
+    state = create_empty_game_state()
+    state.table_visible = True
+    state.hero.cards = ["Ah", "Kd"]
+    state.hero.cards_visible = True
+    state.players["2"] = PlayerState(
+        stack=4900,
+        bet=100,
+        is_seated=True,
+        cards_visible=True,
+        in_current_hand=True,
+    )
+
+    with caplog.at_level(logging.INFO):
+        loop.process_game_state_after_frame(state)
+
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in loop._hand_manager.get_preflop_actions()
+    ] == [(2, "BET", 100)]
+    assert loop._pre_hand_candidate_active is False
+    assert loop._pre_hand_candidate_action_buffer == []
+    assert "PRE_HAND_CANDIDATE_COMMITTED_DIRECTLY" in caplog.text
+
+
+def test_pre_hand_candidate_discards_on_board_visible(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Candidate buffer is discarded when board cards appear before hand start."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_candidate_active = True
+    loop._pre_hand_candidate_action_buffer = [
+        ActionRecord(seat=2, action="RAISE", amount=300),
+    ]
+    state = create_empty_game_state()
+    state.frame_number = 23
+    state.table_visible = True
+    state.dealer_seat = 3
+    state.board_card_count = 3
+
+    with caplog.at_level(logging.INFO):
+        loop._update_pre_hand_candidate_state(state)
+
+    assert loop._pre_hand_candidate_active is False
+    assert loop._pre_hand_candidate_action_buffer == []
+    assert "PRE_HAND_CANDIDATE_DISCARDED: reason=board_visible" in caplog.text
+
+
 def test_process_one_frame_starts_pre_hand_in_execution_flow(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

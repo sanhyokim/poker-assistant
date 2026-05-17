@@ -115,7 +115,8 @@ class GameState:
             frame, or None when strategy may run.
         amount_recheck_reason: Debug reason for amount recheck state, or None.
         amount_recheck_pending: Whether amount recheck is pending this frame.
-        hand_start_status: Supplemental hand-start status for UI/logs.
+        hand_start_status: Supplemental hand-start status for UI/logs, such as
+            PRE-HAND-CANDIDATE or PRE-HAND.
         hero_cards_unstable_reason: Reason hero cards are unsafe for strategy
             or saving, or None when hero cards are stable.
     """
