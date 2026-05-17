@@ -12,7 +12,7 @@ from itertools import combinations
 from typing import Any
 
 from core.game_state import ActionRecord, GameState
-from strategy.llm_pipeline import LLMPipeline
+from strategy.llm_pipeline import LLMPipeline, sanitize_llm_reason
 
 
 logger = logging.getLogger(__name__)
@@ -155,7 +155,9 @@ class MultiwayEngine:
             original_action = str(llm_result["action"]).lower()
             parsed_action = original_action
             parsed_size = llm_result.get("size")
-            parsed_reasoning = str(llm_result.get("reasoning", ""))
+            parsed_reasoning = sanitize_llm_reason(
+                str(llm_result.get("reasoning", ""))
+            )
         else:
             original_action = None
             parsed_action = ""

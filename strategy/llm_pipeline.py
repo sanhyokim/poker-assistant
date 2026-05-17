@@ -32,7 +32,54 @@ logger = logging.getLogger(__name__)
 JsonDict = dict[str, Any]
 BASELINE_RANGES_PATH = Path(__file__).with_name("baseline_ranges.json")
 ALLOWED_RANGE_RE = re.compile(r"^[A-Za-z0-9+\-,:. ]+$")
+FALLBACK_SANITIZED_REASON = (
+    "\u0041\u0049\u5224\u65ad: "
+    "\u0070\u006f\u0074\u0020\u006f\u0064\u0064\u0073"
+    "\u3068\u73fe\u5728\u306e\u30a2\u30af\u30b7\u30e7\u30f3"
+    "\u72b6\u6cc1\u304b\u3089\u4fdd\u5b88\u7684\u306b\u5224\u65ad"
+)
+PROMPT_LEAK_PATTERNS = (
+    "\u65e5\u672c\u8a9e\u3067\u89e3\u8aac",
+    "\u65e5\u672c\u8a9e\u3067\u7c21\u6f54\u306b",
+    "\u65e5\u672c\u8a9e\u3067\u8a18\u8ff0",
+    "\u0031\u002d\u0032\u6587",
+    "\u51fa\u529b\u3057\u3066\u304f\u3060\u3055\u3044",
+    "\u8aac\u660e\u3057\u3066\u304f\u3060\u3055\u3044",
+    "reasoning",
+    "respond in japanese",
+)
 REASON_JP_INSTRUCTION = "reasonフィールドは日本語で簡潔に記述してください（1-2文）。"
+
+def reason_contains_prompt_leak(reason: str) -> bool:
+    """Return whether a reason appears to contain prompt instructions."""
+    normalized = reason.lower()
+    return any(pattern.lower() in normalized for pattern in PROMPT_LEAK_PATTERNS)
+
+
+def sanitize_llm_reason(reason: str) -> str:
+    """Remove prompt instruction leaks from LLM reason text."""
+    original = str(reason or "").strip()
+    if not original:
+        return FALLBACK_SANITIZED_REASON
+    if not reason_contains_prompt_leak(original):
+        return original
+
+    parts = re.split(r"(?<=[\u3002.!?])\s*|[\r\n]+", original)
+    kept = [
+        part.strip()
+        for part in parts
+        if part.strip() and not reason_contains_prompt_leak(part)
+    ]
+    sanitized = " ".join(kept).strip()
+    if len(sanitized) < 6:
+        sanitized = FALLBACK_SANITIZED_REASON
+    logger.info(
+        "LLM_REASON_SANITIZED: reason=prompt_leak original=%s sanitized=%s",
+        original[:200],
+        sanitized[:200],
+    )
+    return sanitized
+
 
 RANGE_ESTIMATION_PROMPT = """You are a GTO poker range estimator for 6-max No-Limit Hold'em.
 
@@ -400,7 +447,7 @@ class LLMPipeline:
             "adjusted_action": parsed.get("adjusted_action"),
             "adjusted_size": parsed.get("adjusted_size"),
             "confidence": parsed.get("confidence", "low"),
-            "reasoning": parsed.get("reasoning", ""),
+            "reasoning": sanitize_llm_reason(str(parsed.get("reasoning", ""))),
         }
 
     def decide_multiway(
@@ -524,7 +571,9 @@ class LLMPipeline:
                 "action": parsed.get("action"),
                 "size": parsed.get("size", parsed.get("amount")),
                 "confidence": parsed.get("confidence", "low"),
-                "reasoning": parsed.get("reasoning", parsed.get("reason", "")),
+                "reasoning": sanitize_llm_reason(
+                    str(parsed.get("reasoning", parsed.get("reason", "")))
+                ),
             }
 
         total_ms = int((time.perf_counter() - method_start) * 1000)
@@ -540,7 +589,7 @@ class LLMPipeline:
             "action": parsed.get("action"),
             "size": parsed.get("size"),
             "confidence": parsed.get("confidence", "low"),
-            "reasoning": parsed.get("reasoning", ""),
+            "reasoning": sanitize_llm_reason(str(parsed.get("reasoning", ""))),
             "raw_response": (text or ""),
         }
 
@@ -579,7 +628,7 @@ class LLMPipeline:
             )
             return f"GTO推奨: {action}"
 
-        reason = text.strip().splitlines()[0][:40]
+        reason = sanitize_llm_reason(text.strip().splitlines()[0])[:40]
         validated = self._validate_llm_response(
             "reason_generation",
             ReasonGenerationResponse,
@@ -664,6 +713,20 @@ class LLMPipeline:
             )
             return None
 
+        reason_field = self._reason_field_for_model(validated)
+        if reason_field is not None:
+            original_reason = str(getattr(validated, reason_field, "") or "")
+            sanitized_reason = sanitize_llm_reason(original_reason)
+            if sanitized_reason != original_reason:
+                self._logger.warning(
+                    "LLM_VALIDATION_REASON_REJECTED: "
+                    "reason=prompt_instruction_leak task=%s",
+                    task_name,
+                )
+                validated = validated.model_copy(
+                    update={reason_field: sanitized_reason}
+                )
+
         self._validation_success += 1
         elapsed_ms = int((time.perf_counter() - val_start) * 1000)
         self._logger.info(
@@ -674,6 +737,15 @@ class LLMPipeline:
             elapsed_ms,
         )
         return validated
+
+    @staticmethod
+    def _reason_field_for_model(model: BaseModel) -> str | None:
+        """Return the reason-like field name for a validated response."""
+        if hasattr(model, "reason"):
+            return "reason"
+        if hasattr(model, "reasoning"):
+            return "reasoning"
+        return None
 
     def _call_api(
         self,

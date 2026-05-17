@@ -171,6 +171,32 @@ def test_evaluate_with_llm_success() -> None:
     assert 0.0 <= result["equity"] <= 1.0
 
 
+def test_evaluate_sanitizes_prompt_leak_reason() -> None:
+    """Multiway engine sanitizes leaked prompt instructions from LLM reason."""
+    engine = make_engine()
+    engine.llm.decide_multiway.return_value = {
+        "action": "call",
+        "size": 100,
+        "confidence": "medium",
+        "reasoning": (
+            "\u65e5\u672c\u8a9e\u3067\u89e3\u8aac\u3002"
+            "\u30dd\u30c3\u30c8\u30aa\u30c3\u30ba\u304c"
+            "\u826f\u304f\u30b3\u30fc\u30eb\u3067\u304d\u308b\u3002"
+        ),
+    }
+    state = make_state()
+    state.hero.bet = 0
+    state.players["2"].bet = 100
+    state.current_street_actions = [
+        ActionRecord(seat=2, action="BET", amount=100, confidence="high")
+    ]
+
+    result = engine.evaluate(state, [{"vpip": 30}, {"vpip": 22}])
+
+    assert "\u65e5\u672c\u8a9e\u3067\u89e3\u8aac" not in result["reasoning"]
+    assert "\u30dd\u30c3\u30c8\u30aa\u30c3\u30ba" in result["reasoning"]
+
+
 def test_evaluate_llm_failure_heuristic() -> None:
     """LLM failure returns the heuristic fallback."""
     engine = make_engine()

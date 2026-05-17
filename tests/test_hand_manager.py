@@ -5,6 +5,7 @@ import logging
 import shutil
 import sqlite3
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -915,6 +916,44 @@ class TestHandEndConditions:
 
         now = 206.0
         manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=0))
+
+        assert manager.phase == "waiting"
+        assert manager.hand_id is None
+
+    def test_external_guard_suppresses_pot_decrease_hand_end(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """External guard can suppress payout-style pot decrease hand_end."""
+        start_hand(manager)
+        manager._hand_start_monotonic = (
+            time.monotonic()
+            - manager.POT_DECREASE_HAND_END_COOLDOWN_SEC
+            - 1.0
+        )
+        manager._prev_frame_pot = 1200
+        manager.set_hand_end_guard(lambda _state, _prev, _curr: True)
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=100))
+
+        assert manager.phase == "preflop"
+        assert manager._last_hand_end_reason is None
+
+    def test_external_guard_false_allows_pot_decrease_hand_end(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Pot decrease hand_end still works when the external guard is false."""
+        start_hand(manager)
+        manager._hand_start_monotonic = (
+            time.monotonic()
+            - manager.POT_DECREASE_HAND_END_COOLDOWN_SEC
+            - 1.0
+        )
+        manager._prev_frame_pot = 1200
+        manager.set_hand_end_guard(lambda _state, _prev, _curr: False)
+
+        manager.process_frame(make_state(hero_cards=["Ah", "Kd"], pot=100))
 
         assert manager.phase == "waiting"
         assert manager.hand_id is None

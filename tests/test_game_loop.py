@@ -5501,3 +5501,135 @@ def test_unprotected_no_card_still_forces_in_current_hand_false(
     loop._apply_seat_card_visibility(state, {3: False})
 
     assert state.players["3"].in_current_hand is False
+
+
+def test_new_hand_suppressed_guard_blocks_pot_decrease_hand_end(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Recent suppressed NEW_HAND protects active hand from pot decrease end."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 8
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    loop._hand_manager._hand_start_monotonic = time.monotonic() - 10.0
+    loop._hand_manager._prev_frame_pot = 7160
+    loop._cached_hero_cards = ["Qc", "Qd"]
+    loop._start_new_hand_suppressed_guard(
+        create_empty_game_state(),
+        "hero_cards_still_visible",
+        7160,
+        103700,
+    )
+    state = create_empty_game_state()
+    state.phase = "preflop"
+    state.hand_id = 8
+    state.hero.cards = ["Qc", "Qd"]
+    state.hero.cards_visible = True
+    state.hero.is_my_turn = False
+    state.pot = 662
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        loop.process_game_state_after_frame(state)
+
+    assert loop._hand_manager.phase == "preflop"
+    assert loop._hand_manager.hand_id == 8
+    assert state.strategy_defer_reason == "hand_end_guard"
+    assert "HAND_END_SUPPRESSED_AFTER_NEW_HAND_SUPPRESS" in caplog.text
+
+
+def test_suspicious_pot_guard_blocks_pot_decrease_hand_end(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Recent suspicious pot spike protects active hand from pot decrease end."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._hand_id = 9
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    loop._hand_manager._hand_start_monotonic = time.monotonic() - 10.0
+    loop._hand_manager._prev_frame_pot = 7160
+    loop._suspicious_amount_guard_until = time.monotonic() + 1.0
+    state = create_empty_game_state()
+    state.phase = "flop"
+    state.hand_id = 9
+    state.hero.cards = ["Ah", "Kd"]
+    state.hero.cards_visible = True
+    state.board = ["2c", "7d", "Th"]
+    state.board_card_count = 3
+    state.pot = 662
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        loop.process_game_state_after_frame(state)
+
+    assert loop._hand_manager.phase == "flop"
+    assert state.strategy_defer_reason == "hand_end_guard"
+    assert "HAND_END_SUPPRESSED_AFTER_SUSPICIOUS_POT" in caplog.text
+
+
+def test_new_hand_suppressed_guard_expires_allows_hand_end(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Expired NEW_HAND suppression guard does not block normal hand_end."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 10
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    loop._hand_manager._hand_start_monotonic = time.monotonic() - 10.0
+    loop._hand_manager._prev_frame_pot = 1200
+    loop._cached_hero_cards = ["Ah", "Ad"]
+    loop._new_hand_suppressed_at_monotonic = time.monotonic() - 5.0
+    loop._new_hand_suppressed_reason = "hero_cards_still_visible"
+    loop._new_hand_suppressed_hand_id = 10
+    state = create_empty_game_state()
+    state.phase = "preflop"
+    state.hand_id = 10
+    state.hero.cards = ["Ah", "Ad"]
+    state.hero.cards_visible = True
+    state.pot = 100
+
+    loop.process_game_state_after_frame(state)
+
+    assert loop._hand_manager.phase == "waiting"
+    assert loop._hand_manager.hand_id is None
+
+
+def test_hand_end_suppression_keeps_hud_out_of_waiting(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Suppressed hand_end shows active-hand safety text instead of waiting."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    hud_callback = MagicMock()
+    hud_computing_callback = MagicMock()
+    loop._hud_callback = hud_callback
+    loop._hud_computing_callback = hud_computing_callback
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 11
+    loop._hand_manager._players_in_hand = {"1": True, "2": True}
+    loop._hand_manager._hand_start_monotonic = time.monotonic() - 10.0
+    loop._hand_manager._prev_frame_pot = 1200
+    loop._cached_hero_cards = ["Ks", "Kh"]
+    loop._start_new_hand_suppressed_guard(
+        create_empty_game_state(),
+        "hero_cards_still_visible",
+        1200,
+        9000,
+    )
+    state = create_empty_game_state()
+    state.phase = "preflop"
+    state.hand_id = 11
+    state.hero.cards = ["Ks", "Kh"]
+    state.hero.cards_visible = True
+    state.hero.is_my_turn = False
+    state.pot = 100
+
+    loop.process_game_state_after_frame(state)
+
+    hud_callback.assert_not_called()
+    hud_computing_callback.assert_called_with(
+        "HAND STILL ACTIVE\nWaiting for stable state..."
+    )

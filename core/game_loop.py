@@ -82,6 +82,9 @@ class GameLoop:
         self._action_estimator = ActionEstimator(config)
         self._fold_badge_detector = FoldBadgeDetector(profile, config)
         self._seat_card_detector = SeatCardDetector(profile, config)
+        self._hand_manager.set_hand_end_guard(
+            self._should_suppress_pot_decrease_hand_end
+        )
         recognition_config = config.get("recognition", {})
         self._seat_no_card_streak: dict[int, int] = {}
         self._seat_card_fold_latched: set[int] = set()
@@ -156,6 +159,15 @@ class GameLoop:
         self._previous_recommendation_context: dict[str, object] | None = None
         self._last_strategy_phase: str | None = None
         self._suspicious_amount_guard_until: float = 0.0
+        self._new_hand_suppressed_hand_end_guard_sec: float = float(
+            recognition_config.get("new_hand_suppressed_hand_end_guard_sec", 2.5)
+        )
+        self._new_hand_suppressed_at_monotonic: float | None = None
+        self._new_hand_suppressed_reason: str | None = None
+        self._new_hand_suppressed_hand_id: int | None = None
+        self._new_hand_suppressed_pot_from: int | None = None
+        self._new_hand_suppressed_pot_to: int | None = None
+        self._hand_end_suppressed_this_frame: bool = False
         self._pending_amount_rechecks: dict[int, dict[str, object]] = {}
         self._amount_recheck_max_frames: int = int(
             recognition_config.get("amount_recheck_max_frames", 2)
@@ -258,9 +270,11 @@ class GameLoop:
         Args:
             game_state: Frame recognition result returned by process_one_frame().
         """
+        self._hand_end_suppressed_this_frame = False
         if game_state.game_event == "NEW_HAND":
             self._pending_amount_rechecks.clear()
             self._clear_solver_timeout_contexts("new_hand")
+            self._clear_new_hand_suppressed_guard()
         if game_state.game_event == "NEW_STREET":
             self._clear_solver_timeout_contexts("new_street")
         game_state.actions_since_last_frame = self._filter_invalid_actions(
@@ -280,11 +294,14 @@ class GameLoop:
             )
         )
         self._hand_manager.process_frame(game_state)
+        if self._hand_manager.phase in {"waiting", "hand_end"}:
+            self._clear_new_hand_suppressed_guard()
         self._commit_pre_hand_buffer_if_started(game_state)
         self._recover_pending_hero_fold_badge(game_state)
         self._sync_game_state_with_hand_manager(game_state)
         self._update_hand_position_lock(game_state)
         self._handle_strategy(game_state)
+        self._notify_hud_after_hand_end_suppression(game_state)
 
     @staticmethod
     def _filter_invalid_actions(actions: list[ActionRecord]) -> list[ActionRecord]:
@@ -1274,6 +1291,107 @@ class GameLoop:
             time.monotonic() + hold_sec,
         )
 
+    def _start_new_hand_suppressed_guard(
+        self,
+        game_state: GameState,
+        reason: str,
+        pot_from: int,
+        pot_to: int,
+    ) -> None:
+        """Protect the active hand after a false NEW_HAND candidate."""
+        self._new_hand_suppressed_at_monotonic = time.monotonic()
+        self._new_hand_suppressed_reason = reason
+        self._new_hand_suppressed_hand_id = self._hand_manager.hand_id
+        self._new_hand_suppressed_pot_from = pot_from
+        self._new_hand_suppressed_pot_to = pot_to
+        logger.info(
+            "NEW_HAND_SUPPRESSED_GUARD_STARTED: hand_id=%s phase=%s "
+            "reason=%s pot_from=%s pot_to=%s",
+            self._hand_manager.hand_id,
+            self._hand_manager.phase,
+            reason,
+            pot_from,
+            pot_to,
+        )
+
+    def _clear_new_hand_suppressed_guard(self) -> None:
+        """Clear NEW_HAND suppression guard state."""
+        self._new_hand_suppressed_at_monotonic = None
+        self._new_hand_suppressed_reason = None
+        self._new_hand_suppressed_hand_id = None
+        self._new_hand_suppressed_pot_from = None
+        self._new_hand_suppressed_pot_to = None
+
+    def _should_suppress_pot_decrease_hand_end(
+        self,
+        game_state: GameState,
+        pot_prev: int,
+        pot_curr: int,
+    ) -> bool:
+        """Return whether a pot decrease should not end the active hand yet."""
+        if self._hand_manager.phase not in {"preflop", "flop", "turn", "river"}:
+            return False
+        if not self._hero_cards_still_visible_or_cached(game_state):
+            return False
+
+        now = time.monotonic()
+        if (
+            self._new_hand_suppressed_at_monotonic is not None
+            and self._new_hand_suppressed_hand_id == self._hand_manager.hand_id
+            and now - self._new_hand_suppressed_at_monotonic
+            <= self._new_hand_suppressed_hand_end_guard_sec
+        ):
+            self._hand_end_suppressed_this_frame = True
+            game_state.strategy_defer_reason = "hand_end_guard"
+            logger.info(
+                "HAND_END_SUPPRESSED_AFTER_NEW_HAND_SUPPRESS: hand_id=%s "
+                "phase=%s pot_prev=%s pot_curr=%s reason=%s",
+                self._hand_manager.hand_id,
+                self._hand_manager.phase,
+                pot_prev,
+                pot_curr,
+                self._new_hand_suppressed_reason or "hero_cards_still_visible",
+            )
+            return True
+
+        if self._is_suspicious_amount_guard_active():
+            self._hand_end_suppressed_this_frame = True
+            game_state.strategy_defer_reason = "hand_end_guard"
+            logger.info(
+                "HAND_END_SUPPRESSED_AFTER_SUSPICIOUS_POT: hand_id=%s "
+                "phase=%s pot_prev=%s pot_curr=%s recent_spike=%s",
+                self._hand_manager.hand_id,
+                self._hand_manager.phase,
+                pot_prev,
+                pot_curr,
+                True,
+            )
+            return True
+
+        return False
+
+    def _hero_cards_still_visible_or_cached(self, game_state: GameState) -> bool:
+        """Return whether Hero cards still indicate the active hand is visible."""
+        if game_state.hero.cards_visible:
+            return True
+        if len(game_state.hero.cards or []) == 2:
+            return True
+        return self._cached_hero_cards is not None
+
+    def _notify_hud_after_hand_end_suppression(self, game_state: GameState) -> None:
+        """Keep HUD out of waiting state when hand_end was suppressed."""
+        if not self._hand_end_suppressed_this_frame:
+            return
+        if self._hand_manager.phase not in {"preflop", "flop", "turn", "river"}:
+            return
+        if self._previous_recommendation is not None:
+            self._notify_hud(self._previous_recommendation)
+            return
+        if not game_state.hero.is_my_turn:
+            self._notify_hud_computing(
+                "HAND STILL ACTIVE\nWaiting for stable state..."
+            )
+
     def stop(self, reason: str = "user_stop") -> None:
         """Request polling loop stop."""
         self._running = False
@@ -1392,6 +1510,12 @@ class GameLoop:
                             "phase=%s, pot %d -> %d",
                             hero_cards_now,
                             self._hand_manager.phase,
+                            self._prev_state.pot,
+                            game_state.pot,
+                        )
+                        self._start_new_hand_suppressed_guard(
+                            game_state,
+                            "hero_cards_still_visible",
                             self._prev_state.pot,
                             game_state.pot,
                         )
@@ -1848,7 +1972,12 @@ class GameLoop:
             self._previous_recommendation = None
             self._previous_recommendation_context = None
             self._clear_pending_state()
-            self._notify_hud_computing("WAITING FOR STABLE POT...")
+            if game_state.strategy_defer_reason == "hand_end_guard":
+                self._notify_hud_computing(
+                    "HAND STILL ACTIVE\nWaiting for stable state..."
+                )
+            else:
+                self._notify_hud_computing("WAITING FOR STABLE POT...")
             self._save_human_action_to_hand_manager(game_state)
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = game_state.hero.is_my_turn

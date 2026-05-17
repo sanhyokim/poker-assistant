@@ -15,7 +15,11 @@ from strategy.llm_schemas import (
     ExploitAdjustmentResponse,
     MultiwayDecisionResponse,
 )
-from strategy.llm_pipeline import LLMPipeline
+from strategy.llm_pipeline import (
+    FALLBACK_SANITIZED_REASON,
+    LLMPipeline,
+    sanitize_llm_reason,
+)
 
 
 TEST_CONFIG = {
@@ -126,6 +130,61 @@ def test_parse_json_response_with_markdown() -> None:
 def test_parse_json_response_invalid() -> None:
     """Invalid response text returns None."""
     assert make_pipeline()._parse_json_response("not json") is None
+
+
+def test_sanitize_reason_replaces_prompt_instruction_only() -> None:
+    """Prompt-only Japanese instruction reasons are replaced."""
+    reason = "\u65e5\u672c\u8a9e\u3067\u7c21\u6f54\u306b\u8a18\u8ff0\u3057\u3066\u304f\u3060\u3055\u3044\uff08\u0031\u002d\u0032\u6587\uff09\u3002"
+
+    assert sanitize_llm_reason(reason) == FALLBACK_SANITIZED_REASON
+
+
+def test_sanitize_reason_removes_prompt_sentence_only() -> None:
+    """Prompt leak sentence is removed while keeping useful reasoning."""
+    reason = (
+        "\u65e5\u672c\u8a9e\u3067\u89e3\u8aac\u3002"
+        "\u76f8\u624b\u306e\u30d9\u30c3\u30c8\u304c\u5927\u304d\u304f"
+        "\u3001\u30dd\u30c3\u30c8\u30aa\u30c3\u30ba\u304c\u5408\u308f\u306a\u3044\u3002"
+    )
+
+    sanitized = sanitize_llm_reason(reason)
+
+    assert "\u65e5\u672c\u8a9e\u3067\u89e3\u8aac" not in sanitized
+    assert "\u30dd\u30c3\u30c8\u30aa\u30c3\u30ba" in sanitized
+
+
+def test_sanitize_reason_keeps_normal_japanese_reason() -> None:
+    """Normal Japanese strategy reasons are not changed."""
+    reason = (
+        "\u30dd\u30c3\u30c8\u30aa\u30c3\u30ba\u304c\u826f\u304f"
+        "\u3001\u30b3\u30fc\u30eb\u304c\u81ea\u7136\u3067\u3059\u3002"
+    )
+
+    assert sanitize_llm_reason(reason) == reason
+
+
+def test_validation_sanitizes_prompt_leak_reason(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Validated reason text cannot pass through as prompt instructions."""
+    pipeline = make_pipeline()
+    raw = {
+        "action": "CALL",
+        "amount": 100,
+        "reason": "\u65e5\u672c\u8a9e\u3067\u7c21\u6f54\u306b\u8a18\u8ff0\u3057\u3066\u304f\u3060\u3055\u3044\u3002",
+        "confidence": "medium",
+    }
+
+    with caplog.at_level(logging.WARNING, logger="strategy.llm_pipeline"):
+        validated = pipeline._validate_llm_response(
+            "multiway_decision",
+            MultiwayDecisionResponse,
+            raw,
+        )
+
+    assert isinstance(validated, MultiwayDecisionResponse)
+    assert validated.reason == FALLBACK_SANITIZED_REASON
+    assert "LLM_VALIDATION_REASON_REJECTED" in caplog.text
 
 
 def test_select_model_normal() -> None:

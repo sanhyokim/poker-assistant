@@ -9,7 +9,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from core.game_state import ActionRecord, GameState
 from core.position_calculator import calculate_positions
@@ -110,12 +110,27 @@ class HandManager:
         self._hand_start_monotonic: float | None = None
         self._prev_frame_pot: int | None = None
         self._last_hand_end_reason: str | None = None
+        self._external_hand_end_guard: (
+            Callable[[GameState, int, int], bool] | None
+        ) = None
         self._participant_observation_active = False
         self._participant_observation_started_at: float | None = None
         self._participant_observation_duration_sec = 1.5
         self._participant_observed_seats: set[str] = set()
 
         self._init_db()
+
+    def set_hand_end_guard(
+        self,
+        guard: Callable[[GameState, int, int], bool] | None,
+    ) -> None:
+        """Set an external guard for suppressing pot-decrease hand_end.
+
+        Args:
+            guard: Callback receiving game_state, previous pot, and current pot.
+                Return True to suppress a pot-decrease hand_end transition.
+        """
+        self._external_hand_end_guard = guard
 
     @property
     def phase(self) -> str:
@@ -854,6 +869,15 @@ class HandManager:
                         self._phase,
                     )
                     return False
+            if (
+                self._external_hand_end_guard is not None
+                and self._external_hand_end_guard(
+                    game_state,
+                    self._prev_frame_pot,
+                    game_state.pot,
+                )
+            ):
+                return False
             self._last_hand_end_reason = "pot_decreased"
             logger.info(
                 "Hand end: pot decreased (%d -> %d), payout detected",
