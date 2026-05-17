@@ -115,6 +115,7 @@ class GameState:
             frame, or None when strategy may run.
         amount_recheck_reason: Debug reason for amount recheck state, or None.
         amount_recheck_pending: Whether amount recheck is pending this frame.
+        hand_start_status: Supplemental hand-start status for UI/logs.
         hero_cards_unstable_reason: Reason hero cards are unsafe for strategy
             or saving, or None when hero cards are stable.
     """
@@ -144,6 +145,7 @@ class GameState:
     strategy_defer_reason: str | None = None
     amount_recheck_reason: str | None = None
     amount_recheck_pending: bool = False
+    hand_start_status: str | None = None
     hero_cards_unstable_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:

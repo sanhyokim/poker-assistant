@@ -176,8 +176,9 @@ class GameLoopWorker(QObject):
                     recommendation = self._game_loop.current_recommendation
                     self.recommendation_ready.emit(recommendation)
                     self.game_state_ready.emit(game_state)
-                    if game_state.phase:
-                        self.phase_changed.emit(game_state.phase)
+                    phase_display = game_state.hand_start_status or game_state.phase
+                    if phase_display:
+                        self.phase_changed.emit(phase_display)
             except Exception:
                 logger.exception("Error in game loop thread")
                 self.log_message.emit("Game loop error (see log)", "ERROR")

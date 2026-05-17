@@ -359,6 +359,43 @@ class HandManager:
             if action.action.upper() not in {"BLIND_SB", "BLIND_BB"}
         ]
 
+    def add_preflop_buffered_actions(self, actions: list[ActionRecord]) -> None:
+        """Add PRE-HAND buffered actions to the current preflop history.
+
+        Args:
+            actions: Actions detected while HandManager was still waiting.
+        """
+        if self._phase != "preflop":
+            logger.debug(
+                "PRE-HAND buffered actions ignored: phase=%s hand_id=%s count=%d",
+                self._phase,
+                self._hand_id,
+                len(actions),
+            )
+            return
+        if not actions:
+            return
+
+        if "preflop" not in self._street_actions:
+            self._street_actions["preflop"] = StreetActions(street="preflop", board=[])
+
+        preflop_actions = self._street_actions["preflop"].actions
+        existing_keys = {
+            (action.seat, action.action.upper(), action.amount)
+            for action in preflop_actions + self._all_actions
+        }
+        unique_actions: list[ActionRecord] = []
+        for action in actions:
+            key = (action.seat, action.action.upper(), action.amount)
+            if key in existing_keys:
+                logger.debug("Duplicate PRE-HAND buffered action ignored: %s", action)
+                continue
+            existing_keys.add(key)
+            unique_actions.append(action)
+
+        if unique_actions:
+            self._add_actions(unique_actions)
+
     @property
     def hero_turn_started_monotonic(self) -> float | None:
         """Return monotonic timestamp for the latest hero turn start."""

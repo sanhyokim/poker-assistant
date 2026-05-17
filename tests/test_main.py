@@ -74,3 +74,18 @@ def test_game_loop_worker_uses_canonical_post_frame_processing() -> None:
     assert emitted_states[0].hero.position == "BB"
     assert emitted_recommendations == [game_loop._recommendation]
     assert emitted_phases == ["preflop"]
+
+
+def test_game_loop_worker_emits_pre_hand_phase_status() -> None:
+    """GUI worker uses hand_start_status for PRE-HAND phase display."""
+    game_loop = _FakeGameLoop()
+    game_loop._state.phase = "waiting"
+    game_loop._state.hand_start_status = "PRE-HAND"
+    worker = GameLoopWorker(game_loop)
+    emitted_phases: list[str] = []
+
+    worker.phase_changed.connect(emitted_phases.append)
+
+    worker.run()
+
+    assert emitted_phases == ["PRE-HAND"]

@@ -160,6 +160,51 @@ def start_hand(manager: HandManager) -> None:
     manager.process_frame(make_state(hero_cards=["Ah", "Kd"]))
 
 
+def test_add_preflop_buffered_actions_records_unique_actions(
+    manager: HandManager,
+) -> None:
+    """Buffered PRE-HAND actions are added once to preflop history."""
+    manager.process_frame(
+        make_state(
+            hero_cards=["Ah", "Kd"],
+            player_cards_visible={"2", "3"},
+            players={"2": (4900, 100), "3": (5000, 0)},
+        )
+    )
+
+    manager.add_preflop_buffered_actions(
+        [
+            ActionRecord(seat=2, action="CALL", amount=100),
+            ActionRecord(seat=2, action="CALL", amount=100),
+        ]
+    )
+
+    preflop_actions = manager.get_preflop_actions()
+    recorded = [
+        (action.seat, action.action, action.amount)
+        for action in preflop_actions
+    ]
+    assert recorded == [
+        (2, "CALL", 100),
+    ]
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in manager.get_all_actions()
+        if action.action.upper() == "CALL"
+    ] == [(2, "CALL", 100)]
+
+
+def test_add_preflop_buffered_actions_ignored_outside_preflop(
+    manager: HandManager,
+) -> None:
+    """Buffered PRE-HAND actions are ignored unless the hand is in preflop."""
+    manager.add_preflop_buffered_actions(
+        [ActionRecord(seat=2, action="RAISE", amount=300)]
+    )
+
+    assert manager.get_all_actions() == []
+
+
 def finish_hand_by_pot_decrease(
     manager: HandManager,
     board: list[str] | None = None,

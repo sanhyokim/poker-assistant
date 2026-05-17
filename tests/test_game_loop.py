@@ -249,6 +249,124 @@ def test_process_game_state_after_frame_uses_canonical_order(
     ]
 
 
+def test_pre_hand_starts_and_marks_game_state(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PRE-HAND starts while waiting when cards are dealt around the table."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = create_empty_game_state()
+    state.frame_number = 10
+    state.phase = "waiting"
+    state.table_visible = True
+    state.dealer_seat = 3
+    state.pot = 150
+    state.board_card_count = 0
+    state.players["2"].cards_visible = True
+    state.players["3"].cards_visible = True
+
+    with caplog.at_level(logging.INFO):
+        loop._update_pre_hand_state(state)
+
+    assert loop._pre_hand_active is True
+    assert state.hand_start_status == "PRE-HAND"
+    assert "PRE-HAND started" in caplog.text
+
+
+def test_pre_hand_buffers_valid_waiting_actions_once(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PRE-HAND buffers valid preflop actions and suppresses duplicates."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_active = True
+    state = create_empty_game_state()
+    state.frame_number = 11
+    state.actions_since_last_frame = [
+        ActionRecord(seat=2, action="CALL", amount=100),
+        ActionRecord(seat=2, action="CALL", amount=100),
+        ActionRecord(seat=3, action="CHECK", amount=0),
+        ActionRecord(seat=0, action="RAISE", amount=300),
+    ]
+
+    with caplog.at_level(logging.INFO):
+        loop._buffer_pre_hand_actions(state)
+
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in loop._waiting_preflop_action_buffer
+    ] == [(2, "CALL", 100)]
+    assert state.hand_start_status == "PRE-HAND"
+    assert "PRE-HAND action buffered" in caplog.text
+
+
+def test_pre_hand_commits_buffer_after_formal_hand_start(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Buffered waiting actions move into preflop history after hand start."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_active = True
+    loop._waiting_preflop_action_buffer = [
+        ActionRecord(seat=2, action="CALL", amount=100),
+    ]
+    loop._waiting_preflop_action_keys = {(2, "CALL", 100)}
+    state = create_empty_game_state()
+    state.table_visible = True
+    state.hero.cards = ["Ah", "Kd"]
+    state.hero.cards_visible = True
+    state.players["2"] = PlayerState(
+        stack=4900,
+        bet=100,
+        is_seated=True,
+        cards_visible=True,
+        in_current_hand=True,
+    )
+
+    with caplog.at_level(logging.INFO):
+        loop.process_game_state_after_frame(state)
+
+    preflop_actions = loop._hand_manager.get_preflop_actions()
+    recorded = [
+        (action.seat, action.action, action.amount)
+        for action in preflop_actions
+    ]
+    assert recorded == [
+        (2, "CALL", 100),
+    ]
+    assert loop._pre_hand_active is False
+    assert loop._waiting_preflop_action_buffer == []
+    assert "PRE-HAND committed" in caplog.text
+
+
+def test_pre_hand_discards_on_board_visible(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PRE-HAND buffer is discarded when board cards appear before hand start."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._pre_hand_active = True
+    loop._waiting_preflop_action_buffer = [
+        ActionRecord(seat=2, action="RAISE", amount=300),
+    ]
+    state = create_empty_game_state()
+    state.frame_number = 12
+    state.table_visible = True
+    state.dealer_seat = 3
+    state.board_card_count = 3
+
+    with caplog.at_level(logging.INFO):
+        loop._update_pre_hand_state(state)
+
+    assert loop._pre_hand_active is False
+    assert loop._waiting_preflop_action_buffer == []
+    assert "PRE-HAND discarded: reason=board_visible" in caplog.text
+
+
 def test_process_game_state_after_frame_filters_invalid_actions_before_manager(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

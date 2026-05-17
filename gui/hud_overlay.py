@@ -91,6 +91,14 @@ class HudOverlay(QWidget):
         self._status_label.show()
         self.show()
 
+    def show_pre_hand(self) -> None:
+        """Show PRE-HAND buffering status without a recommendation."""
+        self._hide_recommendation_labels()
+        self._status_label.setText("PRE-HAND\nBuffering preflop actions...")
+        self._set_label_color(self._status_label, QColor(255, 220, 90))
+        self._status_label.show()
+        self.show()
+
     def mark_closing(self) -> None:
         """Flag the HUD as closing so pending updates are ignored."""
         self._closing = True

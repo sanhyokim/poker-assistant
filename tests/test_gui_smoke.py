@@ -13,6 +13,7 @@ import pytest
 from PyQt6.QtWidgets import QApplication
 
 import main
+from core.game_state import create_empty_game_state
 
 
 @pytest.fixture(scope="module")
@@ -50,6 +51,35 @@ def test_hud_overlay_smoke(qapp: QApplication) -> None:
     assert hud.isVisible()
 
     hud.close()
+
+
+def test_hud_overlay_show_pre_hand(qapp: QApplication) -> None:
+    """HudOverlay can show PRE-HAND buffering status."""
+    _ = qapp
+    from gui.hud_overlay import HudOverlay
+
+    hud = HudOverlay()
+    hud.show_pre_hand()
+
+    assert "PRE-HAND" in hud._status_label.text()
+
+    hud.close()
+
+
+def test_main_window_update_game_state_shows_pre_hand(qapp: QApplication) -> None:
+    """MainWindow displays PRE-HAND supplemental status."""
+    _ = qapp
+    from gui.main_window import MainWindow
+
+    window = MainWindow()
+    state = create_empty_game_state()
+    state.hand_start_status = "PRE-HAND"
+
+    window.update_game_state(state)
+
+    assert window._phase_label.text() == "Phase: PRE-HAND"
+
+    window.close()
 
 
 def test_load_config_reads_yaml(project_root: Path) -> None:

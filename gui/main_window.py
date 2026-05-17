@@ -133,6 +133,7 @@ class MainWindow(QMainWindow):
         self._phase_label.setText(f"Phase: {phase}")
         color_map = {
             "waiting": "#888888",
+            "PRE-HAND": "#ffdd66",
             "preflop": "#ffcc00",
             "flop": "#33cc33",
             "turn": "#3399ff",
@@ -185,6 +186,8 @@ class MainWindow(QMainWindow):
             game_state: Current game state to display.
         """
         try:
+            if game_state.hand_start_status == "PRE-HAND":
+                self.update_phase("PRE-HAND")
             self._update_summary_panel(game_state)
             self._update_player_table(game_state)
             state_dict = asdict(game_state)
