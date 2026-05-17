@@ -3305,7 +3305,8 @@ class GameLoop:
     def _clear_hand_position_lock(self, reason: str) -> None:
         if self._hand_positions is not None or self._hand_dealer_seat is not None:
             logger.info(
-                "Position lock cleared: reason=%s previous_hand_id=%s "
+                "POSITION_LOCK_CLEARED: Position lock cleared: reason=%s "
+                "previous_hand_id=%s "
                 "previous_dealer=%s previous_positions=%s",
                 reason,
                 self._hand_position_hand_id,
@@ -3433,6 +3434,14 @@ class GameLoop:
                 active_seats,
             )
             return
+        if (
+            self._hand_positions is not None
+            and self._hand_position_hand_id == hand_id
+            and self._hand_dealer_seat is not None
+            and self._hand_dealer_seat != dealer_seat
+        ):
+            self._apply_locked_positions(game_state)
+            return
 
         positions = calculate_positions(dealer_seat, active_seats)
         if not positions:
@@ -3460,7 +3469,8 @@ class GameLoop:
             dealer_source,
         )
         logger.info(
-            "Position lock updated: hand_id=%s phase=%s dealer=%s active_seats=%s "
+            "POSITION_LOCK_APPLIED: Position lock updated: hand_id=%s phase=%s "
+            "dealer=%s active_seats=%s "
             "positions=%s hero_position=%s",
             hand_id,
             phase,
@@ -3490,7 +3500,8 @@ class GameLoop:
         )
         log_method = logger.debug if key == self._last_position_lock_log_key else logger.info
         log_method(
-            "Position lock skipped: reason=%s hand_id=%s phase=%s dealer=%s "
+            "POSITION_LOCK_SKIPPED: Position lock skipped: reason=%s hand_id=%s "
+            "phase=%s dealer=%s "
             "active_seats=%s dealer_source=%s",
             reason,
             hand_id,
@@ -3500,6 +3511,30 @@ class GameLoop:
             dealer_source,
         )
         self._last_position_lock_log_key = key
+
+    @staticmethod
+    def _log_position_lock_ignored(
+        reason: str,
+        hand_id: int | None,
+        phase: str | None,
+        locked_dealer: int | None,
+        observed_dealer: int | None,
+        hero_position: str | None,
+        active_seats: list[int],
+    ) -> None:
+        """Log ignored dealer OCR changes while preserving an active lock."""
+        logger.info(
+            "POSITION_LOCK_IGNORED: reason=%s hand_id=%s phase=%s "
+            "locked_dealer=%s observed_dealer=%s hero_position=%s "
+            "active_seats=%s",
+            reason,
+            hand_id,
+            phase,
+            locked_dealer,
+            observed_dealer,
+            hero_position,
+            active_seats,
+        )
 
     def _select_dealer_for_position(
         self,
@@ -3546,8 +3581,26 @@ class GameLoop:
             and self._hand_dealer_seat is not None
             and game_state.dealer_seat != self._hand_dealer_seat
         ):
-            self._clear_hand_position_lock("dealer mismatch")
-            return
+            if phase in {"preflop", "flop", "turn", "river"}:
+                self._log_position_lock_ignored(
+                    "active_hand_dealer_changed",
+                    current_hand_id,
+                    phase,
+                    self._hand_dealer_seat,
+                    game_state.dealer_seat,
+                    get_hero_position(self._hand_positions, hero_seat=1),
+                    (
+                        self._active_seats_for_position(
+                            game_state,
+                            allow_seated_fallback=False,
+                        )
+                        if self._hand_manager is not None
+                        else []
+                    ),
+                )
+            else:
+                self._clear_hand_position_lock("dealer mismatch")
+                return
         game_state.dealer_seat = self._hand_dealer_seat
         game_state.hero.position = get_hero_position(self._hand_positions, hero_seat=1)
         for seat in range(2, 7):
@@ -3567,7 +3620,8 @@ class GameLoop:
             else logger.info
         )
         log_method(
-            "Position lock applied: hand_id=%s phase=%s dealer=%s "
+            "POSITION_LOCK_APPLIED: Position lock applied: hand_id=%s phase=%s "
+            "dealer=%s "
             "hero_position=%s positions=%s",
             self._hand_position_hand_id,
             phase,

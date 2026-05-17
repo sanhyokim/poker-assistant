@@ -2356,7 +2356,7 @@ def test_position_locked_during_hand(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Position lock is recalculated from the latest active hand state."""
+    """Position lock ignores dealer OCR changes during the same active hand."""
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hand_manager._phase = "preflop"
     loop._hand_manager._hand_id = 1
@@ -2373,8 +2373,97 @@ def test_position_locked_during_hand(
     next_state = _make_seated_state(dealer_seat=4)
     loop._update_hand_position_lock(next_state)
 
-    assert next_state.dealer_seat == 4
-    assert next_state.hero.position == "UTG"
+    assert next_state.dealer_seat == 3
+    assert next_state.hero.position == "BB"
+    assert loop._hand_dealer_seat == 3
+
+
+def test_position_lock_ignores_active_hand_dealer_mismatch(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Active hand dealer OCR mismatch does not clear or recompute the lock."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 2
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    start_state = _make_seated_state(dealer_seat=4)
+    loop._update_hand_position_lock(start_state)
+    assert start_state.hero.position == "UTG"
+
+    loop._hand_manager._phase = "turn"
+    loop._hand_manager._hand_just_started = False
+    turn_state = _make_seated_state(dealer_seat=6)
+    turn_state.phase = "turn"
+    loop._update_hand_position_lock(turn_state)
+
+    assert loop._hand_dealer_seat == 4
+    assert loop._hand_position_hand_id == 2
+    assert loop._hand_positions is not None
+    assert turn_state.dealer_seat == 4
+    assert turn_state.hero.position == "UTG"
+    assert "POSITION_LOCK_IGNORED" in caplog.text
+    assert "reason=active_hand_dealer_changed" in caplog.text
+    assert "locked_dealer=4" in caplog.text
+    assert "observed_dealer=6" in caplog.text
+
+
+def test_position_lock_clears_dealer_mismatch_in_waiting(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Waiting phase may clear an old position lock."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 2
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    start_state = _make_seated_state(dealer_seat=4)
+    loop._update_hand_position_lock(start_state)
+
+    loop._hand_manager._phase = "waiting"
+    loop._hand_manager._hand_id = None
+    loop._hand_manager._hand_just_started = False
+    waiting_state = _make_seated_state(dealer_seat=6)
+    waiting_state.phase = "waiting"
+    loop._update_hand_position_lock(waiting_state)
+
+    assert loop._hand_positions is None
+    assert loop._hand_dealer_seat is None
+    assert waiting_state.hero.position is None
+    assert "POSITION_LOCK_CLEARED" in caplog.text
+
+
+def test_position_lock_updates_when_hand_id_changes(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A new hand ID replaces the previous hand's position lock."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 1
+    loop._hand_manager._hand_just_started = True
+    _set_players_in_hand(loop, {1, 2, 3, 4, 5, 6})
+    first_state = _make_seated_state(dealer_seat=4)
+    loop._update_hand_position_lock(first_state)
+    assert first_state.hero.position == "UTG"
+
+    loop._hand_manager._hand_id = 2
+    loop._hand_manager._hand_just_started = False
+    second_state = _make_seated_state(dealer_seat=3)
+    loop._update_hand_position_lock(second_state)
+
+    assert loop._hand_position_hand_id == 2
+    assert loop._hand_dealer_seat == 3
+    assert second_state.hero.position == "BB"
+    assert "POSITION_LOCK_APPLIED" in caplog.text
 
 
 def test_position_updated_on_new_hand(
