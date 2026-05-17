@@ -140,7 +140,10 @@ class HudOverlay(QWidget):
         )
         self._set_label_color(self._source_label, QColor(170, 170, 170))
 
-        if recommendation.action_probabilities:
+        if (
+            recommendation.strategy_source == "solver"
+            and recommendation.action_probabilities
+        ):
             self._probabilities_label.setText(
                 self._format_probabilities(recommendation.action_probabilities),
             )

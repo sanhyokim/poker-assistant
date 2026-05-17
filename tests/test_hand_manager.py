@@ -1869,6 +1869,55 @@ class TestActionAccumulation:
         assert manager.get_all_actions() == [check]
         assert manager.hero_folded is False
 
+    def test_record_hero_fold_from_badge_records_fold(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Fold badge can directly record Hero FOLD on an active street."""
+        start_hand(manager)
+        current_street = manager.get_current_street_actions()
+        assert current_street is not None
+
+        recorded = manager.record_hero_fold_from_badge(
+            reason="recommended_fold_no_recent_check",
+        )
+
+        fold = ActionRecord(seat=1, action="FOLD", amount=0, confidence="high")
+        assert recorded is True
+        assert current_street.actions == [fold]
+        assert manager.get_all_actions() == [fold]
+        assert manager.hero_folded is True
+        assert 1 not in manager.get_players_in_hand()
+
+    def test_record_hero_fold_from_badge_does_not_duplicate_fold(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Fold badge direct recording does not duplicate an existing Hero fold."""
+        start_hand(manager)
+        assert manager.record_hero_fold_from_badge() is True
+
+        recorded_again = manager.record_hero_fold_from_badge()
+
+        assert recorded_again is False
+        assert manager.get_all_actions() == [
+            ActionRecord(seat=1, action="FOLD", amount=0, confidence="high")
+        ]
+
+    def test_record_hero_fold_from_badge_without_current_street_returns_false(
+        self,
+        manager: HandManager,
+    ) -> None:
+        """Fold badge direct recording requires an active current street."""
+        manager._phase = "preflop"
+        manager._hand_id = 1
+        manager._players_in_hand = {"1": True}
+
+        recorded = manager.record_hero_fold_from_badge()
+
+        assert recorded is False
+        assert manager.get_all_actions() == []
+
     def test_frame_hero_fold_is_still_saved(
         self,
         manager: HandManager,

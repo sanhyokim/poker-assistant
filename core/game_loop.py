@@ -3145,7 +3145,17 @@ class GameLoop:
                 )
             elif hero_non_fold_action is not None:
                 action_name = hero_non_fold_action.action.upper()
-                if (
+                if action_name == "CHECK" and self._is_current_recommendation_fold():
+                    prioritized = self._prioritize_recommended_fold_badge(
+                        game_state,
+                        action_name,
+                        0.0,
+                    )
+                    if prioritized:
+                        self._drop_same_frame_hero_check(game_state)
+                    else:
+                        self._mark_pending_hero_fold_badge_recovery()
+                elif (
                     action_name == "CHECK"
                     and self._hand_manager.replace_recent_hero_check_with_fold(
                         max_age_sec=1.5
@@ -3176,6 +3186,16 @@ class GameLoop:
                     else 0.0
                 )
                 if (
+                    action_name.upper() == "CHECK"
+                    and self._is_current_recommendation_fold()
+                    and self._prioritize_recommended_fold_badge(
+                        game_state,
+                        action_name,
+                        age,
+                    )
+                ):
+                    pass
+                elif (
                     action_name.upper() == "CHECK"
                     and self._hand_manager.replace_recent_hero_check_with_fold(
                         max_age_sec=1.5
@@ -3358,6 +3378,58 @@ class GameLoop:
             if action.seat == 1 and action.action in HERO_NON_FOLD_ACTIONS:
                 return action
         return None
+
+    def _is_current_recommendation_fold(self) -> bool:
+        """Return whether the current visible recommendation is FOLD."""
+        recommendation = self.current_recommendation or self._previous_recommendation
+        if recommendation is None:
+            return False
+        return recommendation.action.upper() == "FOLD"
+
+    def _prioritize_recommended_fold_badge(
+        self,
+        game_state: GameState,
+        action_name: str,
+        age: float,
+    ) -> bool:
+        """Recover or record Hero FOLD when a FOLD recommendation is active."""
+        if action_name.upper() != "CHECK":
+            return False
+        if age > 1.5:
+            return False
+
+        replaced = self._hand_manager.replace_recent_hero_check_with_fold(
+            max_age_sec=1.5,
+        )
+        recorded = False
+        if not replaced:
+            recorded = self._hand_manager.record_hero_fold_from_badge(
+                reason="recommended_fold_no_recent_check",
+            )
+        if not replaced and not recorded:
+            return False
+
+        logger.info(
+            "Hero FOLD badge prioritized over recent CHECK because "
+            "recommendation was FOLD: age=%.2fs hand_id=%s phase=%s",
+            age,
+            self._hand_manager.hand_id,
+            self._hand_manager.phase,
+        )
+        if replaced:
+            logger.info("Hero FOLD recovered from CHECK via fold badge")
+        self._clear_hero_card_cache("hero fold badge prioritized over check")
+        self._clear_pending_hero_fold_badge_recovery()
+        return True
+
+    @staticmethod
+    def _drop_same_frame_hero_check(game_state: GameState) -> None:
+        """Remove same-frame Hero CHECK after fold badge has confirmed FOLD."""
+        game_state.actions_since_last_frame = [
+            action
+            for action in game_state.actions_since_last_frame
+            if not (action.seat == 1 and action.action.upper() == "CHECK")
+        ]
 
     def _has_recent_hero_non_fold_action(self) -> bool:
         """Return whether a recent hero non-fold action should suppress badge fold."""

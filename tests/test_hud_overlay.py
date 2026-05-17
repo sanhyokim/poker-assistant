@@ -189,6 +189,31 @@ def test_hud_overlay_solver_probabilities_are_sorted_and_limited(
     assert probability_index < reason_index
 
 
+@pytest.mark.parametrize(
+    "strategy_source",
+    ["preflop_chart", "llm_multiway", "solver_timeout"],
+)
+def test_hud_overlay_hides_solver_mix_for_non_solver_sources(
+    qapp: QApplication,
+    strategy_source: str,
+) -> None:
+    """Solver Mix is only shown for solver-sourced recommendations."""
+    _ = qapp
+    overlay = HudOverlay()
+    recommendation = Recommendation(
+        action="FOLD",
+        strategy_source=strategy_source,
+        action_probabilities={"FOLD": 0.7, "CALL": 0.3},
+        reason="not solver",
+    )
+
+    overlay.update_recommendation(recommendation)
+    QApplication.processEvents()
+
+    assert overlay._probabilities_label.isHidden() is True
+    assert "Solver Mix" not in overlay._probabilities_label.text()
+
+
 def test_hud_overlay_solver_timeout_message(qapp: QApplication) -> None:
     """Solver timeout recommendations render as an explicit non-strategy result."""
     _ = qapp

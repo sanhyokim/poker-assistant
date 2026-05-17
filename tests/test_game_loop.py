@@ -1845,6 +1845,135 @@ def test_fold_badge_detection_ignores_recent_hero_non_fold_action(
     ) in caplog.text
 
 
+def test_fold_recommendation_prioritizes_badge_over_recent_check(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """FOLD recommendation lets fold badge override a recent CHECK detection."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    start_state = create_empty_game_state()
+    start_state.hero.cards = ["Ah", "Kd"]
+    start_state.hero.cards_visible = True
+    loop._hand_manager.process_frame(start_state)
+    loop._hand_manager._players_in_hand = {"1": True}
+    loop._previous_recommendation = Recommendation(
+        action="FOLD",
+        strategy_source="preflop_chart",
+    )
+    loop._last_hero_non_fold_action_time = time.monotonic() - 0.5
+    loop._last_hero_non_fold_action_name = "CHECK"
+    loop._cached_hero_cards = ["Ah", "Kd"]
+    game_state = create_empty_game_state()
+
+    with caplog.at_level(logging.INFO, logger="core.game_loop"):
+        loop._process_fold_badge_detection(game_state, {1: True})
+
+    current_street = loop._hand_manager.get_current_street_actions()
+    assert current_street is not None
+    assert current_street.actions == [
+        ActionRecord(seat=1, action="FOLD", amount=0, confidence="high")
+    ]
+    assert game_state.actions_since_last_frame == []
+    assert loop._hand_manager.hero_folded is True
+    assert loop._hero_fold_badge_ignored_for_hand is False
+    assert loop._cached_hero_cards is None
+    assert (
+        "Hero FOLD badge prioritized over recent CHECK because "
+        "recommendation was FOLD"
+    ) in caplog.text
+
+
+def test_fold_recommendation_replaces_recorded_check_with_badge(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FOLD recommendation still uses CHECK -> FOLD replacement when available."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    start_state = create_empty_game_state()
+    start_state.hero.cards = ["Ah", "Kd"]
+    start_state.hero.cards_visible = True
+    loop._hand_manager.process_frame(start_state)
+    loop._hand_manager._players_in_hand = {"1": True}
+    loop._previous_recommendation = Recommendation(
+        action="FOLD",
+        strategy_source="preflop_chart",
+    )
+    loop._hand_manager._record_hero_action(
+        ActionRecord(seat=1, action="CHECK", amount=0)
+    )
+    loop._hand_manager._last_hero_boundary_action_monotonic = time.monotonic() - 0.2
+    loop._last_hero_non_fold_action_time = time.monotonic() - 0.2
+    loop._last_hero_non_fold_action_name = "CHECK"
+    game_state = create_empty_game_state()
+
+    loop._process_fold_badge_detection(game_state, {1: True})
+
+    current_street = loop._hand_manager.get_current_street_actions()
+    assert current_street is not None
+    assert current_street.actions == [
+        ActionRecord(seat=1, action="FOLD", amount=0, confidence="high")
+    ]
+    assert len(loop._hand_manager.get_all_actions()) == 1
+    assert loop._hand_manager.hero_folded is True
+
+
+def test_fold_recommendation_same_frame_check_records_badge_fold(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """FOLD recommendation records badge FOLD even before CHECK is saved."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    start_state = create_empty_game_state()
+    start_state.hero.cards = ["Ah", "Kd"]
+    start_state.hero.cards_visible = True
+    loop._hand_manager.process_frame(start_state)
+    loop._hand_manager._players_in_hand = {"1": True}
+    loop._previous_recommendation = Recommendation(
+        action="FOLD",
+        strategy_source="preflop_chart",
+    )
+    game_state = create_empty_game_state()
+    game_state.actions_since_last_frame = [
+        ActionRecord(seat=1, action="CHECK", amount=0, confidence="high")
+    ]
+
+    loop._process_fold_badge_detection(game_state, {1: True})
+
+    assert game_state.actions_since_last_frame == []
+    current_street = loop._hand_manager.get_current_street_actions()
+    assert current_street is not None
+    assert current_street.actions == [
+        ActionRecord(seat=1, action="FOLD", amount=0, confidence="high")
+    ]
+    assert loop._pending_hero_fold_badge_recovery is False
+
+
+def test_non_fold_recommendation_keeps_recent_check_badge_ignore(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CALL recommendation keeps the existing recent CHECK fold-badge guard."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager._players_in_hand = {"1": True}
+    loop._previous_recommendation = Recommendation(
+        action="CALL",
+        amount=100,
+        strategy_source="solver",
+    )
+    loop._last_hero_non_fold_action_time = time.monotonic() - 0.5
+    loop._last_hero_non_fold_action_name = "CHECK"
+    game_state = create_empty_game_state()
+
+    loop._process_fold_badge_detection(game_state, {1: True})
+
+    assert game_state.actions_since_last_frame == []
+    assert loop._hand_manager.hero_folded is False
+    assert loop._hero_fold_badge_ignored_for_hand is True
+    assert loop._hero_fold_badge_ignored_reason == "recent_non_fold_action"
+
+
 def test_fold_badge_detection_latched_hero_ignore_still_processes_opponents(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

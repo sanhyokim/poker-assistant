@@ -1042,6 +1042,46 @@ class HandManager:
         )
         return True
 
+    def record_hero_fold_from_badge(
+        self,
+        *,
+        reason: str = "fold_badge",
+    ) -> bool:
+        """Record a Hero FOLD confirmed by fold badge detection.
+
+        Args:
+            reason: Diagnostic reason included in logs.
+
+        Returns:
+            True when a new Hero FOLD was recorded, otherwise False.
+        """
+        if self._phase not in self._ACTIVE_PHASES:
+            return False
+        if self._hero_folded:
+            return False
+        if self._last_hero_action is not None:
+            if self._last_hero_action.action.upper() == "FOLD":
+                return False
+        if self.get_current_street_actions() is None:
+            return False
+
+        fold_action = ActionRecord(
+            seat=1,
+            action="FOLD",
+            amount=0,
+            confidence="high",
+        )
+        self._record_hero_action(fold_action)
+        self._players_in_hand["1"] = False
+        self._folded_seats.add("1")
+        logger.info(
+            "Hero FOLD recorded from fold badge: reason=%s hand_id=%s phase=%s",
+            reason,
+            self._hand_id,
+            self._phase,
+        )
+        return True
+
     def _try_replace_recent_hero_check(self, action: ActionRecord) -> bool:
         """Replace a very recent boundary CHECK with a delayed Hero action."""
         action_name = action.action.upper()
