@@ -367,6 +367,101 @@ def test_pre_hand_discards_on_board_visible(
     assert "PRE-HAND discarded: reason=board_visible" in caplog.text
 
 
+def test_process_one_frame_starts_pre_hand_in_execution_flow(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """process_one_frame starts PRE-HAND after seat cards are applied."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._seat_card_detector.detect_all = MagicMock(
+        return_value={2: True, 3: True, 4: False, 5: False, 6: False}
+    )
+
+    with caplog.at_level(logging.INFO):
+        state = loop.process_one_frame()
+
+    assert state is not None
+    assert loop._pre_hand_active is True
+    assert state.hand_start_status == "PRE-HAND"
+    assert "PRE-HAND started" in caplog.text
+
+
+def test_process_one_frame_buffers_pre_hand_action_in_execution_flow(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """process_one_frame buffers waiting actions while PRE-HAND is active."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._seat_card_detector.detect_all = MagicMock(
+        return_value={2: True, 3: True, 4: False, 5: False, 6: False}
+    )
+
+    first_state = loop.process_one_frame()
+    assert first_state is not None
+
+    with caplog.at_level(logging.INFO):
+        second_state = loop.process_one_frame()
+
+    assert second_state is not None
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in loop._waiting_preflop_action_buffer
+    ] == [(2, "CALL", 100)]
+    assert loop._hand_manager.get_all_actions() == []
+    assert loop._hand_manager.hand_id is None
+    assert "PRE-HAND action buffered" in caplog.text
+
+
+def test_process_flow_commits_pre_hand_buffer_after_hand_start(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """PRE-HAND buffer is committed by post-frame processing after hand start."""
+    loop = make_loop(workspace_tmp, monkeypatch, StaticFrameCapture())
+    loop._seat_card_detector.detect_all = MagicMock(
+        return_value={2: True, 3: True, 4: False, 5: False, 6: False}
+    )
+
+    assert loop.process_one_frame() is not None
+    state = loop.process_one_frame()
+    assert state is not None
+    assert loop._waiting_preflop_action_buffer
+
+    with caplog.at_level(logging.INFO):
+        loop.process_game_state_after_frame(state)
+
+    preflop_actions = loop._hand_manager.get_preflop_actions()
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in preflop_actions
+    ] == [(2, "CALL", 100)]
+    assert loop._waiting_preflop_action_buffer == []
+    assert "PRE-HAND committed" in caplog.text
+
+
+def test_pre_hand_hud_is_not_overwritten_by_waiting(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waiting-phase strategy handling keeps PRE-HAND HUD status visible."""
+    hud_recommendations: list[Recommendation | None] = []
+    hud_messages: list[str] = []
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hud_callback = hud_recommendations.append
+    loop._hud_computing_callback = hud_messages.append
+    loop._recommendation_engine = object()
+    state = create_empty_game_state()
+    state.hand_start_status = "PRE-HAND"
+
+    loop.process_game_state_after_frame(state)
+
+    assert hud_recommendations == []
+    assert hud_messages[-1].startswith("PRE-HAND")
+
+
 def test_process_game_state_after_frame_filters_invalid_actions_before_manager(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

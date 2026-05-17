@@ -1117,6 +1117,9 @@ class GameLoop:
             game_state.game_event = None
             game_state.actions_since_last_frame = []
 
+        self._update_pre_hand_state(game_state)
+        self._buffer_pre_hand_actions(game_state)
+
         if self._hand_manager.hand_just_started:
             self._fold_badge_detector.reset()
             self._seat_card_detector.reset()
@@ -3762,9 +3765,6 @@ class GameLoop:
             )
             game_state.hero.cards = None
             game_state.hero.cards_visible = False
-
-        self._update_pre_hand_state(game_state)
-        self._buffer_pre_hand_actions(game_state)
 
         game_state.hero.seat = 1
         return game_state
