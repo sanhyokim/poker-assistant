@@ -3998,6 +3998,235 @@ def test_new_street_clears_solver_timeout_context(
     assert loop._solver_timeout_contexts == {}
 
 
+def test_stale_async_result_records_solver_suppression_context(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Stale async solver results suppress similar retries."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    old_state = make_hu_solver_state()
+    snapshot = loop._build_recommendation_context_snapshot(old_state)
+    exact_key, coarse_key = loop._solver_context_keys(old_state)
+    current_state = make_hu_solver_state()
+    current_state.phase = "turn"
+    current_state.board = ["2h", "3d", "5c", "9s"]
+    loop._pending_recommendation_active_id = 20
+    loop._pending_recommendation_context = snapshot
+    loop._pending_recommendation_exact_key = exact_key
+    loop._pending_recommendation_coarse_key = coarse_key
+    loop._pending_recommendation_completed[20] = _AsyncRecommendationResult(
+        request_id=20,
+        recommendation=Recommendation(action="CHECK", reason="ok"),
+        snapshot=snapshot,
+        exact_key=exact_key,
+        coarse_key=coarse_key,
+    )
+
+    result = loop._poll_async_recommendation_result(current_state)
+
+    assert result is None
+    assert coarse_key in loop._solver_suppressed_contexts
+    assert loop._solver_suppressed_contexts[coarse_key]["reason"] == "stale"
+    assert "ASYNC_RECOMMENDATION_STALE_DETAIL" in caplog.text
+    assert "SOLVER_CONTEXT_SUPPRESSED: reason=stale" in caplog.text
+
+
+def test_cancelled_pending_request_records_solver_suppression_context(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Clearing a pending request records its Solver context."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = make_hu_solver_state()
+    snapshot = loop._build_recommendation_context_snapshot(state)
+    exact_key, coarse_key = loop._solver_context_keys(state)
+    loop._pending_recommendation_active_id = 21
+    loop._pending_recommendation_context = snapshot
+    loop._pending_recommendation_exact_key = exact_key
+    loop._pending_recommendation_coarse_key = coarse_key
+
+    loop._clear_pending_state("hero_turn_ended")
+
+    assert coarse_key in loop._solver_suppressed_contexts
+    assert loop._solver_suppressed_contexts[coarse_key]["reason"] == "hero_turn_ended"
+    assert "Async recommendation cancelled: request_id=21 reason=hero_turn_ended" in caplog.text
+    assert "SOLVER_CONTEXT_SUPPRESSED: reason=hero_turn_ended" in caplog.text
+
+
+def test_inactive_completed_request_records_solver_suppression_context(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Completed inactive worker results also suppress similar retries."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = make_hu_solver_state()
+    snapshot = loop._build_recommendation_context_snapshot(state)
+    exact_key, coarse_key = loop._solver_context_keys(state)
+    loop._pending_recommendation_active_id = None
+    loop._pending_recommendation_completed[22] = _AsyncRecommendationResult(
+        request_id=22,
+        recommendation=Recommendation(action="CHECK", reason="too late"),
+        snapshot=snapshot,
+        exact_key=exact_key,
+        coarse_key=coarse_key,
+    )
+
+    result = loop._poll_async_recommendation_result(state)
+
+    assert result is None
+    assert coarse_key in loop._solver_suppressed_contexts
+    assert loop._solver_suppressed_contexts[coarse_key]["reason"] == "inactive_request"
+    assert "SOLVER_CONTEXT_SUPPRESSED: reason=inactive_request" in caplog.text
+
+
+def test_same_coarse_context_after_stale_is_suppressed(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A stale Solver context suppresses retry by coarse key."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = make_hu_solver_state()
+    exact_key, coarse_key = loop._solver_context_keys(state)
+    loop._record_solver_suppressed_context(
+        reason="stale",
+        request_id=23,
+        hand_id=state.hand_id,
+        phase=state.phase,
+        exact_key=exact_key,
+        coarse_key=coarse_key,
+    )
+
+    assert loop._is_solver_retry_suppressed(state) is True
+    assert "SOLVER_RETRY_SUPPRESSED" in caplog.text
+    assert "previous_stale_or_timeout_similar_context" in caplog.text
+
+
+def test_different_street_allows_solver_after_suppression(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Different street/board context is not suppressed by a flop stale key."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    flop_state = make_hu_solver_state()
+    exact_key, coarse_key = loop._solver_context_keys(flop_state)
+    loop._record_solver_suppressed_context(
+        reason="stale",
+        request_id=24,
+        hand_id=flop_state.hand_id,
+        phase=flop_state.phase,
+        exact_key=exact_key,
+        coarse_key=coarse_key,
+    )
+    turn_state = make_hu_solver_state()
+    turn_state.phase = "turn"
+    turn_state.board = ["2h", "3d", "5c", "9s"]
+
+    assert loop._is_solver_retry_suppressed(turn_state) is False
+
+
+def test_solver_suppression_expires_after_ttl(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Suppression entries expire after the configured TTL."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._solver_context_suppression_ttl_sec = 1.0
+    state = make_hu_solver_state()
+    exact_key, coarse_key = loop._solver_context_keys(state)
+    loop._record_solver_suppressed_context(
+        reason="stale",
+        request_id=25,
+        hand_id=state.hand_id,
+        phase=state.phase,
+        exact_key=exact_key,
+        coarse_key=coarse_key,
+    )
+    loop._solver_suppressed_contexts[coarse_key]["created_at"] = (
+        time.monotonic() - 2.0
+    )
+
+    assert loop._is_solver_retry_suppressed(state) is False
+    assert coarse_key not in loop._solver_suppressed_contexts
+
+
+def test_worker_alive_suppresses_new_solver_start_and_logs(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An alive worker blocks new Solver starts with a visible diagnostic."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    computing_callback = MagicMock()
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hud_computing_callback = computing_callback
+    state = make_hu_solver_state()
+    snapshot = loop._build_recommendation_context_snapshot(state)
+
+    class AliveThread:
+        """Thread double that is still alive."""
+
+        def is_alive(self) -> bool:
+            """Return True to mimic an in-flight Solver worker."""
+            return True
+
+    loop._pending_recommendation_thread = AliveThread()  # type: ignore[assignment]
+    loop._pending_recommendation_active_id = 26
+
+    started = loop._start_async_postflop_recommendation(state, snapshot)
+
+    assert started is False
+    assert "SOLVER_START_SUPPRESSED: reason=worker_already_alive" in caplog.text
+    computing_callback.assert_called_with(
+        "SOLVER STILL RUNNING\nWaiting for current solver..."
+    )
+
+
+def test_accepted_fresh_solver_result_is_not_suppressed(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fresh accepted Solver results do not enter suppression history."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = make_hu_solver_state()
+    snapshot = loop._build_recommendation_context_snapshot(state)
+    exact_key, coarse_key = loop._solver_context_keys(state)
+    monkeypatch.setattr(
+        loop,
+        "_is_recommendation_context_still_valid",
+        lambda _ctx, _state: True,
+    )
+    recommendation = Recommendation(
+        action="CALL",
+        amount=120,
+        reason="fresh solver",
+        strategy_source="solver",
+    )
+    loop._pending_recommendation_active_id = 27
+    loop._pending_recommendation_context = snapshot
+    loop._pending_recommendation_exact_key = exact_key
+    loop._pending_recommendation_coarse_key = coarse_key
+    loop._pending_recommendation_completed[27] = _AsyncRecommendationResult(
+        request_id=27,
+        recommendation=recommendation,
+        snapshot=snapshot,
+        exact_key=exact_key,
+        coarse_key=coarse_key,
+    )
+
+    result = loop._poll_async_recommendation_result(state)
+
+    assert result is recommendation
+    assert coarse_key not in loop._solver_suppressed_contexts
+
+
 def test_hu_preflop_integrity_allows_button_small_blind(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

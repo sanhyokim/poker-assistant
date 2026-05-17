@@ -41,6 +41,9 @@ class _AsyncRecommendationResult:
     request_id: int
     recommendation: Recommendation | None = None
     error: Exception | None = None
+    snapshot: dict[str, object] | None = None
+    exact_key: str | None = None
+    coarse_key: str | None = None
 
 
 class GameLoop:
@@ -238,7 +241,13 @@ class GameLoop:
             int, _AsyncRecommendationResult
         ] = {}
         self._pending_recommendation_cancelled_ids: set[int] = set()
+        self._pending_recommendation_exact_key: str | None = None
+        self._pending_recommendation_coarse_key: str | None = None
         self._solver_timeout_contexts: dict[str, float] = {}
+        self._solver_suppressed_contexts: dict[str, dict[str, object]] = {}
+        self._solver_context_suppression_ttl_sec: float = float(
+            recognition_config.get("solver_context_suppression_ttl_sec", 12.0)
+        )
 
         if enable_strategy:
             self._init_strategy_modules()
@@ -1400,7 +1409,7 @@ class GameLoop:
         self._cached_hand_id = None
         self._previous_recommendation = None
         self._previous_recommendation_context = None
-        self._clear_pending_state()
+        self._clear_pending_state("user_stop")
         self._pending_amount_rechecks.clear()
         self._clear_pre_hand_state()
         self._clear_pre_hand_candidate_state()
@@ -1639,7 +1648,7 @@ class GameLoop:
         self._last_hand_manager_phase = None
         self._previous_recommendation = None
         self._previous_recommendation_context = None
-        self._clear_pending_state()
+        self._clear_pending_state("reset")
         self._last_strategy_phase = None
         self._clear_pre_hand_state()
         self._clear_pre_hand_candidate_state()
@@ -1837,7 +1846,7 @@ class GameLoop:
 
         self._previous_recommendation = None
         self._previous_recommendation_context = None
-        self._clear_pending_state()
+        self._clear_pending_state("abandon_active_hand")
         self._last_recommendation_log = None
         self._last_strategy_is_my_turn = False
         self._notify_hud(None)
@@ -1872,7 +1881,7 @@ class GameLoop:
             self._last_recommendation_log = None
             self._previous_recommendation = None
             self._previous_recommendation_context = None
-            self._clear_pending_state()
+            self._clear_pending_state("hero_cards_unstable")
             self._notify_hud_computing("HERO CARDS UNSTABLE")
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = game_state.hero.is_my_turn
@@ -1883,7 +1892,7 @@ class GameLoop:
             self._last_recommendation_log = None
             self._previous_recommendation = None
             self._previous_recommendation_context = None
-            self._clear_pending_state()
+            self._clear_pending_state(str(phase or "inactive_phase"))
             self._clear_solver_timeout_contexts(str(phase or "inactive_phase"))
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = False
@@ -1915,7 +1924,7 @@ class GameLoop:
             self._last_recommendation_log = None
             self._previous_recommendation = None
             self._previous_recommendation_context = None
-            self._clear_pending_state()
+            self._clear_pending_state("hero_not_in_hand")
             self._last_strategy_is_my_turn = False
             self._notify_hud(None)
             self._save_human_action_to_hand_manager(game_state)
@@ -1926,17 +1935,17 @@ class GameLoop:
             self._last_recommendation_log = None
             self._previous_recommendation = None
             self._previous_recommendation_context = None
-            self._clear_pending_state()
+            self._clear_pending_state("new_hand")
             self._clear_solver_timeout_contexts("new_hand")
 
         if phase == "preflop" and self._last_strategy_phase != "preflop":
             self._previous_recommendation = None
             self._previous_recommendation_context = None
-            self._clear_pending_state()
+            self._clear_pending_state("preflop_entered")
 
         if game_state.game_event == "NEW_STREET":
             self._last_recommendation_log = None
-            self._clear_pending_state()
+            self._clear_pending_state("new_street")
             self._clear_solver_timeout_contexts("new_street")
             if self._hand_manager is not None:
                 game_state.phase = self._hand_manager.phase
@@ -1948,7 +1957,7 @@ class GameLoop:
                 self._last_recommendation_log = None
                 self._previous_recommendation = None
                 self._previous_recommendation_context = None
-                self._clear_pending_state()
+                self._clear_pending_state("hero_turn_ended")
                 self._notify_hud(None)
             self._save_human_action_to_hand_manager(game_state)
             self._last_strategy_phase = phase
@@ -1971,7 +1980,7 @@ class GameLoop:
             self._last_recommendation_log = None
             self._previous_recommendation = None
             self._previous_recommendation_context = None
-            self._clear_pending_state()
+            self._clear_pending_state(game_state.strategy_defer_reason)
             if game_state.strategy_defer_reason == "hand_end_guard":
                 self._notify_hud_computing(
                     "HAND STILL ACTIVE\nWaiting for stable state..."
@@ -2158,6 +2167,10 @@ class GameLoop:
                             )
                             if self._is_solver_retry_suppressed(game_state):
                                 recommendation = self._solver_timeout_recommendation()
+                                recommendation.reason = (
+                                    "Solver skipped: previous solver request became "
+                                    "stale/timeout in this context"
+                                )
                                 self._previous_recommendation = recommendation
                                 self._previous_recommendation_context = snapshot
                                 self._notify_hud(recommendation)
@@ -2168,10 +2181,16 @@ class GameLoop:
                         else:
                             with self._pending_recommendation_lock:
                                 request_id = self._pending_recommendation_active_id
-                            logger.debug(
-                                "Async recommendation already pending/alive: "
-                                "request_id=%s",
+                            logger.info(
+                                "SOLVER_START_SUPPRESSED: "
+                                "reason=worker_already_alive "
+                                "active_request_id=%s hand_id=%s phase=%s",
                                 request_id,
+                                game_state.hand_id,
+                                game_state.phase,
+                            )
+                            self._notify_hud_computing(
+                                "SOLVER STILL RUNNING\nWaiting for current solver..."
                             )
                         self._save_human_action_to_hand_manager(game_state)
                         self._last_strategy_phase = phase
@@ -2875,6 +2894,13 @@ class GameLoop:
         active_id = self._pending_recommendation_active_id
         if active_id is None:
             return
+        self._record_solver_suppressed_context_from_snapshot(
+            snapshot=self._pending_recommendation_context,
+            reason=reason,
+            request_id=active_id,
+            exact_key=self._pending_recommendation_exact_key,
+            coarse_key=self._pending_recommendation_coarse_key,
+        )
         self._pending_recommendation_cancelled_ids.add(active_id)
         logger.info(
             "Async recommendation cancelled: request_id=%d reason=%s",
@@ -2882,17 +2908,19 @@ class GameLoop:
             reason,
         )
 
-    def _clear_pending_state(self) -> None:
+    def _clear_pending_state(self, reason: str = "pending_cleared") -> None:
         """Clear active pending metadata without stopping the worker thread."""
         with self._pending_recommendation_lock:
             active_id = self._pending_recommendation_active_id
             if active_id is not None:
-                self._cancel_pending_recommendation_locked("pending_cleared")
+                self._cancel_pending_recommendation_locked(reason)
             thread = self._pending_recommendation_thread
             if thread is not None and not thread.is_alive():
                 self._pending_recommendation_thread = None
             self._pending_recommendation_context = None
             self._pending_recommendation_active_id = None
+            self._pending_recommendation_exact_key = None
+            self._pending_recommendation_coarse_key = None
             self._cleanup_async_recommendation_state_locked()
 
     def _is_pending_recommendation_alive(self) -> bool:
@@ -2901,8 +2929,8 @@ class GameLoop:
             thread = self._pending_recommendation_thread
             return thread is not None and thread.is_alive()
 
-    def _solver_context_key(self, game_state: GameState) -> str:
-        """Return a stable key for HU solver retry suppression."""
+    def _solver_exact_context_key(self, game_state: GameState) -> str:
+        """Return a detailed key for exact HU solver context matching."""
         max_opponent_bet = max(
             [
                 int(player.bet or 0)
@@ -2931,12 +2959,147 @@ class GameLoop:
         }
         return json.dumps(payload, sort_keys=True, separators=(",", ":"))
 
+    def _solver_context_key(self, game_state: GameState) -> str:
+        """Return the exact HU solver context key for compatibility."""
+        return self._solver_exact_context_key(game_state)
+
+    def _solver_bet_bucket(self, amount: int, pot: int) -> str:
+        """Bucket an amount for coarse Solver context matching."""
+        config = getattr(self, "_config", {}) or {}
+        blind_bb = max(1, int(config.get("game", {}).get("blind_bb", 100)))
+        amount = int(amount or 0)
+        pot = int(pot or 0)
+        if amount <= 0:
+            return "NONE"
+        if amount >= blind_bb * 50:
+            return "ALL_IN"
+        if amount <= blind_bb * 2:
+            return "BET_SMALL"
+        if pot > 0 and amount <= int(pot * 0.75):
+            return "BET_HALF"
+        if pot > 0 and amount <= int(pot * 1.5):
+            return "BET_POT"
+        return "BET_LARGE"
+
+    def _solver_action_signature(self, game_state: GameState) -> list[tuple[int, str]]:
+        """Return a coarse street-action signature for retry suppression."""
+        signature: list[tuple[int, str]] = []
+        pot = int(game_state.pot or 0)
+        for action in game_state.current_street_actions or []:
+            action_name = (action.action or "").upper()
+            if action_name in {"CHECK", "CALL", "FOLD"}:
+                bucket = action_name
+            elif action_name == "ALL_IN":
+                bucket = "ALL_IN"
+            elif action_name in {"BET", "RAISE"}:
+                bucket = self._solver_bet_bucket(int(action.amount or 0), pot)
+            else:
+                bucket = action_name
+            signature.append((action.seat, bucket))
+        return signature
+
+    def _solver_coarse_context_key(self, game_state: GameState) -> str:
+        """Return a coarse key to suppress repeated stale/timeout Solver starts."""
+        max_opponent_bet = max(
+            [
+                int(player.bet or 0)
+                for seat, player in game_state.players.items()
+                if seat != "1" and player is not None
+            ],
+            default=0,
+        )
+        facing_bet = max(0, max_opponent_bet - int(game_state.hero.bet or 0))
+        payload = {
+            "hand_id": game_state.hand_id,
+            "phase": game_state.phase,
+            "board": list(game_state.board or []),
+            "hero_cards": list(game_state.hero.cards or []),
+            "active_player_count": game_state.active_player_count,
+            "facing_bet_bucket": self._solver_bet_bucket(
+                facing_bet,
+                int(game_state.pot or 0),
+            ),
+            "street_action_signature": self._solver_action_signature(game_state),
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    def _solver_context_keys(self, game_state: GameState) -> tuple[str, str]:
+        """Return exact and coarse HU solver context keys."""
+        exact_key = self._solver_exact_context_key(game_state)
+        coarse_key = self._solver_coarse_context_key(game_state)
+        logger.debug(
+            "SOLVER_CONTEXT_KEY_BUILT: exact=%s coarse=%s",
+            exact_key,
+            coarse_key,
+        )
+        return exact_key, coarse_key
+
+    def _record_solver_suppressed_context_from_snapshot(
+        self,
+        snapshot: dict[str, object] | None,
+        reason: str,
+        request_id: int | None,
+        exact_key: str | None,
+        coarse_key: str | None,
+    ) -> None:
+        """Record a discarded async Solver context by its saved keys."""
+        hand_id = snapshot.get("hand_id") if snapshot is not None else None
+        phase = snapshot.get("phase") if snapshot is not None else None
+        self._record_solver_suppressed_context(
+            reason=reason,
+            request_id=request_id,
+            hand_id=hand_id,
+            phase=phase,
+            exact_key=exact_key,
+            coarse_key=coarse_key,
+        )
+
+    def _record_solver_suppressed_context(
+        self,
+        reason: str,
+        request_id: int | None,
+        hand_id: object,
+        phase: object,
+        exact_key: str | None,
+        coarse_key: str | None,
+    ) -> None:
+        """Record a Solver context that should not be retried immediately."""
+        if not coarse_key:
+            return
+        if not hasattr(self, "_solver_suppressed_contexts"):
+            self._solver_suppressed_contexts = {}
+        self._solver_suppressed_contexts[coarse_key] = {
+            "reason": reason,
+            "request_id": request_id,
+            "hand_id": hand_id,
+            "phase": phase,
+            "exact_key": exact_key,
+            "created_at": time.monotonic(),
+        }
+        logger.info(
+            "SOLVER_CONTEXT_SUPPRESSED: reason=%s request_id=%s hand_id=%s "
+            "phase=%s key=%s",
+            reason,
+            request_id,
+            hand_id,
+            phase,
+            coarse_key,
+        )
+
     def _record_solver_timeout_context(self, game_state: GameState) -> None:
         """Remember a solver timeout context to suppress immediate retries."""
         if not hasattr(self, "_solver_timeout_contexts"):
             self._solver_timeout_contexts = {}
-        key = self._solver_context_key(game_state)
+        key, coarse_key = self._solver_context_keys(game_state)
         self._solver_timeout_contexts[key] = time.monotonic()
+        self._record_solver_suppressed_context(
+            reason="timeout",
+            request_id=self._pending_recommendation_active_id,
+            hand_id=game_state.hand_id,
+            phase=game_state.phase,
+            exact_key=key,
+            coarse_key=coarse_key,
+        )
         logger.info(
             "SOLVER_TIMEOUT_CONTEXT_RECORDED: key=%s hand_id=%s phase=%s "
             "board=%s pot=%s actions=%s",
@@ -2952,18 +3115,41 @@ class GameLoop:
         )
 
     def _is_solver_retry_suppressed(self, game_state: GameState) -> bool:
-        """Return True when the same solver context already timed out."""
+        """Return True when a similar Solver context should not be retried."""
         if not hasattr(self, "_solver_timeout_contexts"):
             self._solver_timeout_contexts = {}
-        key = self._solver_context_key(game_state)
-        if key not in self._solver_timeout_contexts:
+        if not hasattr(self, "_solver_suppressed_contexts"):
+            self._solver_suppressed_contexts = {}
+        exact_key, coarse_key = self._solver_context_keys(game_state)
+        now = time.monotonic()
+        ttl = max(
+            0.1,
+            float(getattr(self, "_solver_context_suppression_ttl_sec", 12.0)),
+        )
+        for key, entry in list(self._solver_suppressed_contexts.items()):
+            created_at = float(entry.get("created_at", 0.0) or 0.0)
+            if now - created_at > ttl:
+                self._solver_suppressed_contexts.pop(key, None)
+        suppressed = self._solver_suppressed_contexts.get(coarse_key)
+        if suppressed is not None:
+            logger.info(
+                "SOLVER_RETRY_SUPPRESSED: "
+                "reason=previous_stale_or_timeout_similar_context "
+                "hand_id=%s phase=%s coarse_key=%s previous_reason=%s",
+                game_state.hand_id,
+                game_state.phase,
+                coarse_key,
+                suppressed.get("reason"),
+            )
+            return True
+        if exact_key not in self._solver_timeout_contexts:
             return False
         logger.info(
             "SOLVER_RETRY_SUPPRESSED: reason=previous_timeout_same_context "
             "hand_id=%s phase=%s key=%s",
             game_state.hand_id,
             game_state.phase,
-            key,
+            exact_key,
         )
         return True
 
@@ -2971,14 +3157,21 @@ class GameLoop:
         """Clear timeout retry suppression when the poker context advances."""
         if not hasattr(self, "_solver_timeout_contexts"):
             self._solver_timeout_contexts = {}
-        if not self._solver_timeout_contexts:
+        if not hasattr(self, "_solver_suppressed_contexts"):
+            self._solver_suppressed_contexts = {}
+        timeout_count = len(self._solver_timeout_contexts)
+        suppressed_count = len(self._solver_suppressed_contexts)
+        if timeout_count == 0 and suppressed_count == 0:
             return
         logger.info(
-            "SOLVER_TIMEOUT_CONTEXTS_CLEARED: reason=%s count=%d",
+            "SOLVER_TIMEOUT_CONTEXTS_CLEARED: reason=%s count=%d "
+            "suppressed_count=%d",
             reason,
-            len(self._solver_timeout_contexts),
+            timeout_count,
+            suppressed_count,
         )
         self._solver_timeout_contexts.clear()
+        self._solver_suppressed_contexts.clear()
 
     @staticmethod
     def _solver_timeout_recommendation() -> Recommendation:
@@ -3012,33 +3205,46 @@ class GameLoop:
         self,
         game_state: GameState,
         snapshot: dict[str, object],
-    ) -> None:
+    ) -> bool:
         """Start a daemon worker thread for HU postflop solver computation.
 
         Args:
             game_state: Current GameState to deep-copy for the worker.
             snapshot: Decision-point snapshot for later freshness checks.
+
+        Returns:
+            True when a new worker was started; False when an in-flight worker
+            already owns the Solver.
         """
         game_state_copy = copy.deepcopy(game_state)
+        exact_key, coarse_key = self._solver_context_keys(game_state)
 
         with self._pending_recommendation_lock:
             existing_thread = self._pending_recommendation_thread
             if existing_thread is not None and existing_thread.is_alive():
                 logger.info(
-                    "Async recommendation already pending/alive: request_id=%s",
+                    "SOLVER_START_SUPPRESSED: reason=worker_already_alive "
+                    "active_request_id=%s hand_id=%s phase=%s",
                     self._pending_recommendation_active_id,
+                    game_state.hand_id,
+                    game_state.phase,
                 )
-                return
+                self._notify_hud_computing(
+                    "SOLVER STILL RUNNING\nWaiting for current solver..."
+                )
+                return False
             self._pending_recommendation_id += 1
             request_id = self._pending_recommendation_id
             self._pending_recommendation_context = snapshot
             self._pending_recommendation_active_id = request_id
+            self._pending_recommendation_exact_key = exact_key
+            self._pending_recommendation_coarse_key = coarse_key
             self._pending_recommendation_cancelled_ids.discard(request_id)
             self._pending_recommendation_completed.pop(request_id, None)
 
             thread = threading.Thread(
                 target=self._run_recommendation_worker,
-                args=(request_id, game_state_copy),
+                args=(request_id, game_state_copy, snapshot, exact_key, coarse_key),
                 daemon=True,
             )
             self._pending_recommendation_thread = thread
@@ -3049,11 +3255,15 @@ class GameLoop:
             request_id,
             snapshot.get("phase", "unknown"),
         )
+        return True
 
     def _run_recommendation_worker(
         self,
         request_id: int,
         game_state_copy: GameState,
+        snapshot: dict[str, object] | None = None,
+        exact_key: str | None = None,
+        coarse_key: str | None = None,
     ) -> None:
         """Target for the daemon thread: run solver and store result.
 
@@ -3066,6 +3276,10 @@ class GameLoop:
             request_id,
             game_state_copy.phase,
         )
+        if snapshot is None:
+            snapshot = self._build_recommendation_context_snapshot(game_state_copy)
+        if exact_key is None or coarse_key is None:
+            exact_key, coarse_key = self._solver_context_keys(game_state_copy)
         recommendation: Recommendation | None = None
         error: Exception | None = None
         try:
@@ -3084,9 +3298,36 @@ class GameLoop:
                     request_id=request_id,
                     recommendation=recommendation,
                     error=error,
+                    snapshot=snapshot,
+                    exact_key=exact_key,
+                    coarse_key=coarse_key,
                 )
             )
         logger.info("Async recommendation completed: request_id=%d", request_id)
+
+    def _log_async_stale_detail(
+        self,
+        request_id: int,
+        snapshot: dict[str, object] | None,
+        current_state: GameState,
+    ) -> None:
+        """Log the exact freshness differences for a stale async result."""
+        snapshot = snapshot or {}
+        logger.info(
+            "ASYNC_RECOMMENDATION_STALE_DETAIL: request_id=%s "
+            "snapshot_phase=%s current_phase=%s snapshot_board=%s "
+            "current_board=%s snapshot_action_count=%s current_action_count=%s "
+            "snapshot_hero_turn=%s current_hero_turn=%s",
+            request_id,
+            snapshot.get("phase"),
+            current_state.phase,
+            snapshot.get("board"),
+            tuple(current_state.board or []),
+            snapshot.get("current_street_actions_count"),
+            len(current_state.current_street_actions or []),
+            snapshot.get("hero_is_my_turn"),
+            current_state.hero.is_my_turn,
+        )
 
     def _poll_async_recommendation_result(
         self,
@@ -3103,6 +3344,17 @@ class GameLoop:
             active_id = self._pending_recommendation_active_id
             if active_id is None:
                 for completed_id in list(self._pending_recommendation_completed):
+                    completed = self._pending_recommendation_completed.get(
+                        completed_id
+                    )
+                    if completed is not None:
+                        self._record_solver_suppressed_context_from_snapshot(
+                            snapshot=completed.snapshot,
+                            reason="inactive_request",
+                            request_id=completed_id,
+                            exact_key=completed.exact_key,
+                            coarse_key=completed.coarse_key,
+                        )
                     logger.info(
                         "Async recommendation discarded: request_id=%d "
                         "reason=inactive_request",
@@ -3113,6 +3365,17 @@ class GameLoop:
                 return None
             for completed_id in list(self._pending_recommendation_completed):
                 if completed_id != active_id:
+                    completed = self._pending_recommendation_completed.get(
+                        completed_id
+                    )
+                    if completed is not None:
+                        self._record_solver_suppressed_context_from_snapshot(
+                            snapshot=completed.snapshot,
+                            reason="inactive_request",
+                            request_id=completed_id,
+                            exact_key=completed.exact_key,
+                            coarse_key=completed.coarse_key,
+                        )
                     logger.info(
                         "Async recommendation discarded: request_id=%d "
                         "reason=inactive_request",
@@ -3125,8 +3388,21 @@ class GameLoop:
                 return None
             cancelled = active_id in self._pending_recommendation_cancelled_ids
             pending_ctx = self._pending_recommendation_context
+            pending_exact_key = getattr(self, "_pending_recommendation_exact_key", None)
+            pending_coarse_key = getattr(
+                self,
+                "_pending_recommendation_coarse_key",
+                None,
+            )
 
         if cancelled:
+            self._record_solver_suppressed_context_from_snapshot(
+                snapshot=completed.snapshot or pending_ctx,
+                reason="cancelled",
+                request_id=active_id,
+                exact_key=completed.exact_key or pending_exact_key,
+                coarse_key=completed.coarse_key or pending_coarse_key,
+            )
             logger.info(
                 "Async recommendation discarded: request_id=%d reason=cancelled",
                 active_id,
@@ -3136,6 +3412,13 @@ class GameLoop:
             return None
 
         if pending_ctx is None:
+            self._record_solver_suppressed_context_from_snapshot(
+                snapshot=completed.snapshot,
+                reason="inactive_request",
+                request_id=active_id,
+                exact_key=completed.exact_key or pending_exact_key,
+                coarse_key=completed.coarse_key or pending_coarse_key,
+            )
             logger.info(
                 "Async recommendation discarded: request_id=%d reason=inactive_request",
                 active_id,
@@ -3147,6 +3430,14 @@ class GameLoop:
         if not self._is_recommendation_context_still_valid(
             pending_ctx, current_state
         ):
+            self._log_async_stale_detail(active_id, pending_ctx, current_state)
+            self._record_solver_suppressed_context_from_snapshot(
+                snapshot=completed.snapshot or pending_ctx,
+                reason="stale",
+                request_id=active_id,
+                exact_key=completed.exact_key or pending_exact_key,
+                coarse_key=completed.coarse_key or pending_coarse_key,
+            )
             logger.info(
                 "Async recommendation discarded: request_id=%d reason=stale",
                 active_id,
@@ -3214,6 +3505,8 @@ class GameLoop:
         if self._pending_recommendation_active_id == request_id:
             self._pending_recommendation_active_id = None
             self._pending_recommendation_context = None
+            self._pending_recommendation_exact_key = None
+            self._pending_recommendation_coarse_key = None
         thread = self._pending_recommendation_thread
         if thread is not None and not thread.is_alive():
             self._pending_recommendation_thread = None
