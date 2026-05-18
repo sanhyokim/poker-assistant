@@ -423,6 +423,110 @@ def test_turn_deep_spr_light_probe_is_available() -> None:
     assert request["max_iterations"] == 80
 
 
+def test_default_deep_spr_flop_keeps_allin_bet_size_candidate() -> None:
+    """Production deep-SPR flop request keeps the current 60%,a bet sizes."""
+    builder = make_builder()
+    state = make_state(
+        phase="flop",
+        hero_stack=10000,
+        opponent_stacks=[10000],
+    )
+    state.pot = 500
+
+    request = builder.build_request(state, "AA", "KK", False)
+
+    assert request is not None
+    assert request["flop_bet_sizes_oop"] == "60%,a"
+    assert request["flop_bet_sizes_ip"] == "60%,a"
+
+
+def test_compare_no_allin_request_changes_only_flop_bet_sizes() -> None:
+    """Saved-only comparison request removes all-in from flop bet sizes."""
+    builder = make_builder()
+    state = make_state(
+        phase="flop",
+        hero_stack=10000,
+        opponent_stacks=[10000],
+    )
+    state.pot = 500
+    production = builder.build_request(state, "AA", "KK", False, actions_played=[])
+    assert production is not None
+
+    comparison = builder.build_deep_spr_flop_no_allin_comparison_request(
+        state,
+        production,
+    )
+
+    assert comparison is not None
+    assert production["flop_bet_sizes_oop"] == "60%,a"
+    assert comparison["flop_bet_sizes_oop"] == "60%"
+    assert comparison["flop_bet_sizes_ip"] == "60%"
+    assert comparison["turn_bet_sizes_oop"] == "60%,a"
+    assert comparison["turn_bet_sizes_ip"] == "60%,a"
+    assert comparison["river_bet_sizes_oop"] == "60%,a"
+    assert comparison["river_bet_sizes_ip"] == "60%,a"
+
+
+def test_compare_no_allin_request_requires_deep_spr_flop_root() -> None:
+    """No-all-in comparison request is limited to deep-SPR flop root spots."""
+    builder = make_builder()
+    shallow = make_state(
+        phase="flop",
+        hero_stack=1000,
+        opponent_stacks=[1000],
+    )
+    shallow.pot = 500
+    shallow_request = builder.build_request(shallow, "AA", "KK", False)
+    assert shallow_request is not None
+
+    assert (
+        builder.build_deep_spr_flop_no_allin_comparison_request(
+            shallow,
+            shallow_request,
+        )
+        is None
+    )
+
+    turn = make_state(
+        phase="turn",
+        board=["8c", "7d", "8d", "Ah"],
+        hero_stack=10000,
+        opponent_stacks=[10000],
+    )
+    turn.pot = 500
+    turn_request = builder.build_request(turn, "AA", "KK", False)
+    assert turn_request is not None
+    assert (
+        builder.build_deep_spr_flop_no_allin_comparison_request(
+            turn,
+            turn_request,
+        )
+        is None
+    )
+
+    flop = make_state(
+        phase="flop",
+        hero_stack=10000,
+        opponent_stacks=[10000],
+    )
+    flop.pot = 500
+    action_request = builder.build_request(
+        flop,
+        "AA",
+        "KK",
+        False,
+        actions_played=["Bet 300"],
+    )
+    assert action_request is not None
+    assert (
+        builder.build_deep_spr_flop_no_allin_comparison_request(
+            flop,
+            action_request,
+        )
+        is None
+    )
+
+
 def test_request_unavailable_diagnostic_returns_facing_all_in() -> None:
     """Diagnostics include facing_all_in and key missing-input reason codes."""
     state = make_state(hero_stack=0, opponent_stacks=[5000])

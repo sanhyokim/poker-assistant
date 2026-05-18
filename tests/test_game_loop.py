@@ -4344,6 +4344,29 @@ def test_solver_hud_soft_timeout_notifies_once(
     assert computing_callback.call_count == 1
 
 
+def test_deep_spr_flop_solver_running_hud_detail(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Deep-SPR flop pending Solver gets a more specific HUD running message."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    computing_callback = MagicMock()
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hud_computing_callback = computing_callback
+    state = make_hu_solver_state()
+    state.pot = 300
+    state.hero.stack = 9000
+    state.players["2"].stack = 9000
+
+    loop._notify_solver_running(state, request_id=42)
+
+    computing_callback.assert_called_once_with(
+        "DEEP SPR FLOP SOLVING\nSPR: 30.0\nNo reliable recommendation yet"
+    )
+    assert "SOLVER_HUD_RUNNING_DETAIL: hand_id=6 phase=flop spr=30.0" in caplog.text
+
+
 def test_fresh_solver_result_after_soft_timeout_is_accepted(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

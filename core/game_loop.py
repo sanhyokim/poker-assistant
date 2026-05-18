@@ -2215,10 +2215,7 @@ class GameLoop:
                             if not self._maybe_notify_solver_hud_soft_timeout(
                                 game_state
                             ):
-                                self._notify_hud_computing(
-                                    "SOLVER STILL RUNNING\n"
-                                    "Waiting for current solver..."
-                                )
+                                self._notify_solver_running(game_state, request_id)
                         self._save_human_action_to_hand_manager(game_state)
                         self._last_strategy_phase = phase
                         self._last_strategy_is_my_turn = True
@@ -3418,6 +3415,48 @@ class GameLoop:
         with self._pending_recommendation_lock:
             self._solver_soft_timeout_notified_request_id = request_id
         return True
+
+    def _notify_solver_running(
+        self,
+        game_state: GameState,
+        request_id: int | None,
+    ) -> None:
+        """Show a non-recommendation HUD notice while Solver is still running."""
+        spr = self._estimate_solver_spr_for_hud(game_state)
+        if game_state.phase == "flop" and spr is not None and spr >= 10.0:
+            logger.info(
+                "SOLVER_HUD_RUNNING_DETAIL: hand_id=%s phase=flop spr=%.1f "
+                "request_id=%s message=deep_spr_flop_solving",
+                game_state.hand_id,
+                spr,
+                request_id,
+            )
+            self._notify_hud_computing(
+                "DEEP SPR FLOP SOLVING\n"
+                f"SPR: {spr:.1f}\n"
+                "No reliable recommendation yet"
+            )
+            return
+        self._notify_hud_computing(
+            "SOLVER STILL RUNNING\nWaiting for current solver..."
+        )
+
+    @staticmethod
+    def _estimate_solver_spr_for_hud(game_state: GameState) -> float | None:
+        """Estimate SPR for Solver-running HUD copy without changing strategy."""
+        pot = int(game_state.pot or 0)
+        if pot <= 0:
+            return None
+        stacks = [int(game_state.hero.stack or 0)]
+        stacks.extend(
+            int(player.stack or 0)
+            for player in game_state.players.values()
+            if player.in_current_hand and player.stack is not None
+        )
+        positive_stacks = [stack for stack in stacks if stack > 0]
+        if not positive_stacks:
+            return None
+        return min(positive_stacks) / pot
 
     def _log_async_stale_detail(
         self,

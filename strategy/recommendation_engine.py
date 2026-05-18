@@ -312,6 +312,29 @@ class RecommendationEngine:
             actions_played_reason_codes,
         ) = self._build_actions_played_from_street_actions(game_state)
         hero_is_ip = self._determine_hero_is_ip(game_state)
+        normalization_summary = self._preflop_action_normalization_summary(game_state)
+        logger.info(
+            "PREFLOP_ACTION_NORMALIZATION_SUMMARY: hand_id=%s "
+            "raw_preflop_actions=%s normalized_preflop_actions=%s warnings=%s",
+            game_state.hand_id,
+            normalization_summary["raw_preflop_actions"],
+            normalization_summary["normalized_preflop_actions"],
+            normalization_summary["warnings"],
+        )
+        logger.info(
+            "HU_SOLVER_RANGE_CONTEXT: hand_id=%s phase=%s preflop_scenario=%s "
+            "hero_position=%s hero_is_ip=%s range_source=baseline range_oop=%s "
+            "range_ip=%s raw_preflop_actions=%s normalized_preflop_actions=%s",
+            game_state.hand_id,
+            game_state.phase,
+            preflop_scenario,
+            game_state.hero.position,
+            hero_is_ip,
+            range_oop,
+            range_ip,
+            normalization_summary["raw_preflop_actions"],
+            normalization_summary["normalized_preflop_actions"],
+        )
         effective_stack_for_log = self.solver_request_builder.compute_effective_stack(
             game_state
         )
@@ -506,6 +529,37 @@ class RecommendationEngine:
             game_state=game_state,
             solver_request=request,
             reason="hu_postflop_solver",
+            meta_extra=self._build_solver_request_meta(
+                game_state=game_state,
+                preflop_scenario=preflop_scenario,
+                range_source="baseline",
+                range_oop=range_oop,
+                range_ip=range_ip,
+                normalization_summary=normalization_summary,
+                actions_played_status=actions_played_status,
+                street_start_pot=street_start_pot,
+                street_start_effective_stack=street_start_effective_stack,
+                spr=spr,
+                hero_is_ip=hero_is_ip,
+            ),
+        )
+        self._save_deep_spr_flop_comparison_request(
+            game_state=game_state,
+            production_request=request,
+            spr=spr,
+            meta_extra=self._build_solver_request_meta(
+                game_state=game_state,
+                preflop_scenario=preflop_scenario,
+                range_source="baseline",
+                range_oop=range_oop,
+                range_ip=range_ip,
+                normalization_summary=normalization_summary,
+                actions_played_status=actions_played_status,
+                street_start_pot=street_start_pot,
+                street_start_effective_stack=street_start_effective_stack,
+                spr=spr,
+                hero_is_ip=hero_is_ip,
+            ),
         )
 
         solve_started = time.perf_counter()
@@ -1342,6 +1396,8 @@ class RecommendationEngine:
         game_state: GameState,
         solver_request: dict[str, Any],
         reason: str,
+        meta_extra: JsonDict | None = None,
+        filename_suffix: str | None = None,
     ) -> str | None:
         """Save the exact Solver request JSON before sending it to the CLI.
 
@@ -1349,6 +1405,8 @@ class RecommendationEngine:
             game_state: Current GameState at request creation.
             solver_request: Complete request dictionary sent to the solver.
             reason: Short reason code for this request.
+            meta_extra: Additional metadata for diagnostics.
+            filename_suffix: Optional suffix inserted before the extension.
 
         Returns:
             Saved path, or None if saving failed.
@@ -1364,28 +1422,175 @@ class RecommendationEngine:
             self._solver_request_json_sequence += 1
             hand_id = int(game_state.hand_id or 0)
             phase = game_state.phase or "unknown"
+            suffix = f"_{filename_suffix}" if filename_suffix else ""
             filename = (
                 f"hand_{hand_id:06d}_req_{self._solver_request_json_sequence:06d}_"
-                f"{phase}.json"
+                f"{phase}{suffix}.json"
             )
             filepath = os.path.join(day_dir, filename)
-            payload = {
-                "meta": {
-                    "hand_id": game_state.hand_id,
-                    "phase": game_state.phase,
-                    "request_id": self._solver_request_json_sequence,
-                    "created_at": now.isoformat(),
-                    "reason": reason,
-                },
-                "request": solver_request,
+            meta = {
+                "hand_id": game_state.hand_id,
+                "phase": game_state.phase,
+                "request_id": self._solver_request_json_sequence,
+                "created_at": now.isoformat(),
+                "reason": reason,
             }
+            if meta_extra:
+                meta.update(meta_extra)
+            payload = {"meta": meta, "request": solver_request}
             with open(filepath, "w", encoding="utf-8") as file:
                 json.dump(payload, file, ensure_ascii=False, indent=2)
             logger.info("SOLVER_REQUEST_JSON_SAVED: path=%s", filepath)
+            logger.info(
+                "SOLVER_REQUEST_META_SAVED: hand_id=%s phase=%s "
+                "preflop_scenario=%s range_source=%s actions_played_status=%s",
+                game_state.hand_id,
+                game_state.phase,
+                meta.get("preflop_scenario"),
+                meta.get("range_source"),
+                meta.get("actions_played_status"),
+            )
             return filepath
         except Exception as exc:
             logger.warning("Failed to save solver request JSON: %s", exc)
             return None
+
+    def _save_deep_spr_flop_comparison_request(
+        self,
+        game_state: GameState,
+        production_request: dict[str, Any],
+        spr: float,
+        meta_extra: JsonDict,
+    ) -> str | None:
+        """Save a no-all-in deep-SPR flop comparison request without solving it."""
+        comparison_request = (
+            self.solver_request_builder.build_deep_spr_flop_no_allin_comparison_request(
+                game_state,
+                production_request,
+            )
+        )
+        if not isinstance(comparison_request, dict):
+            return None
+        path = self._save_solver_request_json(
+            game_state=game_state,
+            solver_request=comparison_request,
+            reason="deep_spr_flop_compare_no_allin",
+            meta_extra=meta_extra,
+            filename_suffix="compare_no_allin",
+        )
+        if path is not None:
+            logger.info(
+                "DEEP_SPR_FLOP_COMPARISON_REQUEST_SAVED: hand_id=%s "
+                "phase=flop spr=%.2f path=%s changed_fields=%s",
+                game_state.hand_id,
+                spr,
+                path,
+                {
+                    "flop_bet_sizes_oop": comparison_request.get(
+                        "flop_bet_sizes_oop"
+                    ),
+                    "flop_bet_sizes_ip": comparison_request.get(
+                        "flop_bet_sizes_ip"
+                    ),
+                },
+            )
+        return path
+
+    def _build_solver_request_meta(
+        self,
+        *,
+        game_state: GameState,
+        preflop_scenario: str,
+        range_source: str,
+        range_oop: str,
+        range_ip: str,
+        normalization_summary: JsonDict,
+        actions_played_status: str,
+        street_start_pot: int | None,
+        street_start_effective_stack: int | None,
+        spr: float,
+        hero_is_ip: bool,
+    ) -> JsonDict:
+        """Build diagnostic metadata saved next to the Solver request."""
+        return {
+            "hero_position": game_state.hero.position,
+            "hero_is_ip": hero_is_ip,
+            "active_seats": self._active_seats_for_solver_meta(game_state),
+            "preflop_scenario": preflop_scenario,
+            "range_source": range_source,
+            "range_oop": range_oop,
+            "range_ip": range_ip,
+            "raw_preflop_actions": normalization_summary["raw_preflop_actions"],
+            "normalized_preflop_actions": normalization_summary[
+                "normalized_preflop_actions"
+            ],
+            "current_street_actions": self._action_dicts(
+                game_state.current_street_actions or []
+            ),
+            "actions_played_status": actions_played_status,
+            "street_start_pot": street_start_pot,
+            "street_start_effective_stack": street_start_effective_stack,
+            "spr": spr,
+        }
+
+    @staticmethod
+    def _active_seats_for_solver_meta(game_state: GameState) -> list[int]:
+        """Return sorted active seats for Solver request diagnostics."""
+        seats = {1}
+        seats.update(
+            int(seat)
+            for seat, player in game_state.players.items()
+            if player.in_current_hand
+        )
+        return sorted(seats)
+
+    def _preflop_action_normalization_summary(self, game_state: GameState) -> JsonDict:
+        """Summarize preflop action normalization assumptions for Solver logs."""
+        raw_actions = self._action_dicts(game_state.preflop_actions or [])
+        normalized_actions = self._action_dicts(game_state.preflop_actions or [])
+        warnings: list[str] = []
+        max_bet = max(
+            [game_state.hero.bet]
+            + [player.bet for player in game_state.players.values()]
+        )
+        hero_has_call = any(
+            action.seat == 1 and action.action.upper() == "CALL"
+            for action in game_state.preflop_actions or []
+        )
+        hero_has_check_facing = any(
+            action.seat == 1
+            and action.action.upper() == "CHECK"
+            and max_bet > game_state.hero.bet
+            for action in game_state.preflop_actions or []
+        )
+        if hero_has_check_facing:
+            warnings.append("hero_check_facing_bet")
+        if game_state.phase in {"flop", "turn", "river"} and max_bet > 0:
+            hero_invested = any(
+                action.seat == 1
+                and action.action.upper() in {"CALL", "BET", "RAISE", "ALL_IN"}
+                for action in game_state.preflop_actions or []
+            )
+            if not hero_invested and not hero_has_call:
+                warnings.append("postflop_without_hero_call_or_raise")
+        return {
+            "raw_preflop_actions": raw_actions,
+            "normalized_preflop_actions": normalized_actions,
+            "warnings": warnings,
+        }
+
+    @staticmethod
+    def _action_dicts(actions: list[ActionRecord]) -> list[JsonDict]:
+        """Convert action records into compact JSON-serializable dictionaries."""
+        return [
+            {
+                "seat": action.seat,
+                "action": action.action,
+                "amount": action.amount,
+                "confidence": action.confidence,
+            }
+            for action in actions
+        ]
 
     def reset_solver_process(self, reason: str) -> bool:
         """Delegate Solver process reset to the bridge when available.

@@ -928,7 +928,8 @@ class HandManager:
         street_actions = self.get_current_street_actions()
         street = self._get_current_street_name() if street_actions is not None else None
 
-        for action in actions:
+        for raw_action in actions:
+            action = self._normalize_preflop_hero_check_to_call(raw_action)
             if not self._is_valid_action_seat(action.seat):
                 logger.info(
                     "Ignored invalid action seat=%s: action=%s amount=%s "
@@ -1274,6 +1275,23 @@ class HandManager:
 
         if stack_change == 0 and bet_change == 0:
             if self._has_any_hero_card(end):
+                if self._phase == "preflop" and max_bet_at_start > start_bet:
+                    call_amount = max_bet_at_start - start_bet
+                    logger.info(
+                        "PREFLOP_HERO_CHECK_NORMALIZED_TO_CALL: hand_id=%s "
+                        "hero_bet=%s max_bet=%s call_amount=%s "
+                        "original_action=CHECK normalized_action=CALL",
+                        self._hand_id,
+                        start_bet,
+                        max_bet_at_start,
+                        call_amount,
+                    )
+                    return ActionRecord(
+                        seat=1,
+                        action="CALL",
+                        amount=call_amount,
+                        confidence="high",
+                    )
                 return ActionRecord(
                     seat=1,
                     action="CHECK",
@@ -1323,8 +1341,44 @@ class HandManager:
         )
         return None
 
+    def _normalize_preflop_hero_check_to_call(
+        self,
+        action: ActionRecord,
+    ) -> ActionRecord:
+        """Normalize impossible preflop Hero CHECK while facing a bet."""
+        if (
+            self._phase != "preflop"
+            or action.seat != 1
+            or action.action.upper() != "CHECK"
+        ):
+            return action
+        state = self._turn_start_state or self._turn_end_state
+        if state is None:
+            return action
+        hero_bet = int(state.hero.bet or 0)
+        max_bet = self._get_max_bet(state)
+        call_amount = max_bet - hero_bet
+        if call_amount <= 0:
+            return action
+        logger.info(
+            "PREFLOP_HERO_CHECK_NORMALIZED_TO_CALL: hand_id=%s hero_bet=%s "
+            "max_bet=%s call_amount=%s original_action=CHECK "
+            "normalized_action=CALL",
+            self._hand_id,
+            hero_bet,
+            max_bet,
+            call_amount,
+        )
+        return ActionRecord(
+            seat=1,
+            action="CALL",
+            amount=call_amount,
+            confidence=action.confidence,
+        )
+
     def _record_hero_action(self, action: ActionRecord) -> None:
         """Record the detected hero action on the current street."""
+        action = self._normalize_preflop_hero_check_to_call(action)
         street_actions = self.get_current_street_actions()
         if street_actions is not None:
             street_actions.human_action = action.action

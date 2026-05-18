@@ -14,6 +14,7 @@ import pytest
 from core.game_state import ActionRecord, ButtonState, GameState, HeroState, PlayerState
 from strategy.preflop_chart import PreflopChart
 from strategy.recommendation_engine import Recommendation, RecommendationEngine
+from strategy.solver_request_builder import SolverRequestBuilder
 
 
 TEST_CONFIG = {"game": {"blind_bb": 100}, "preflop_delta": {"sample_threshold_low": 50}}
@@ -24,6 +25,28 @@ DEEP_SPR_CONFIG = {
     "solver": {
         "deep_spr_threshold": 10.0,
         "deep_spr_light_probe_enabled": True,
+    },
+}
+
+SOLVER_BUILDER_CONFIG = {
+    "game": {"blind_bb": 100},
+    "solver": {
+        "max_iterations": 200,
+        "target_exploitability_pct": 0.5,
+        "timeout_ms": 7000,
+        "deep_spr_threshold": 10.0,
+        "deep_spr_light_timeout_ms": 5000,
+        "deep_spr_light_max_iterations": 80,
+        "deep_spr_light_target_exploitability_pct": 1.5,
+        "deep_spr_light_bet_sizes": "50%",
+        "deep_spr_light_raise_sizes": "2.5x",
+        "default_bet_sizes": "60%,a",
+        "default_raise_sizes": "2.5x",
+        "add_allin_threshold": 1.5,
+        "force_allin_threshold": 0.15,
+        "merging_threshold": 0.1,
+        "rake_rate": 0.0,
+        "rake_cap": 0.0,
     },
 }
 
@@ -1857,6 +1880,153 @@ def test_solver_request_json_saved_before_solve(workspace_tmp: Path) -> None:
     assert saved["meta"]["hand_id"] == 9
     assert saved["meta"]["reason"] == "hu_postflop_solver"
     assert saved["request"] == solver_request
+
+
+def test_solver_request_json_meta_includes_range_and_action_context(
+    workspace_tmp: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Solver request JSON meta captures range and action normalization context."""
+    config = {
+        **SOLVER_BUILDER_CONFIG,
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": True,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    engine.solver_request_builder = SolverRequestBuilder(config)
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 10
+    state.hero.position = "BB"
+    state.hero.stack = 5000
+    state.pot = 600
+    state.players["2"].stack = 5000
+    state.preflop_actions = [
+        ActionRecord(seat=2, action="RAISE", amount=200),
+        ActionRecord(seat=1, action="CALL", amount=100),
+    ]
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_bridge.solve.return_value = {
+        "success": False,
+        "error": "timeout",
+    }
+
+    with caplog.at_level(logging.INFO):
+        engine.generate(state, {"2": {"vpip": 30, "total_hands": 49}})
+
+    request_file = next(
+        path
+        for path in (workspace_tmp / "solver_io").rglob("*.json")
+        if path.name.startswith("hand_000010_req_")
+        and "compare_no_allin" not in path.name
+    )
+    saved = json.loads(request_file.read_text(encoding="utf-8"))
+    meta = saved["meta"]
+    assert meta["hero_position"] == "BB"
+    assert meta["hero_is_ip"] is False
+    assert meta["active_seats"] == [1, 2]
+    assert meta["range_source"] == "baseline"
+    assert isinstance(meta["range_oop"], str)
+    assert isinstance(meta["range_ip"], str)
+    assert meta["range_oop"]
+    assert meta["range_ip"]
+    assert meta["actions_played_status"] == "empty_ok"
+    assert meta["street_start_pot"] == 600
+    assert meta["street_start_effective_stack"] == 5000
+    assert meta["spr"] == pytest.approx(5000 / 600)
+    assert meta["normalized_preflop_actions"][1]["action"] == "CALL"
+    assert "HU_SOLVER_RANGE_CONTEXT" in caplog.text
+    assert "PREFLOP_ACTION_NORMALIZATION_SUMMARY" in caplog.text
+
+
+def test_deep_spr_flop_compare_no_allin_request_saved_not_solved(
+    workspace_tmp: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Deep-SPR flop root saves a no-all-in comparison request only."""
+    config = {
+        **SOLVER_BUILDER_CONFIG,
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": True,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    engine.solver_request_builder = SolverRequestBuilder(config)
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 11
+    state.hero.stack = 10000
+    state.pot = 500
+    state.players["2"].stack = 10000
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_bridge.solve.return_value = {
+        "success": False,
+        "error": "timeout",
+    }
+
+    with caplog.at_level(logging.INFO):
+        engine.generate(state, {"2": {"vpip": 30, "total_hands": 49}})
+
+    compare_file = next(
+        path
+        for path in (workspace_tmp / "solver_io").rglob("*.json")
+        if "compare_no_allin" in path.name
+    )
+    compare_data = json.loads(compare_file.read_text(encoding="utf-8"))
+    assert compare_data["request"]["flop_bet_sizes_oop"] == "60%"
+    assert compare_data["request"]["flop_bet_sizes_ip"] == "60%"
+    solved_request = engine.solver_bridge.solve.call_args.args[0]
+    assert solved_request["flop_bet_sizes_oop"] == "60%,a"
+    assert solved_request["flop_bet_sizes_ip"] == "60%,a"
+    assert solved_request is not compare_data["request"]
+    assert "DEEP_SPR_FLOP_COMPARISON_REQUEST_SAVED" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("phase", "pot"),
+    [("flop", 2000), ("turn", 500)],
+)
+def test_compare_no_allin_request_not_saved_for_ineligible_spots(
+    workspace_tmp: Path,
+    phase: str,
+    pot: int,
+) -> None:
+    """Comparison request is saved only for deep-SPR flop root spots."""
+    config = {
+        **SOLVER_BUILDER_CONFIG,
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": True,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    engine.solver_request_builder = SolverRequestBuilder(config)
+    state = make_state(phase=phase, active_player_count=2)
+    state.hand_id = 12
+    state.pot = pot
+    state.hero.stack = 10000
+    state.players["2"].stack = 10000
+    if phase == "turn":
+        state.board = ["Td", "7c", "2h", "As"]
+        state.board_card_count = 4
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_bridge.solve.return_value = {
+        "success": False,
+        "error": "timeout",
+    }
+
+    engine.generate(state, {"2": {"vpip": 30, "total_hands": 49}})
+
+    compare_files = [
+        path
+        for path in (workspace_tmp / "solver_io").rglob("*.json")
+        if "compare_no_allin" in path.name
+    ]
+    assert compare_files == []
 
 
 def test_reset_solver_process_delegates_to_bridge() -> None:

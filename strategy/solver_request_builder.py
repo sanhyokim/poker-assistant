@@ -5,6 +5,7 @@ SPEC.md セクション5.8, 5.12 準拠。
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import Any
 
@@ -361,6 +362,49 @@ class SolverRequestBuilder:
             )
 
         return request
+
+    def build_deep_spr_flop_no_allin_comparison_request(
+        self,
+        game_state: GameState,
+        production_request: SolverRequest,
+    ) -> SolverRequest | None:
+        """Build a saved-only deep-SPR flop request without flop all-in bet sizes.
+
+        Args:
+            game_state: Current game state.
+            production_request: Solver request used for the live recommendation.
+
+        Returns:
+            A comparison request, or None when the spot is not an eligible
+            deep-SPR flop root.
+        """
+        if game_state.phase != "flop":
+            return None
+        actions_played = production_request.get("actions_played") or []
+        if actions_played:
+            return None
+        starting_pot = int(production_request.get("starting_pot") or 0)
+        effective_stack = int(production_request.get("effective_stack") or 0)
+        if not self.is_deep_spr("flop", starting_pot, effective_stack):
+            return None
+        comparison_request = copy.deepcopy(production_request)
+        comparison_request["flop_bet_sizes_oop"] = self._remove_allin_candidate(
+            str(comparison_request.get("flop_bet_sizes_oop", self.default_bet_sizes))
+        )
+        comparison_request["flop_bet_sizes_ip"] = self._remove_allin_candidate(
+            str(comparison_request.get("flop_bet_sizes_ip", self.default_bet_sizes))
+        )
+        return comparison_request
+
+    @staticmethod
+    def _remove_allin_candidate(bet_sizes: str) -> str:
+        """Return bet-size candidates with the solver all-in marker removed."""
+        candidates = [
+            candidate.strip()
+            for candidate in bet_sizes.split(",")
+            if candidate.strip() and candidate.strip().lower() != "a"
+        ]
+        return ",".join(candidates) or bet_sizes
 
     @staticmethod
     def _board_to_flop_str(board: list[str]) -> str:

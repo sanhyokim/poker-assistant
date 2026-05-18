@@ -376,6 +376,84 @@ def test_add_preflop_buffered_actions_drops_bb_duplicate_bet_raise(
     ] == [(5, "BLIND_BB", 100)]
 
 
+def test_preflop_hero_check_facing_bet_normalized_to_call(
+    manager: HandManager,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A preflop Hero CHECK while facing a bet is recorded as CALL."""
+    manager._phase = "preflop"
+    manager._hand_id = 8
+    manager._street_actions["preflop"] = StreetActions(street="preflop")
+    manager._turn_start_state = make_state(
+        hero_cards=["Qc", "Qd"],
+        hero_bet=100,
+        players={"2": (5000, 200)},
+    )
+
+    with caplog.at_level(logging.INFO):
+        manager._add_actions(
+            [ActionRecord(seat=1, action="CHECK", amount=0, confidence="high")],
+            allow_hero_boundary_actions=True,
+        )
+
+    actions = manager.get_preflop_actions()
+    assert [(action.seat, action.action, action.amount) for action in actions] == [
+        (1, "CALL", 100)
+    ]
+    assert "PREFLOP_HERO_CHECK_NORMALIZED_TO_CALL" in caplog.text
+
+
+def test_preflop_hero_check_when_checkable_stays_check(
+    manager: HandManager,
+) -> None:
+    """A preflop Hero CHECK is preserved when Hero is not facing a bet."""
+    manager._phase = "preflop"
+    manager._hand_id = 8
+    manager._street_actions["preflop"] = StreetActions(street="preflop")
+    manager._turn_start_state = make_state(
+        hero_cards=["Qc", "Qd"],
+        hero_bet=200,
+        players={"2": (5000, 200)},
+    )
+
+    manager._add_actions(
+        [ActionRecord(seat=1, action="CHECK", amount=0, confidence="high")],
+        allow_hero_boundary_actions=True,
+    )
+
+    actions = manager.get_preflop_actions()
+    assert [(action.seat, action.action, action.amount) for action in actions] == [
+        (1, "CHECK", 0)
+    ]
+
+
+def test_postflop_hero_check_not_normalized_to_call(
+    manager: HandManager,
+) -> None:
+    """Postflop Hero CHECK is never rewritten by the preflop normalizer."""
+    manager._phase = "flop"
+    manager._hand_id = 8
+    manager._street_actions["flop"] = StreetActions(street="flop")
+    manager._turn_start_state = make_state(
+        hero_cards=["Qc", "Qd"],
+        hero_bet=100,
+        board=["2c", "7d", "Ts"],
+        players={"2": (5000, 200)},
+    )
+
+    manager._add_actions(
+        [ActionRecord(seat=1, action="CHECK", amount=0, confidence="high")],
+        allow_hero_boundary_actions=True,
+    )
+
+    current_street = manager.get_current_street_actions()
+    assert current_street is not None
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in current_street.actions
+    ] == [(1, "CHECK", 0)]
+
+
 def test_add_preflop_buffered_actions_keeps_bb_larger_action(
     manager: HandManager,
 ) -> None:
