@@ -941,6 +941,64 @@ class TestPotSpikeFilter:
         assert result["pot_spike_hold"] is False
         assert result["suspicious_pot_spike"] is True
 
+    def test_bet_consistent_pot_spike_is_not_suspicious(
+        self,
+        estimator: ActionEstimator,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A pot jump matching a same-frame BET is accepted as real action flow."""
+        caplog.set_level("INFO", logger="recognition.action_estimator")
+        previous = make_state(
+            pot=232,
+            player_values={"2": (10000, 0)},
+        )
+        current = make_state(
+            pot=2332,
+            player_values={"2": (7900, 2100)},
+        )
+
+        result = estimator.estimate(previous, current)
+
+        assert result["filtered_pot"] is None
+        assert result["pot_spike_hold"] is False
+        assert result["suspicious_pot_spike"] is False
+        assert action_tuples(result) == [(2, "BET", 2100, "high")]
+        assert "Pot spike accepted as bet-consistent" in caplog.text
+
+    def test_ten_x_pot_spike_without_bet_increase_stays_suspicious(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """A ten-x style pot jump without matching bet growth remains guarded."""
+        previous = make_state(pot=232)
+        current = make_state(pot=2332)
+
+        result = estimator.estimate(previous, current)
+
+        assert result["filtered_pot"] == 232
+        assert result["pot_spike_hold"] is False
+        assert result["suspicious_pot_spike"] is True
+
+    def test_pot_spike_inconsistent_with_bet_increase_stays_guarded(
+        self,
+        estimator: ActionEstimator,
+    ) -> None:
+        """A huge pot jump that does not match bet growth still uses spike guard."""
+        previous = make_state(
+            pot=232,
+            player_values={"2": (10000, 0)},
+        )
+        current = make_state(
+            pot=23320,
+            player_values={"2": (7900, 2100)},
+        )
+
+        result = estimator.estimate(previous, current)
+
+        assert result["filtered_pot"] == 232
+        assert result["pot_spike_hold"] is True
+        assert result["suspicious_pot_spike"] is False
+
     def test_natural_pot_increase_is_not_suspicious(
         self,
         estimator: ActionEstimator,

@@ -163,6 +163,11 @@ class ActionEstimator:
             diff.pot_prev > 0
             and diff.pot_curr > diff.pot_prev * self._pot_spike_ratio
         ):
+            if self._is_bet_consistent_pot_increase(diff):
+                self._pot_spike_streak = 0
+                self._pot_spike_value = 0
+                return diff, False, False
+
             if self._is_suspicious_pot_spike(diff.pot_prev, diff.pot_curr, diff):
                 logger.warning(
                     "Suspicious pot spike ignored: %d -> %d scaled10=%d, "
@@ -225,6 +230,47 @@ class ActionEstimator:
             return True
 
         return False
+
+    def _is_bet_consistent_pot_increase(self, diff: StateDiff) -> bool:
+        """Return whether a large pot increase is explained by bet increases."""
+        pot_delta = diff.pot_curr - diff.pot_prev
+        if pot_delta <= 0:
+            return False
+
+        bet_delta = self._bet_increase_total(diff)
+        if bet_delta <= 0:
+            return False
+
+        tolerance = max(self.blind_bb, int(bet_delta * 0.15))
+        if abs(pot_delta - bet_delta) > tolerance:
+            return False
+
+        logger.info(
+            "Pot spike accepted as bet-consistent: pot %d -> %d "
+            "pot_delta=%d bet_delta=%d tolerance=%d",
+            diff.pot_prev,
+            diff.pot_curr,
+            pot_delta,
+            bet_delta,
+            tolerance,
+        )
+        return True
+
+    @staticmethod
+    def _bet_increase_total(diff: StateDiff) -> int:
+        """Return total positive bet increase across Hero and visible players."""
+        total = 0
+
+        if diff.hero_bet_changed and diff.hero_bet_curr > diff.hero_bet_prev:
+            total += diff.hero_bet_curr - diff.hero_bet_prev
+
+        for player_change in diff.player_changes.values():
+            bet_prev = int(player_change.get("bet_prev") or 0)
+            bet_curr = int(player_change.get("bet_curr") or 0)
+            if player_change.get("bet_changed") and bet_curr > bet_prev:
+                total += bet_curr - bet_prev
+
+        return total
 
     def _has_non_pot_change(self, diff: StateDiff) -> bool:
         """Return whether the diff still has changes after pot filtering."""
