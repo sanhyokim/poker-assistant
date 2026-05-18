@@ -749,7 +749,7 @@ def test_pre_hand_hud_is_not_overwritten_by_waiting(
     loop.process_game_state_after_frame(state)
 
     assert hud_recommendations == []
-    assert hud_messages[-1].startswith("PRE-HAND")
+    assert hud_messages[-1] == "安定待ち..."
 
 
 def test_process_game_state_after_frame_filters_invalid_actions_before_manager(
@@ -3606,7 +3606,7 @@ def test_new_hand_started_clears_hud_recommendation(
     loop._handle_strategy(state)
 
     computing_callback.assert_called_with(
-        "WAITING FOR STABLE HAND\nRecognizing cards/actions..."
+        "安定待ち..."
     )
     assert "HUD_RECOMMENDATION_CLEARED_ON_NEW_HAND: hand_id=12" in caplog.text
 
@@ -3681,7 +3681,7 @@ def test_preflop_unstable_hand_blocks_fold_recommendation(
     loop._hand_manager.set_recommendation.assert_not_called()
     assert loop.current_recommendation is None
     computing_callback.assert_called_with(
-        "WAITING FOR STABLE HAND\nNo recommendation yet"
+        "安定待ち..."
     )
     assert f"reason={reason}" in caplog.text
 
@@ -3926,7 +3926,7 @@ def test_strategy_deferred_during_pot_spike_hold(
     assert loop.current_recommendation is None
     assert loop._previous_recommendation_context is None
     assert loop._pending_recommendation_active_id is None
-    computing_callback.assert_called_once_with("WAITING FOR STABLE POT...")
+    computing_callback.assert_called_once_with("安定待ち...")
 
 
 def test_async_recommendation_accepted_logs_details(
@@ -4092,9 +4092,8 @@ def test_same_solver_timeout_context_suppresses_retry(
     loop._handle_strategy(state)
 
     loop._start_async_postflop_recommendation.assert_not_called()
-    assert loop.current_recommendation is not None
-    assert loop.current_recommendation.strategy_source == "solver_timeout"
-    hud_callback.assert_called_with(loop.current_recommendation)
+    assert loop.current_recommendation is None
+    hud_callback.assert_not_called()
     assert "SOLVER_RETRY_SUPPRESSED" in caplog.text
 
 
@@ -4324,7 +4323,7 @@ def test_worker_alive_suppresses_new_solver_start_and_logs(
     assert started is False
     assert "SOLVER_START_SUPPRESSED: reason=worker_already_alive" in caplog.text
     computing_callback.assert_called_with(
-        "SOLVER STILL RUNNING\nWaiting for current solver..."
+        "Solverで推論中..."
     )
 
 
@@ -4345,7 +4344,7 @@ def test_same_solver_running_hud_notified_once(
     loop._notify_solver_running(state, request_id=42)
 
     computing_callback.assert_called_once_with(
-        "DEEP SPR FLOP SOLVING\nSPR: 30.0\nNo reliable recommendation yet"
+        "Solverで推論中..."
     )
 
 
@@ -4434,7 +4433,7 @@ def test_orphan_worker_logs_without_null_active_request_suppression(
     assert null_request_log not in caplog.text
     engine.reset_solver_process.assert_called_once_with("orphan_worker")
     computing_callback.assert_called_with(
-        "SOLVER STILL RUNNING\nWaiting for current solver..."
+        "Solverで推論中..."
     )
 
 
@@ -4507,7 +4506,7 @@ def test_solver_hud_soft_timeout_logs_and_notifies(
     assert loop.current_recommendation is None
     assert "SOLVER_HUD_SOFT_TIMEOUT: request_id=30" in caplog.text
     computing_callback.assert_called_once_with(
-        "SOLVER STILL RUNNING\nNo reliable result yet"
+        "Solverで推論中..."
     )
 
 
@@ -4547,7 +4546,7 @@ def test_deep_spr_flop_solver_running_hud_detail(
     loop._notify_solver_running(state, request_id=42)
 
     computing_callback.assert_called_once_with(
-        "DEEP SPR FLOP SOLVING\nSPR: 30.0\nNo reliable recommendation yet"
+        "Solverで推論中..."
     )
     assert "SOLVER_HUD_RUNNING_DETAIL: hand_id=6 phase=flop spr=30.0" in caplog.text
 
@@ -4760,7 +4759,7 @@ def test_active_hero_card_confirmed_mismatch_abandons_and_skips_strategy(
     assert loop.current_recommendation is None
     assert loop._pending_recommendation_active_id is None
     loop._recommendation_engine.generate.assert_not_called()
-    loop._hud_computing_callback.assert_called_with("HERO CARDS UNSTABLE")
+    loop._hud_computing_callback.assert_called_with("安定待ち...")
 
 
 def test_active_hero_card_mismatch_ignored_during_visual_obstruction(
@@ -6296,6 +6295,4 @@ def test_hand_end_suppression_keeps_hud_out_of_waiting(
     loop.process_game_state_after_frame(state)
 
     hud_callback.assert_not_called()
-    hud_computing_callback.assert_called_with(
-        "HAND STILL ACTIVE\nWaiting for stable state..."
-    )
+    hud_computing_callback.assert_called_with("安定待ち...")

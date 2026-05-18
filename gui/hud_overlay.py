@@ -1,8 +1,7 @@
 """HUD overlay window for displaying strategy recommendations.
 
 The overlay is a frameless, always-on-top, translucent PyQt6 window that shows
-the current recommended action, confidence, strategy source, probabilities, and
-reasoning.
+only confirmed user-facing recommendations and simple processing states.
 """
 
 import logging
@@ -24,15 +23,8 @@ from strategy.recommendation_engine import Recommendation
 
 logger = logging.getLogger(__name__)
 
-SOURCE_LABELS: dict[str, str] = {
-    "solver": "Solver",
-    "llm_multiway": "AI",
-    "llm_headsup_fallback": "AI",
-    "preflop_chart": "Chart",
-    "preflop_chart_fallback": "Chart",
-    "fallback": "Fallback",
-    "solver_timeout": "Solver Timeout",
-}
+DISPLAYABLE_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "FOLD", "ALL_IN"}
+STABLE_WAITING_MESSAGE = "安定待ち..."
 
 
 class HudOverlay(QWidget):
@@ -102,13 +94,13 @@ class HudOverlay(QWidget):
 
     def show_waiting_for_stable_hand(self) -> None:
         """Show a non-recommendation waiting state while hand inputs stabilize."""
-        self.show_computing("WAITING FOR STABLE HAND\nNo recommendation yet")
+        self.show_computing(STABLE_WAITING_MESSAGE)
 
     def show_pre_hand(self) -> None:
         """Show PRE-HAND buffering status without a recommendation."""
-        self._last_computing_message = "PRE-HAND\nBuffering preflop actions..."
+        self._last_computing_message = STABLE_WAITING_MESSAGE
         self._hide_recommendation_labels()
-        self._status_label.setText("PRE-HAND\nBuffering preflop actions...")
+        self._status_label.setText(STABLE_WAITING_MESSAGE)
         self._set_label_color(self._status_label, QColor(255, 220, 90))
         self._status_label.show()
         self.show()
@@ -125,7 +117,7 @@ class HudOverlay(QWidget):
         """Show the waiting-for-hand status message."""
         self._last_computing_message = "Waiting for hand..."
         self._hide_recommendation_labels()
-        self._status_label.setText("Waiting for hand...")
+        self._status_label.setText(STABLE_WAITING_MESSAGE)
         self._set_label_color(self._status_label, QColor(180, 180, 180))
         self._status_label.show()
 
@@ -137,34 +129,26 @@ class HudOverlay(QWidget):
         if recommendation is None:
             self.show_waiting()
             return
+        if not self._is_displayable_recommendation(recommendation):
+            logger.debug(
+                "HUD internal recommendation hidden: action=%s source=%s",
+                recommendation.action,
+                recommendation.strategy_source,
+            )
+            self.show_computing(STABLE_WAITING_MESSAGE)
+            return
 
         self._last_computing_message = None
         action_text = self._format_action(recommendation)
         action_color = self._action_color(recommendation.action)
-        confidence_text, confidence_color = self._confidence_display(
-            recommendation.confidence,
-        )
 
         self._status_label.hide()
         self._action_label.setText(action_text)
         self._set_label_color(self._action_label, action_color)
-        self._confidence_label.setText(confidence_text)
-        self._set_label_color(self._confidence_label, confidence_color)
-        self._source_label.setText(
-            f"Source: {self._source_display_label(recommendation.strategy_source)}",
-        )
-        self._set_label_color(self._source_label, QColor(170, 170, 170))
-
-        if (
-            recommendation.strategy_source == "solver"
-            and recommendation.action_probabilities
-        ):
-            self._probabilities_label.setText(
-                self._format_probabilities(recommendation.action_probabilities),
-            )
-            self._probabilities_label.show()
-        else:
-            self._probabilities_label.hide()
+        self._confidence_label.hide()
+        self._source_label.hide()
+        self._probabilities_label.hide()
+        self._separator_1.hide()
 
         if recommendation.reason:
             self._reason_label.setText(recommendation.reason)
@@ -174,9 +158,6 @@ class HudOverlay(QWidget):
 
         for label in (
             self._action_label,
-            self._confidence_label,
-            self._source_label,
-            self._separator_1,
             self._separator_2,
         ):
             label.show()
@@ -286,8 +267,6 @@ class HudOverlay(QWidget):
 
     @staticmethod
     def _format_action(recommendation: Recommendation) -> str:
-        if recommendation.strategy_source == "solver_timeout":
-            return "SOLVER TIMEOUT"
         action = recommendation.action.upper()
         if action in {"FOLD", "CHECK"} or recommendation.amount <= 0:
             return action
@@ -324,9 +303,9 @@ class HudOverlay(QWidget):
         return action.replace("ALL_IN", "ALL-IN").replace("_", "-")
 
     @staticmethod
-    def _source_display_label(strategy_source: str) -> str:
-        """Return Japanese source label for HUD and logs."""
-        return SOURCE_LABELS.get(strategy_source, strategy_source)
+    def _is_displayable_recommendation(recommendation: Recommendation) -> bool:
+        """Return whether the recommendation can be shown as a user action."""
+        return recommendation.action.upper() in DISPLAYABLE_ACTIONS
 
     @staticmethod
     def _action_color(action: str) -> QColor:
@@ -342,12 +321,3 @@ class HudOverlay(QWidget):
         if action_key == "ALL_IN":
             return QColor(255, 0, 255)
         return QColor(255, 255, 255)
-
-    @staticmethod
-    def _confidence_display(confidence: str) -> tuple[str, QColor]:
-        confidence_key = confidence.lower()
-        if confidence_key == "high":
-            return "HIGH", QColor(80, 200, 80)
-        if confidence_key == "medium":
-            return "MEDIUM", QColor(255, 200, 50)
-        return "LOW", QColor(255, 80, 80)

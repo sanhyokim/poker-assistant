@@ -23,7 +23,7 @@ def qapp() -> QApplication:
 
 
 def test_hud_overlay_updates_recommendation(qapp: QApplication) -> None:
-    """update_recommendation displays action, confidence, source, and reason."""
+    """update_recommendation displays only user-facing action, size, and reason."""
     _ = qapp
     overlay = HudOverlay(config={"font_size": 12, "opacity": 0.75})
     recommendation = Recommendation(
@@ -44,10 +44,9 @@ def test_hud_overlay_updates_recommendation(qapp: QApplication) -> None:
     QApplication.processEvents()
 
     assert overlay._action_label.text() == "RAISE 300 (3.0BB) [3.0X]"
-    assert overlay._confidence_label.text() == "HIGH"
-    assert overlay._source_label.text() == "Source: Solver"
-    assert "Solver Mix:" in overlay._probabilities_label.text()
-    assert "RAISE 300 75%" in overlay._probabilities_label.text()
+    assert overlay._confidence_label.isHidden() is True
+    assert overlay._source_label.isHidden() is True
+    assert overlay._probabilities_label.isHidden() is True
     assert overlay._reason_label.text() == "Strong value spot"
     assert "#ffa500" in overlay._action_label.styleSheet()
 
@@ -114,20 +113,6 @@ def test_hud_overlay_formats_check_without_size_metadata() -> None:
     assert HudOverlay._format_action(recommendation) == "CHECK"
 
 
-def test_hud_source_label_chart() -> None:
-    """Chart source maps to Source: Chart."""
-    recommendation = Recommendation(action="FOLD", strategy_source="preflop_chart")
-
-    assert HudOverlay._source_display_label(recommendation.strategy_source) == "Chart"
-
-
-def test_hud_source_label_solver() -> None:
-    """Solver source maps to Source: Solver."""
-    recommendation = Recommendation(action="CHECK", strategy_source="solver")
-
-    assert HudOverlay._source_display_label(recommendation.strategy_source) == "Solver"
-
-
 def test_hud_action_name_remains_english() -> None:
     """アクション名は英語のまま表示される。"""
     recommendation = Recommendation(
@@ -152,14 +137,14 @@ def test_hud_overlay_waiting_and_computing_states(qapp: QApplication) -> None:
 
     overlay.update_recommendation(None)
     QApplication.processEvents()
-    assert overlay._status_label.text() == "Waiting for hand..."
+    assert overlay._status_label.text() == "安定待ち..."
     assert overlay._probabilities_label.isHidden() is True
 
 
 def test_hud_overlay_solver_probabilities_are_sorted_and_limited(
     qapp: QApplication,
 ) -> None:
-    """Solver probabilities are sorted, capped at three, and label ALL_IN clearly."""
+    """Solver probabilities helper remains available but hidden in normal HUD."""
     _ = qapp
     overlay = HudOverlay()
     recommendation = Recommendation(
@@ -177,16 +162,13 @@ def test_hud_overlay_solver_probabilities_are_sorted_and_limited(
     overlay.update_recommendation(recommendation)
     QApplication.processEvents()
 
-    lines = overlay._probabilities_label.text().splitlines()
-    assert lines == [
+    assert overlay._probabilities_label.isHidden() is True
+    assert HudOverlay._format_probabilities(recommendation.action_probabilities).splitlines() == [
         "Solver Mix:",
         "FOLD 52%",
         "CALL 31%",
         "ALL-IN 2934 17%",
     ]
-    probability_index = overlay.layout().indexOf(overlay._probabilities_label)
-    reason_index = overlay.layout().indexOf(overlay._reason_label)
-    assert probability_index < reason_index
 
 
 @pytest.mark.parametrize(
@@ -215,7 +197,7 @@ def test_hud_overlay_hides_solver_mix_for_non_solver_sources(
 
 
 def test_hud_overlay_solver_timeout_message(qapp: QApplication) -> None:
-    """Solver timeout recommendations render as an explicit non-strategy result."""
+    """Solver timeout recommendations render as a simple waiting status."""
     _ = qapp
     overlay = HudOverlay()
     recommendation = Recommendation(
@@ -228,14 +210,15 @@ def test_hud_overlay_solver_timeout_message(qapp: QApplication) -> None:
     overlay.update_recommendation(recommendation)
     QApplication.processEvents()
 
-    assert overlay._action_label.text() == "SOLVER TIMEOUT"
-    assert overlay._source_label.text() == "Source: Solver Timeout"
-    assert overlay._reason_label.text() == "Solver timeout: no reliable solver result"
+    assert overlay._status_label.text() == "安定待ち..."
+    assert overlay._action_label.isHidden() is True
+    assert overlay._source_label.isHidden() is True
+    assert overlay._confidence_label.isHidden() is True
 
 
 @pytest.mark.parametrize(
     "message",
-    ["CHART CHECKING...", "LLM ANALYZING...", "SOLVER THINKING..."],
+    ["チャート確認中...", "LLMで推論中...", "Solverで推論中..."],
 )
 def test_hud_overlay_computing_uses_message(
     qapp: QApplication,
@@ -259,7 +242,7 @@ def test_hud_overlay_waiting_for_stable_hand(qapp: QApplication) -> None:
 
     overlay.show_waiting_for_stable_hand()
 
-    assert overlay._status_label.text() == "WAITING FOR STABLE HAND\nNo recommendation yet"
+    assert overlay._status_label.text() == "安定待ち..."
     assert overlay._status_label.isHidden() is False
     assert overlay._action_label.isHidden() is True
 
@@ -271,33 +254,22 @@ def test_hud_overlay_duplicate_computing_message_does_not_reset_text(
     _ = qapp
     overlay = HudOverlay()
 
-    overlay.show_computing("DEEP SPR FLOP SOLVING\nSPR: 22.1")
+    overlay.show_computing("Solverで推論中...")
     first_message = overlay._last_computing_message
-    overlay.show_computing("DEEP SPR FLOP SOLVING\nSPR: 22.1")
+    overlay.show_computing("Solverで推論中...")
 
     assert overlay._last_computing_message == first_message
-    assert overlay._status_label.text() == "DEEP SPR FLOP SOLVING\nSPR: 22.1"
+    assert overlay._status_label.text() == "Solverで推論中..."
 
 
 def test_hud_overlay_color_helpers() -> None:
-    """Action and confidence color helpers map required values."""
+    """Action color helper maps displayable actions."""
     assert HudOverlay._action_color("FOLD").name() == QColor(255, 80, 80).name()
     assert HudOverlay._action_color("CHECK").name() == QColor(80, 200, 80).name()
     assert HudOverlay._action_color("CALL").name() == QColor(80, 150, 255).name()
     assert HudOverlay._action_color("BET").name() == QColor(255, 165, 0).name()
     assert HudOverlay._action_color("RAISE").name() == QColor(255, 165, 0).name()
     assert HudOverlay._action_color("ALL_IN").name() == QColor(255, 0, 255).name()
-
-    high_text, high_color = HudOverlay._confidence_display("high")
-    medium_text, medium_color = HudOverlay._confidence_display("medium")
-    low_text, low_color = HudOverlay._confidence_display("low")
-
-    assert high_text == "HIGH"
-    assert high_color.name() == QColor(80, 200, 80).name()
-    assert medium_text == "MEDIUM"
-    assert medium_color.name() == QColor(255, 200, 50).name()
-    assert low_text == "LOW"
-    assert low_color.name() == QColor(255, 80, 80).name()
 
 
 def test_hud_overlay_drag_state(qapp: QApplication) -> None:

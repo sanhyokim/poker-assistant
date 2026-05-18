@@ -186,7 +186,7 @@ def test_hud_computing_callback_called_on_postflop_hero_turn(
 
     loop._handle_strategy(_state(is_my_turn=True))
 
-    hud_computing_callback.assert_called_once_with("LLM ANALYZING...")
+    hud_computing_callback.assert_called_once_with("LLMで推論中...")
 
 
 def test_hud_notified_when_continued_turn_uses_cached_recommendation(
@@ -424,7 +424,7 @@ def test_preflop_computing_shows_chart_checking(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Preflop first computation shows CHART CHECKING..."""
+    """Preflop first computation shows a simple chart-checking status."""
     hud_computing_callback = MagicMock()
     loop = _make_loop(
         workspace_tmp,
@@ -437,14 +437,14 @@ def test_preflop_computing_shows_chart_checking(
 
     loop._handle_strategy(_state(phase="preflop", is_my_turn=True))
 
-    hud_computing_callback.assert_called_once_with("CHART CHECKING...")
+    hud_computing_callback.assert_called_once_with("チャート確認中...")
 
 
 def test_postflop_heads_up_computing_shows_solver_thinking(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Postflop HU (2 players) first computation shows SOLVER THINKING..."""
+    """Postflop HU first computation shows a simple Solver status."""
     hud_computing_callback = MagicMock()
     loop = _make_loop(
         workspace_tmp,
@@ -459,14 +459,14 @@ def test_postflop_heads_up_computing_shows_solver_thinking(
     state.active_player_count = 2
     loop._handle_strategy(state)
 
-    hud_computing_callback.assert_called_once_with("SOLVER THINKING...")
+    hud_computing_callback.assert_called_once_with("Solverで推論中...")
 
 
 def test_postflop_multiway_computing_shows_llm_analyzing(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Postflop multiway (3+ players) first computation shows LLM ANALYZING..."""
+    """Postflop multiway first computation shows a simple LLM status."""
     hud_computing_callback = MagicMock()
     loop = _make_loop(
         workspace_tmp,
@@ -481,7 +481,7 @@ def test_postflop_multiway_computing_shows_llm_analyzing(
     state.active_player_count = 3
     loop._handle_strategy(state)
 
-    hud_computing_callback.assert_called_once_with("LLM ANALYZING...")
+    hud_computing_callback.assert_called_once_with("LLMで推論中...")
 
 
 def test_continued_turn_does_not_show_computing(

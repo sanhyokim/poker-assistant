@@ -54,14 +54,14 @@ def test_hud_overlay_smoke(qapp: QApplication) -> None:
 
 
 def test_hud_overlay_show_pre_hand(qapp: QApplication) -> None:
-    """HudOverlay can show PRE-HAND buffering status."""
+    """HudOverlay shows PRE-HAND as a simple stable-wait status."""
     _ = qapp
     from gui.hud_overlay import HudOverlay
 
     hud = HudOverlay()
     hud.show_pre_hand()
 
-    assert "PRE-HAND" in hud._status_label.text()
+    assert hud._status_label.text() == "安定待ち..."
 
     hud.close()
 

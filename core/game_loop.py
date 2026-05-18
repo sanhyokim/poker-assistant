@@ -32,6 +32,12 @@ logger = logging.getLogger(__name__)
 
 HERO_NON_FOLD_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "ALL_IN"}
 HERO_FOLD_BADGE_RECENT_ACTION_GUARD_SEC = 1.0
+DISPLAYABLE_RECOMMENDATION_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "FOLD", "ALL_IN"}
+INTERNAL_HUD_STRATEGY_SOURCES = {"solver_input_unstable", "solver_timeout"}
+HUD_STATUS_STABLE_WAIT = "安定待ち..."
+HUD_STATUS_SOLVER_THINKING = "Solverで推論中..."
+HUD_STATUS_LLM_THINKING = "LLMで推論中..."
+HUD_STATUS_CHART_CHECKING = "チャート確認中..."
 
 
 @dataclass
@@ -381,7 +387,7 @@ class GameLoop:
                 game_state.pot,
                 game_state.board_card_count,
             )
-            self._notify_hud_computing("PRE-HAND\nBuffering preflop actions...")
+            self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
 
         if self._pre_hand_active:
             game_state.hand_start_status = "PRE-HAND"
@@ -563,7 +569,7 @@ class GameLoop:
             carded_seats,
         )
         self._clear_pre_hand_candidate_state()
-        self._notify_hud_computing("PRE-HAND\nBuffering preflop actions...")
+        self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
 
     def _can_start_pre_hand(self, game_state: GameState) -> bool:
         """Return whether waiting-state PRE-HAND buffering should start."""
@@ -1609,9 +1615,7 @@ class GameLoop:
             self._previous_recommendation = None
             self._previous_recommendation_context = None
             self._last_recommendation_log = None
-            self._notify_hud_computing(
-                "WAITING FOR STABLE HAND\nRecognizing cards/actions..."
-            )
+            self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
             logger.info(
                 "HUD_RECOMMENDATION_CLEARED_ON_NEW_HAND: hand_id=%s",
                 self._hand_manager.hand_id,
@@ -1911,7 +1915,7 @@ class GameLoop:
             self._previous_recommendation = None
             self._previous_recommendation_context = None
             self._clear_pending_state("hero_cards_unstable")
-            self._notify_hud_computing("HERO CARDS UNSTABLE")
+            self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = game_state.hero.is_my_turn
             return
@@ -1926,7 +1930,7 @@ class GameLoop:
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = False
             if game_state.hand_start_status == "PRE-HAND":
-                self._notify_hud_computing("PRE-HAND\nBuffering preflop actions...")
+                self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
             else:
                 self._notify_hud(None)
             self._save_human_action_to_hand_manager(game_state)
@@ -1941,9 +1945,7 @@ class GameLoop:
             self._previous_recommendation = None
             self._previous_recommendation_context = None
             self._last_recommendation_log = None
-            self._notify_hud_computing(
-                "WAITING FOR STABLE HAND\nRecognizing cards/actions..."
-            )
+            self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
             logger.info(
                 "HUD_RECOMMENDATION_CLEARED_ON_NEW_HAND: hand_id=%s",
                 game_state.hand_id,
@@ -1989,9 +1991,7 @@ class GameLoop:
             self._previous_recommendation = None
             self._previous_recommendation_context = None
             self._clear_pending_state("preflop_unstable_hand")
-            self._notify_hud_computing(
-                "WAITING FOR STABLE HAND\nNo recommendation yet"
-            )
+            self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
             self._save_human_action_to_hand_manager(game_state)
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = game_state.hero.is_my_turn
@@ -2036,11 +2036,9 @@ class GameLoop:
             self._previous_recommendation_context = None
             self._clear_pending_state(game_state.strategy_defer_reason)
             if game_state.strategy_defer_reason == "hand_end_guard":
-                self._notify_hud_computing(
-                    "HAND STILL ACTIVE\nWaiting for stable state..."
-                )
+                self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
             else:
-                self._notify_hud_computing("WAITING FOR STABLE POT...")
+                self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
             self._save_human_action_to_hand_manager(game_state)
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = game_state.hero.is_my_turn
@@ -2088,7 +2086,7 @@ class GameLoop:
                     )
                 self._notify_hud(self._previous_recommendation)
             else:
-                self._notify_hud_computing("CHART CHECKING...")
+                self._notify_hud_computing(HUD_STATUS_CHART_CHECKING)
                 self._revalidate_seat_cards_before_strategy(game_state)
                 snapshot = self._build_recommendation_context_snapshot(game_state)
                 recommendation = self._generate_recommendation(
@@ -2179,7 +2177,7 @@ class GameLoop:
 
                 if game_state.active_player_count == 2:
                     # --- Heads-up: async solver via worker thread ---
-                    self._notify_hud_computing("SOLVER THINKING...")
+                    self._notify_hud_computing(HUD_STATUS_SOLVER_THINKING)
 
                     # Poll for a completed async result
                     recommendation = self._poll_async_recommendation_result(
@@ -2204,12 +2202,16 @@ class GameLoop:
                         self._save_recommendation_to_hand_manager(
                             recommendation, strategy_started_at,
                         )
-                        self._previous_recommendation = recommendation
-                        self._previous_recommendation_context = (
-                            self._build_recommendation_context_snapshot(
-                                game_state,
+                        if self._is_hud_displayable_recommendation(recommendation):
+                            self._previous_recommendation = recommendation
+                            self._previous_recommendation_context = (
+                                self._build_recommendation_context_snapshot(
+                                    game_state,
+                                )
                             )
-                        )
+                        else:
+                            self._previous_recommendation = None
+                            self._previous_recommendation_context = None
                         self._notify_hud(recommendation)
                     else:
                         # No result yet: start solver if not already running
@@ -2220,14 +2222,9 @@ class GameLoop:
                                 )
                             )
                             if self._is_solver_retry_suppressed(game_state):
-                                recommendation = self._solver_timeout_recommendation()
-                                recommendation.reason = (
-                                    "Solver skipped: previous solver request became "
-                                    "stale/timeout in this context"
-                                )
-                                self._previous_recommendation = recommendation
-                                self._previous_recommendation_context = snapshot
-                                self._notify_hud(recommendation)
+                                self._previous_recommendation = None
+                                self._previous_recommendation_context = None
+                                self._notify_hud_computing(HUD_STATUS_SOLVER_THINKING)
                             else:
                                 self._start_async_postflop_recommendation(
                                     game_state, snapshot,
@@ -2269,7 +2266,7 @@ class GameLoop:
 
                 elif game_state.active_player_count >= 3:
                     # --- Multiway: synchronous LLM (unchanged) ---
-                    self._notify_hud_computing("LLM ANALYZING...")
+                    self._notify_hud_computing(HUD_STATUS_LLM_THINKING)
                     snapshot = self._build_recommendation_context_snapshot(
                         game_state,
                     )
@@ -2313,7 +2310,7 @@ class GameLoop:
 
                 else:
                     # --- Fallback (active < 2): synchronous (unchanged) ---
-                    self._notify_hud_computing("Computing...")
+                    self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
                     snapshot = self._build_recommendation_context_snapshot(
                         game_state,
                     )
@@ -2704,6 +2701,21 @@ class GameLoop:
         Args:
             recommendation: Recommendation to display, or None for waiting.
         """
+        if recommendation is not None and not self._is_hud_displayable_recommendation(
+            recommendation
+        ):
+            logger.info(
+                "HUD recommendation suppressed: reason=internal_state "
+                "source=%s action=%s",
+                recommendation.strategy_source,
+                recommendation.action,
+            )
+            self._previous_recommendation = None
+            self._previous_recommendation_context = None
+            self._notify_hud_computing(
+                self._hud_status_for_internal_recommendation(recommendation)
+            )
+            return
         if self._hud_callback is None:
             return
         try:
@@ -2717,12 +2729,48 @@ class GameLoop:
         Args:
             message: Processing status text to display.
         """
+        message = self._normalize_hud_computing_message(message)
         if self._hud_computing_callback is None:
             return
         try:
             self._hud_computing_callback(message)
         except Exception:
             logger.warning("HUD computing callback failed", exc_info=True)
+
+    @staticmethod
+    def _is_hud_displayable_recommendation(recommendation: Recommendation) -> bool:
+        """Return whether a recommendation may be shown as a final HUD action."""
+        if recommendation.strategy_source in INTERNAL_HUD_STRATEGY_SOURCES:
+            return False
+        return recommendation.action.upper() in DISPLAYABLE_RECOMMENDATION_ACTIONS
+
+    @staticmethod
+    def _hud_status_for_internal_recommendation(
+        recommendation: Recommendation,
+    ) -> str:
+        """Return a simple HUD status for non-displayable recommendation states."""
+        if recommendation.strategy_source == "solver_timeout":
+            return HUD_STATUS_SOLVER_THINKING
+        return HUD_STATUS_STABLE_WAIT
+
+    @staticmethod
+    def _normalize_hud_computing_message(message: str) -> str:
+        """Map internal processing details to compact user-facing HUD statuses."""
+        if message in {
+            HUD_STATUS_STABLE_WAIT,
+            HUD_STATUS_SOLVER_THINKING,
+            HUD_STATUS_LLM_THINKING,
+            HUD_STATUS_CHART_CHECKING,
+        }:
+            return message
+        message_upper = message.upper()
+        if "CHART" in message_upper:
+            return HUD_STATUS_CHART_CHECKING
+        if "LLM" in message_upper:
+            return HUD_STATUS_LLM_THINKING
+        if "SOLVER" in message_upper or "DEEP SPR" in message_upper:
+            return HUD_STATUS_SOLVER_THINKING
+        return HUD_STATUS_STABLE_WAIT
 
     def _get_preflop_actions_for_strategy(self) -> list[ActionRecord]:
         """Return cumulative preflop actions from HandManager when available."""
@@ -3371,9 +3419,7 @@ class GameLoop:
                         phase=game_state.phase,
                         reason="worker_already_alive",
                     )
-                self._notify_hud_computing(
-                    "SOLVER STILL RUNNING\nWaiting for current solver..."
-                )
+                self._notify_hud_computing(HUD_STATUS_SOLVER_THINKING)
                 return False
             self._pending_recommendation_id += 1
             request_id = self._pending_recommendation_id
@@ -3481,7 +3527,7 @@ class GameLoop:
             elapsed_sec,
             threshold_sec,
         )
-        self._notify_hud_computing("SOLVER STILL RUNNING\nNo reliable result yet")
+        self._notify_hud_computing(HUD_STATUS_SOLVER_THINKING)
         with self._pending_recommendation_lock:
             self._solver_soft_timeout_notified_request_id = request_id
         return True
@@ -3494,14 +3540,10 @@ class GameLoop:
         """Show a non-recommendation HUD notice while Solver is still running."""
         spr = self._estimate_solver_spr_for_hud(game_state)
         message_code = "solver_still_running"
-        message = "SOLVER STILL RUNNING\nWaiting for current solver..."
+        message = HUD_STATUS_SOLVER_THINKING
         if game_state.phase == "flop" and spr is not None and spr >= 10.0:
             message_code = "deep_spr_flop_solving"
-            message = (
-                "DEEP SPR FLOP SOLVING\n"
-                f"SPR: {spr:.1f}\n"
-                "No reliable recommendation yet"
-            )
+            message = HUD_STATUS_SOLVER_THINKING
         key = (request_id, game_state.phase, message_code)
         if getattr(self, "_last_solver_running_hud_key", None) == key:
             logger.debug(
