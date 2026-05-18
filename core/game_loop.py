@@ -218,6 +218,9 @@ class GameLoop:
         self._hero_fold_badge_ignored_reason: str | None = None
         self._pending_hero_fold_badge_recovery: bool = False
         self._pending_hero_fold_badge_recovery_since: float | None = None
+        self._fold_badge_hand_start_guard_sec: float = float(
+            recognition_config.get("fold_badge_hand_start_guard_sec", 1.5)
+        )
         self._hero_card_candidate: list[str] | None = None
         self._hero_card_candidate_streak: int = 0
         self._hero_card_confirm_frames: int = int(
@@ -250,6 +253,16 @@ class GameLoop:
         self._solver_context_suppression_ttl_sec: float = float(
             recognition_config.get("solver_context_suppression_ttl_sec", 12.0)
         )
+        self._last_solver_running_hud_key: tuple[int | None, str | None, str] | None = (
+            None
+        )
+        self._last_solver_running_log_key: tuple[int | None, str | None, str] | None = (
+            None
+        )
+        self._last_solver_suppressed_log_key: (
+            tuple[int | None, int | None, str | None, str] | None
+        ) = None
+        self._last_solver_suppressed_log_at: float = 0.0
         solver_config = config.get("solver", {})
         self._solver_hud_soft_timeout_sec: float = float(
             solver_config.get("hud_soft_timeout_sec", 6.0)
@@ -1593,6 +1606,16 @@ class GameLoop:
             self._stale_suppression_start_time = None
             self._stale_suppression_bypassed = False
             self._clear_hand_position_lock("hand start")
+            self._previous_recommendation = None
+            self._previous_recommendation_context = None
+            self._last_recommendation_log = None
+            self._notify_hud_computing(
+                "WAITING FOR STABLE HAND\nRecognizing cards/actions..."
+            )
+            logger.info(
+                "HUD_RECOMMENDATION_CLEARED_ON_NEW_HAND: hand_id=%s",
+                self._hand_manager.hand_id,
+            )
             logger.debug(
                 "Fold badge and seat-card states cleared on hand start (hand_id=%s)",
                 self._hand_manager.hand_id,
@@ -1915,6 +1938,16 @@ class GameLoop:
             and getattr(self._hand_manager, "hand_just_started", False) is True
         ):
             logger.debug("Skipping preflop recommendation on hand-start frame")
+            self._previous_recommendation = None
+            self._previous_recommendation_context = None
+            self._last_recommendation_log = None
+            self._notify_hud_computing(
+                "WAITING FOR STABLE HAND\nRecognizing cards/actions..."
+            )
+            logger.info(
+                "HUD_RECOMMENDATION_CLEARED_ON_NEW_HAND: hand_id=%s",
+                game_state.hand_id,
+            )
             self._last_strategy_phase = phase
             self._last_strategy_is_my_turn = game_state.hero.is_my_turn
             self._save_human_action_to_hand_manager(game_state)
@@ -1948,6 +1981,21 @@ class GameLoop:
             self._previous_recommendation = None
             self._previous_recommendation_context = None
             self._clear_pending_state("preflop_entered")
+
+        if phase == "preflop" and self._is_preflop_recommendation_unstable(
+            game_state
+        ):
+            self._last_recommendation_log = None
+            self._previous_recommendation = None
+            self._previous_recommendation_context = None
+            self._clear_pending_state("preflop_unstable_hand")
+            self._notify_hud_computing(
+                "WAITING FOR STABLE HAND\nNo recommendation yet"
+            )
+            self._save_human_action_to_hand_manager(game_state)
+            self._last_strategy_phase = phase
+            self._last_strategy_is_my_turn = game_state.hero.is_my_turn
+            return
 
         if game_state.game_event == "NEW_STREET":
             self._last_recommendation_log = None
@@ -2204,13 +2252,11 @@ class GameLoop:
                                     None,
                                 )
                             else:
-                                logger.info(
-                                    "SOLVER_START_SUPPRESSED: "
-                                    "reason=worker_already_alive "
-                                    "active_request_id=%s hand_id=%s phase=%s",
-                                    request_id,
-                                    game_state.hand_id,
-                                    game_state.phase,
+                                self._log_solver_start_suppressed(
+                                    request_id=request_id,
+                                    hand_id=game_state.hand_id,
+                                    phase=game_state.phase,
+                                    reason="worker_already_alive",
                                 )
                             if not self._maybe_notify_solver_hud_soft_timeout(
                                 game_state
@@ -2357,6 +2403,31 @@ class GameLoop:
             recommendation_text,
             street,
         )
+
+    def _is_preflop_recommendation_unstable(self, game_state: GameState) -> bool:
+        """Return whether preflop recommendation should wait for stable inputs."""
+        if game_state.hand_id is None:
+            return False
+        reason: str | None = None
+        if game_state.active_player_count < 2:
+            reason = "active_player_count_lt_2"
+        elif game_state.hero.position is None:
+            reason = "hero_position_missing"
+        elif (
+            not game_state.hero.cards
+            or len(game_state.hero.cards) != 2
+            or any(card is None for card in game_state.hero.cards)
+        ):
+            reason = "hero_cards_unstable"
+        if reason is None:
+            return False
+        logger.info(
+            "PREFLOP_RECOMMENDATION_BLOCKED_UNSTABLE_HAND: hand_id=%s "
+            "reason=%s",
+            game_state.hand_id,
+            reason,
+        )
+        return True
 
     @staticmethod
     def _log_preflop_recommendation_context(game_state: GameState) -> None:
@@ -3294,12 +3365,11 @@ class GameLoop:
                     )
                     self._reset_solver_process_for_cancel("orphan_worker", None)
                 else:
-                    logger.info(
-                        "SOLVER_START_SUPPRESSED: reason=worker_already_alive "
-                        "active_request_id=%s hand_id=%s phase=%s",
-                        active_request_id,
-                        game_state.hand_id,
-                        game_state.phase,
+                    self._log_solver_start_suppressed(
+                        request_id=active_request_id,
+                        hand_id=game_state.hand_id,
+                        phase=game_state.phase,
+                        reason="worker_already_alive",
                     )
                 self._notify_hud_computing(
                     "SOLVER STILL RUNNING\nWaiting for current solver..."
@@ -3423,23 +3493,73 @@ class GameLoop:
     ) -> None:
         """Show a non-recommendation HUD notice while Solver is still running."""
         spr = self._estimate_solver_spr_for_hud(game_state)
+        message_code = "solver_still_running"
+        message = "SOLVER STILL RUNNING\nWaiting for current solver..."
         if game_state.phase == "flop" and spr is not None and spr >= 10.0:
-            logger.info(
-                "SOLVER_HUD_RUNNING_DETAIL: hand_id=%s phase=flop spr=%.1f "
-                "request_id=%s message=deep_spr_flop_solving",
-                game_state.hand_id,
-                spr,
-                request_id,
-            )
-            self._notify_hud_computing(
+            message_code = "deep_spr_flop_solving"
+            message = (
                 "DEEP SPR FLOP SOLVING\n"
                 f"SPR: {spr:.1f}\n"
                 "No reliable recommendation yet"
             )
+        key = (request_id, game_state.phase, message_code)
+        if getattr(self, "_last_solver_running_hud_key", None) == key:
+            logger.debug(
+                "SOLVER_HUD_RUNNING_SUPPRESSED_DUPLICATE: request_id=%s "
+                "phase=%s message=%s",
+                request_id,
+                game_state.phase,
+                message_code,
+            )
             return
-        self._notify_hud_computing(
-            "SOLVER STILL RUNNING\nWaiting for current solver..."
+        if getattr(self, "_last_solver_running_log_key", None) != key:
+            logger.info(
+                "SOLVER_HUD_RUNNING_DETAIL: hand_id=%s phase=%s spr=%s "
+                "request_id=%s message=%s",
+                game_state.hand_id,
+                game_state.phase,
+                f"{spr:.1f}" if spr is not None else None,
+                request_id,
+                message_code,
+            )
+            self._last_solver_running_log_key = key
+        self._notify_hud_computing(message)
+        self._last_solver_running_hud_key = key
+
+    def _log_solver_start_suppressed(
+        self,
+        *,
+        request_id: int | None,
+        hand_id: int | None,
+        phase: str | None,
+        reason: str,
+    ) -> None:
+        """Rate-limit repeated worker-alive Solver start suppression logs."""
+        key = (request_id, hand_id, phase, reason)
+        now = time.monotonic()
+        if (
+            getattr(self, "_last_solver_suppressed_log_key", None) == key
+            and now - getattr(self, "_last_solver_suppressed_log_at", 0.0) < 3.0
+        ):
+            logger.debug(
+                "SOLVER_START_SUPPRESSED: reason=%s active_request_id=%s "
+                "hand_id=%s phase=%s",
+                reason,
+                request_id,
+                hand_id,
+                phase,
+            )
+            return
+        logger.info(
+            "SOLVER_START_SUPPRESSED: reason=%s active_request_id=%s "
+            "hand_id=%s phase=%s",
+            reason,
+            request_id,
+            hand_id,
+            phase,
         )
+        self._last_solver_suppressed_log_key = key
+        self._last_solver_suppressed_log_at = now
 
     @staticmethod
     def _estimate_solver_spr_for_hud(game_state: GameState) -> float | None:
@@ -3662,6 +3782,8 @@ class GameLoop:
             self._pending_recommendation_coarse_key = None
             self._pending_recommendation_started_at = None
             self._solver_soft_timeout_notified_request_id = None
+            self._last_solver_running_hud_key = None
+            self._last_solver_running_log_key = None
         thread = self._pending_recommendation_thread
         if thread is not None and not thread.is_alive():
             self._pending_recommendation_thread = None
@@ -3822,6 +3944,18 @@ class GameLoop:
                     len(game_state.board or []),
                 )
                 continue
+            if self._is_fold_badge_hand_start_guard_active(game_state):
+                logger.info(
+                    "FOLD_BADGE_SUPPRESSED_HAND_START_GUARD: hand_id=%s "
+                    "seat=%s phase=%s elapsed_since_hand_start=%s "
+                    "reason=%s",
+                    self._hand_manager.hand_id,
+                    seat,
+                    self._hand_manager.phase,
+                    self._elapsed_since_hand_start(),
+                    self._fold_badge_guard_reason(),
+                )
+                continue
 
             logger.info("FOLD detected via badge for seat %d", seat)
             game_state.actions_since_last_frame.append(
@@ -3832,6 +3966,30 @@ class GameLoop:
                     confidence="high",
                 )
             )
+
+    def _is_fold_badge_hand_start_guard_active(self, game_state: GameState) -> bool:
+        """Return whether opponent fold badges should wait after hand start."""
+        if self._hand_manager.phase != "preflop":
+            return False
+        if getattr(self._hand_manager, "_participant_observation_active", False):
+            return True
+        elapsed = self._elapsed_since_hand_start()
+        if elapsed is None:
+            return False
+        return elapsed <= self._fold_badge_hand_start_guard_sec
+
+    def _fold_badge_guard_reason(self) -> str:
+        """Return the current opponent fold-badge guard reason."""
+        if getattr(self._hand_manager, "_participant_observation_active", False):
+            return "participant_observation"
+        return "hand_start_guard"
+
+    def _elapsed_since_hand_start(self) -> float | None:
+        """Return elapsed seconds since current hand start when available."""
+        hand_start = getattr(self._hand_manager, "_hand_start_monotonic", None)
+        if hand_start is None:
+            return None
+        return time.monotonic() - hand_start
 
     def _filter_low_confidence_opponent_folds(
         self,

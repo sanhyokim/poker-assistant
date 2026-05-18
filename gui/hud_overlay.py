@@ -57,6 +57,7 @@ class HudOverlay(QWidget):
         self._opacity = float(hud_config.get("opacity", 0.85))
         self._drag_position: QPoint | None = None
         self._closing: bool = False
+        self._last_computing_message: str | None = None
 
         self.setWindowFlags(
             Qt.WindowType.FramelessWindowHint
@@ -86,14 +87,26 @@ class HudOverlay(QWidget):
         Args:
             message: Status text to display while recommendation work is running.
         """
+        if (
+            self._last_computing_message == message
+            and self._status_label.isVisible()
+            and self._action_label.isHidden()
+        ):
+            return
+        self._last_computing_message = message
         self._hide_recommendation_labels()
         self._status_label.setText(message)
         self._set_label_color(self._status_label, QColor(255, 200, 50))
         self._status_label.show()
         self.show()
 
+    def show_waiting_for_stable_hand(self) -> None:
+        """Show a non-recommendation waiting state while hand inputs stabilize."""
+        self.show_computing("WAITING FOR STABLE HAND\nNo recommendation yet")
+
     def show_pre_hand(self) -> None:
         """Show PRE-HAND buffering status without a recommendation."""
+        self._last_computing_message = "PRE-HAND\nBuffering preflop actions..."
         self._hide_recommendation_labels()
         self._status_label.setText("PRE-HAND\nBuffering preflop actions...")
         self._set_label_color(self._status_label, QColor(255, 220, 90))
@@ -110,6 +123,7 @@ class HudOverlay(QWidget):
 
     def show_waiting(self) -> None:
         """Show the waiting-for-hand status message."""
+        self._last_computing_message = "Waiting for hand..."
         self._hide_recommendation_labels()
         self._status_label.setText("Waiting for hand...")
         self._set_label_color(self._status_label, QColor(180, 180, 180))
@@ -124,6 +138,7 @@ class HudOverlay(QWidget):
             self.show_waiting()
             return
 
+        self._last_computing_message = None
         action_text = self._format_action(recommendation)
         action_color = self._action_color(recommendation.action)
         confidence_text, confidence_color = self._confidence_display(

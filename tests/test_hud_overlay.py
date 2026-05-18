@@ -252,6 +252,33 @@ def test_hud_overlay_computing_uses_message(
     assert overlay._action_label.isHidden() is True
 
 
+def test_hud_overlay_waiting_for_stable_hand(qapp: QApplication) -> None:
+    """WAITING FOR STABLE HAND status can be rendered."""
+    _ = qapp
+    overlay = HudOverlay()
+
+    overlay.show_waiting_for_stable_hand()
+
+    assert overlay._status_label.text() == "WAITING FOR STABLE HAND\nNo recommendation yet"
+    assert overlay._status_label.isHidden() is False
+    assert overlay._action_label.isHidden() is True
+
+
+def test_hud_overlay_duplicate_computing_message_does_not_reset_text(
+    qapp: QApplication,
+) -> None:
+    """Repeated computing messages are ignored to reduce HUD flicker."""
+    _ = qapp
+    overlay = HudOverlay()
+
+    overlay.show_computing("DEEP SPR FLOP SOLVING\nSPR: 22.1")
+    first_message = overlay._last_computing_message
+    overlay.show_computing("DEEP SPR FLOP SOLVING\nSPR: 22.1")
+
+    assert overlay._last_computing_message == first_message
+    assert overlay._status_label.text() == "DEEP SPR FLOP SOLVING\nSPR: 22.1"
+
+
 def test_hud_overlay_color_helpers() -> None:
     """Action and confidence color helpers map required values."""
     assert HudOverlay._action_color("FOLD").name() == QColor(255, 80, 80).name()

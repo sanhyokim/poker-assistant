@@ -1495,6 +1495,69 @@ def test_fold_badge_detection_appends_fold_action(
     assert 3 not in loop._hand_manager.get_players_in_hand()
 
 
+def test_opponent_fold_badge_suppressed_during_hand_start_guard(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Opponent fold badges are ignored briefly after preflop hand start."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 1
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._hand_manager._hand_start_monotonic = time.monotonic()
+    game_state = _state_with_player("3")
+    game_state.phase = "preflop"
+
+    loop._process_fold_badge_detection(game_state, {3: True})
+
+    assert game_state.actions_since_last_frame == []
+    assert "FOLD_BADGE_SUPPRESSED_HAND_START_GUARD" in caplog.text
+
+
+def test_opponent_fold_badge_suppressed_during_participant_observation(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opponent fold badges are ignored while participant observation is active."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 1
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._hand_manager._hand_start_monotonic = time.monotonic() - 5.0
+    loop._hand_manager._participant_observation_active = True
+    game_state = _state_with_player("3")
+    game_state.phase = "preflop"
+
+    loop._process_fold_badge_detection(game_state, {3: True})
+
+    assert game_state.actions_since_last_frame == []
+
+
+def test_opponent_fold_badge_after_guard_still_records_fold(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Opponent fold badge still records after the hand-start guard expires."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 1
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._hand_manager._hand_start_monotonic = time.monotonic() - 5.0
+    game_state = _state_with_player("3")
+    game_state.phase = "preflop"
+
+    loop._process_fold_badge_detection(game_state, {3: True})
+
+    assert game_state.actions_since_last_frame[-1] == ActionRecord(
+        seat=3,
+        action="FOLD",
+        amount=0,
+        confidence="high",
+    )
+
+
 def test_fold_badge_detection_appends_hero_fold_and_clears_cache(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3521,6 +3584,33 @@ def test_skip_recommendation_on_hand_start_frame(
     assert loop.current_recommendation is None
 
 
+def test_new_hand_started_clears_hud_recommendation(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Hand-start strategy frame clears stale recommendation display."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    computing_callback = MagicMock()
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hud_computing_callback = computing_callback
+    loop._recommendation_engine = MagicMock()
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_just_started = True
+    state = create_empty_game_state()
+    state.hand_id = 12
+    state.phase = "preflop"
+    state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+
+    loop._handle_strategy(state)
+
+    computing_callback.assert_called_with(
+        "WAITING FOR STABLE HAND\nRecognizing cards/actions..."
+    )
+    assert "HUD_RECOMMENDATION_CLEARED_ON_NEW_HAND: hand_id=12" in caplog.text
+
+
 def test_recommendation_generated_on_next_frame(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3545,6 +3635,55 @@ def test_recommendation_generated_on_next_frame(
     loop._recommendation_engine.generate.assert_called_once()
     assert loop.current_recommendation is not None
     assert loop.current_recommendation.action == "RAISE"
+
+
+@pytest.mark.parametrize(
+    ("active_player_count", "hero_position", "reason"),
+    [
+        (1, "BB", "active_player_count_lt_2"),
+        (2, None, "hero_position_missing"),
+    ],
+)
+def test_preflop_unstable_hand_blocks_fold_recommendation(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    active_player_count: int,
+    hero_position: str | None,
+    reason: str,
+) -> None:
+    """Unstable preflop inputs show waiting state instead of a FOLD recommendation."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    computing_callback = MagicMock()
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hud_computing_callback = computing_callback
+    loop._recommendation_engine = MagicMock()
+    loop._recommendation_engine.generate.return_value = Recommendation(
+        action="FOLD",
+        amount=0,
+        strategy_source="preflop_chart_fallback",
+    )
+    loop._hand_manager.set_recommendation = MagicMock()  # type: ignore[method-assign]
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_just_started = False
+    state = create_empty_game_state()
+    state.hand_id = 13
+    state.phase = "preflop"
+    state.hero.is_my_turn = True
+    state.hero.in_current_hand = True
+    state.hero.cards = ["Ah", "Kd"]
+    state.hero.position = hero_position
+    state.active_player_count = active_player_count
+
+    loop._handle_strategy(state)
+
+    loop._recommendation_engine.generate.assert_not_called()
+    loop._hand_manager.set_recommendation.assert_not_called()
+    assert loop.current_recommendation is None
+    computing_callback.assert_called_with(
+        "WAITING FOR STABLE HAND\nNo recommendation yet"
+    )
+    assert f"reason={reason}" in caplog.text
 
 
 def test_waiting_hero_cards_one_frame_does_not_start_hand(
@@ -4187,6 +4326,52 @@ def test_worker_alive_suppresses_new_solver_start_and_logs(
     computing_callback.assert_called_with(
         "SOLVER STILL RUNNING\nWaiting for current solver..."
     )
+
+
+def test_same_solver_running_hud_notified_once(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The same Solver-running HUD message is sent once per request key."""
+    computing_callback = MagicMock()
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hud_computing_callback = computing_callback
+    state = make_hu_solver_state()
+    state.pot = 300
+    state.hero.stack = 9000
+    state.players["2"].stack = 9000
+
+    loop._notify_solver_running(state, request_id=42)
+    loop._notify_solver_running(state, request_id=42)
+
+    computing_callback.assert_called_once_with(
+        "DEEP SPR FLOP SOLVING\nSPR: 30.0\nNo reliable recommendation yet"
+    )
+
+
+def test_solver_start_suppressed_info_log_is_rate_limited(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Repeated worker-alive suppression logs only once at INFO within the window."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+
+    loop._log_solver_start_suppressed(
+        request_id=10,
+        hand_id=6,
+        phase="flop",
+        reason="worker_already_alive",
+    )
+    loop._log_solver_start_suppressed(
+        request_id=10,
+        hand_id=6,
+        phase="flop",
+        reason="worker_already_alive",
+    )
+
+    assert caplog.text.count("SOLVER_START_SUPPRESSED") == 1
 
 
 @pytest.mark.parametrize(

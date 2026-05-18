@@ -62,6 +62,7 @@ recognition:
   diff_threshold_button: 200
   fold_confirm_frames: 3  # Legacy; fold detection now uses FoldBadgeDetector latches.
   hand_start_grace_sec: 1.5  # Legacy; FoldBadgeDetector has no hand-start grace.
+  fold_badge_hand_start_guard_sec: 1.5
   card_gray_mean_min: 80.0
   card_gray_std_min: 20.0
   fold_badge_threshold: 0.8

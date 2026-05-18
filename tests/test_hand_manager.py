@@ -389,6 +389,11 @@ def test_preflop_hero_check_facing_bet_normalized_to_call(
         hero_bet=100,
         players={"2": (5000, 200)},
     )
+    manager._turn_end_state = make_state(
+        hero_cards=["Qc", "Qd"],
+        hero_bet=100,
+        players={"2": (5000, 200)},
+    )
 
     with caplog.at_level(logging.INFO):
         manager._add_actions(
@@ -401,6 +406,37 @@ def test_preflop_hero_check_facing_bet_normalized_to_call(
         (1, "CALL", 100)
     ]
     assert "PREFLOP_HERO_CHECK_NORMALIZED_TO_CALL" in caplog.text
+
+
+def test_preflop_hero_check_normalization_logs_once(
+    manager: HandManager,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """One Hero CHECK boundary action produces one normalization log."""
+    manager._phase = "preflop"
+    manager._hand_id = 8
+    manager._street_actions["preflop"] = StreetActions(street="preflop")
+    manager._turn_start_state = make_state(
+        hero_cards=["Qc", "Qd"],
+        hero_bet=100,
+        players={"2": (5000, 200)},
+    )
+    manager._turn_end_state = make_state(
+        hero_cards=["Qc", "Qd"],
+        hero_bet=100,
+        players={"2": (5000, 200)},
+    )
+
+    with caplog.at_level(logging.INFO):
+        action = manager._detect_hero_action()
+        assert action is not None
+        manager._record_hero_action(action)
+
+    assert caplog.text.count("PREFLOP_HERO_CHECK_NORMALIZED_TO_CALL") == 1
+    assert [
+        (action.seat, action.action, action.amount)
+        for action in manager.get_preflop_actions()
+    ] == [(1, "CALL", 100)]
 
 
 def test_preflop_hero_check_when_checkable_stays_check(
