@@ -23,6 +23,14 @@ solver:
   max_iterations: 200
   target_exploitability_pct: 0.6
   timeout_ms: 10000
+  hud_soft_timeout_sec: 6.0
+  deep_spr_threshold: 10.0
+  deep_spr_light_probe_enabled: true
+  deep_spr_light_timeout_ms: 5000
+  deep_spr_light_max_iterations: 80
+  deep_spr_light_target_exploitability_pct: 1.5
+  deep_spr_light_bet_sizes: "50%"
+  deep_spr_light_raise_sizes: "2.5x"
   default_bet_sizes: "60%,a"
   default_raise_sizes: "2.5x"
   add_allin_threshold: 1.5

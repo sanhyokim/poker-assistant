@@ -18,6 +18,15 @@ from strategy.recommendation_engine import Recommendation, RecommendationEngine
 
 TEST_CONFIG = {"game": {"blind_bb": 100}, "preflop_delta": {"sample_threshold_low": 50}}
 
+DEEP_SPR_CONFIG = {
+    "game": {"blind_bb": 100},
+    "preflop_delta": {"sample_threshold_low": 50},
+    "solver": {
+        "deep_spr_threshold": 10.0,
+        "deep_spr_light_probe_enabled": True,
+    },
+}
+
 
 @pytest.fixture
 def workspace_tmp() -> Path:
@@ -1246,6 +1255,151 @@ def test_headsup_solver_failure_uses_correct_timeout(
     assert "Solver timeout" in caplog.text
     assert "error=Solver timeout" in caplog.text
     assert "HU_SOLVER_RESULT_DETAIL" in caplog.text
+
+
+def test_deep_spr_primary_and_light_success_logs_compare(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Deep-SPR primary/light success logs comparison without changing return."""
+    engine = make_engine(DEEP_SPR_CONFIG)
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 31
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    primary_request = {
+        "board": "Td7c2h",
+        "timeout_ms": 20000,
+        "effective_stack": 10000,
+        "starting_pot": 500,
+        "actions_played": [],
+    }
+    light_request = {
+        "board": "Td7c2h",
+        "timeout_ms": 5000,
+        "effective_stack": 10000,
+        "starting_pot": 500,
+        "actions_played": [],
+    }
+
+    def build_request(*_args: object, **kwargs: object) -> dict[str, object]:
+        if kwargs.get("profile") == "deep_spr_light_probe":
+            return light_request
+        return primary_request
+
+    engine.solver_request_builder.build_request.side_effect = build_request
+    engine.solver_bridge.solve.side_effect = [
+        {
+            "success": True,
+            "root_strategy": {
+                "actions": ["Check", "Bet 120"],
+                "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
+            },
+        },
+        {
+            "success": True,
+            "root_strategy": {
+                "actions": ["Check", "Bet 100"],
+                "average_strategy": {"Check": 0.30, "Bet 100": 0.70},
+            },
+        },
+    ]
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "solver"
+    assert recommendation.action == "BET"
+    assert recommendation.amount == 120
+    assert engine.solver_bridge.solve.call_count == 2
+    assert "DEEP_SPR_SOLVER_PRIMARY_RESULT" in caplog.text
+    assert "DEEP_SPR_LIGHT_SOLVER_RESULT" in caplog.text
+    assert "DEEP_SPR_SOLVER_COMPARE" in caplog.text
+    assert "primary_action=BET" in caplog.text
+    assert "light_action=BET" in caplog.text
+
+
+def test_deep_spr_primary_timeout_light_success_logs_compare(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Primary timeout plus light success is logged but light is not returned."""
+    engine = make_engine(DEEP_SPR_CONFIG)
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 32
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    primary_request = {
+        "board": "Td7c2h",
+        "timeout_ms": 20000,
+        "effective_stack": 10000,
+        "starting_pot": 500,
+        "actions_played": [],
+    }
+    light_request = {
+        "board": "Td7c2h",
+        "timeout_ms": 5000,
+        "effective_stack": 10000,
+        "starting_pot": 500,
+        "actions_played": [],
+    }
+
+    def build_request(*_args: object, **kwargs: object) -> dict[str, object]:
+        if kwargs.get("profile") == "deep_spr_light_probe":
+            return light_request
+        return primary_request
+
+    engine.solver_request_builder.build_request.side_effect = build_request
+    engine.solver_bridge.solve.side_effect = [
+        {"success": False, "error": "timeout"},
+        {
+            "success": True,
+            "root_strategy": {
+                "actions": ["Check", "Bet 100"],
+                "average_strategy": {"Check": 0.10, "Bet 100": 0.90},
+            },
+        },
+    ]
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "solver_timeout"
+    assert recommendation.action == "SOLVER_TIMEOUT"
+    assert engine.solver_bridge.solve.call_count == 2
+    assert "DEEP_SPR_LIGHT_SOLVER_RESULT" in caplog.text
+    assert "comparison_type=primary_timeout_light_success" in caplog.text
+    assert "light_success=True" in caplog.text
+
+
+def test_deep_spr_light_probe_disabled_does_not_call_light_solver() -> None:
+    """Light probe is skipped entirely when disabled."""
+    config = {
+        "game": {"blind_bb": 100},
+        "preflop_delta": {"sample_threshold_low": 50},
+        "solver": {
+            "deep_spr_threshold": 10.0,
+            "deep_spr_light_probe_enabled": False,
+        },
+    }
+    engine = make_engine(config)
+    state = make_state(phase="flop", active_player_count=2)
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {
+        "board": "Td7c2h",
+        "timeout_ms": 20000,
+        "effective_stack": 10000,
+        "starting_pot": 500,
+        "actions_played": [],
+    }
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
+        },
+    }
+
+    recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "solver"
+    assert engine.solver_bridge.solve.call_count == 1
 
 
 def test_headsup_solver_unavailable_logs_fallback_reason(

@@ -37,6 +37,24 @@ class SolverRequestBuilder:
         self.timeout_ms: int = int(solver_config["timeout_ms"])
         self.default_bet_sizes: str = str(solver_config["default_bet_sizes"])
         self.default_raise_sizes: str = str(solver_config["default_raise_sizes"])
+        self.deep_spr_threshold: float = float(
+            solver_config.get("deep_spr_threshold", 10.0)
+        )
+        self.deep_spr_light_timeout_ms: int = int(
+            solver_config.get("deep_spr_light_timeout_ms", 5000)
+        )
+        self.deep_spr_light_max_iterations: int = int(
+            solver_config.get("deep_spr_light_max_iterations", 80)
+        )
+        self.deep_spr_light_target_exploitability_pct: float = float(
+            solver_config.get("deep_spr_light_target_exploitability_pct", 1.5)
+        )
+        self.deep_spr_light_bet_sizes: str = str(
+            solver_config.get("deep_spr_light_bet_sizes", "50%")
+        )
+        self.deep_spr_light_raise_sizes: str = str(
+            solver_config.get("deep_spr_light_raise_sizes", "2.5x")
+        )
         self.add_allin_threshold: float = float(solver_config["add_allin_threshold"])
         self.force_allin_threshold: float = float(
             solver_config["force_allin_threshold"]
@@ -46,6 +64,28 @@ class SolverRequestBuilder:
         self.rake_cap: float = float(solver_config["rake_cap"])
 
         self.blind_bb: int = int(game_config["blind_bb"])
+
+    def is_deep_spr(
+        self,
+        phase: str,
+        starting_pot: int,
+        effective_stack: int,
+    ) -> bool:
+        """Return True for flop/turn contexts that qualify as deep SPR.
+
+        Args:
+            phase: Current street name.
+            starting_pot: Pot used by the solver tree root.
+            effective_stack: Effective stack used by the solver tree root.
+
+        Returns:
+            True when the context is flop/turn and SPR meets the configured
+            deep-SPR threshold.
+        """
+        if starting_pot <= 0 or effective_stack <= 0:
+            return False
+        spr = effective_stack / starting_pot
+        return phase in {"flop", "turn"} and spr >= self.deep_spr_threshold
 
     def can_use_solver(self, game_state: GameState) -> bool:
         """Return True only for heads-up postflop states.
@@ -90,6 +130,7 @@ class SolverRequestBuilder:
         street_start_pot: int | None = None,
         street_start_effective_stack: int | None = None,
         actions_played: list[str] | None = None,
+        profile: str = "default",
     ) -> SolverRequest | None:
         """Build a postflop-solver JSON request from a GameState.
 
@@ -102,6 +143,9 @@ class SolverRequestBuilder:
             street_start_pot: Pot at the start of the current street.
             street_start_effective_stack: Effective stack at the start of street.
             actions_played: Solver tree navigation actions already played.
+            profile: Request profile. ``default`` preserves production
+                settings; ``deep_spr_light_probe`` builds a comparison-only
+                lightweight candidate for deep-SPR flop/turn spots.
 
         Returns:
             Solver request dictionary, or None when solver use is invalid.
@@ -159,19 +203,54 @@ class SolverRequestBuilder:
             "actions_played": actions_played,
         }
 
-        # Extend timeout for deep-SPR flop positions
+        spr = request["effective_stack"] / max(request["starting_pot"], 1)
+        is_deep_spr = self.is_deep_spr(
+            game_state.phase,
+            int(request["starting_pot"]),
+            int(request["effective_stack"]),
+        )
+
+        if profile == "deep_spr_light_probe":
+            if not is_deep_spr:
+                return None
+            request["timeout_ms"] = self.deep_spr_light_timeout_ms
+            request["max_iterations"] = self.deep_spr_light_max_iterations
+            request["target_exploitability_pct"] = (
+                self.deep_spr_light_target_exploitability_pct
+            )
+            for street in ("flop", "turn"):
+                request[f"{street}_bet_sizes_oop"] = self.deep_spr_light_bet_sizes
+                request[f"{street}_bet_sizes_ip"] = self.deep_spr_light_bet_sizes
+                request[f"{street}_raise_sizes_oop"] = (
+                    self.deep_spr_light_raise_sizes
+                )
+                request[f"{street}_raise_sizes_ip"] = self.deep_spr_light_raise_sizes
+            logger.info(
+                "DEEP_SPR_LIGHT_REQUEST_BUILT: phase=%s SPR=%.1f "
+                "timeout_ms=%d max_iterations=%d target_exploitability_pct=%s "
+                "bet_sizes=%s raise_sizes=%s",
+                game_state.phase,
+                spr,
+                request["timeout_ms"],
+                request["max_iterations"],
+                request["target_exploitability_pct"],
+                self.deep_spr_light_bet_sizes,
+                self.deep_spr_light_raise_sizes,
+            )
+            return request
+
+        # Extend timeout for deep-SPR flop positions. This preserves the
+        # current production behavior; turn deep-SPR remains default for now.
         if (
             game_state.phase == "flop"
-            and request["effective_stack"] > 0
-            and request["starting_pot"] > 0
-            and request["effective_stack"] / request["starting_pot"] > 10
+            and is_deep_spr
         ):
             request["timeout_ms"] = 20000
             request["max_iterations"] = 300
             logger.info(
                 "Solver timeout extended for deep-SPR flop: SPR=%.1f, "
                 "timeout_ms=%d, max_iterations=%d",
-                request["effective_stack"] / request["starting_pot"],
+                spr,
                 request["timeout_ms"],
                 request["max_iterations"],
             )

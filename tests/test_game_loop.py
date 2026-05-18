@@ -4189,6 +4189,90 @@ def test_worker_alive_suppresses_new_solver_start_and_logs(
     )
 
 
+def test_solver_hud_soft_timeout_logs_and_notifies(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Pending Solver over the HUD soft timeout shows a non-recommendation notice."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    computing_callback = MagicMock()
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hud_computing_callback = computing_callback
+    loop._solver_hud_soft_timeout_sec = 0.5
+    state = make_hu_solver_state()
+    loop._pending_recommendation_active_id = 30
+    loop._pending_recommendation_started_at = time.monotonic() - 1.0
+
+    notified = loop._maybe_notify_solver_hud_soft_timeout(state)
+
+    assert notified is True
+    assert loop.current_recommendation is None
+    assert "SOLVER_HUD_SOFT_TIMEOUT: request_id=30" in caplog.text
+    computing_callback.assert_called_once_with(
+        "SOLVER STILL RUNNING\nNo reliable result yet"
+    )
+
+
+def test_solver_hud_soft_timeout_notifies_once(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Soft timeout HUD notice is emitted once per request id."""
+    computing_callback = MagicMock()
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hud_computing_callback = computing_callback
+    loop._solver_hud_soft_timeout_sec = 0.5
+    state = make_hu_solver_state()
+    loop._pending_recommendation_active_id = 31
+    loop._pending_recommendation_started_at = time.monotonic() - 1.0
+
+    assert loop._maybe_notify_solver_hud_soft_timeout(state) is True
+    assert loop._maybe_notify_solver_hud_soft_timeout(state) is False
+    assert computing_callback.call_count == 1
+
+
+def test_fresh_solver_result_after_soft_timeout_is_accepted(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Soft timeout does not prevent a later fresh Solver result from being used."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    state = make_hu_solver_state()
+    snapshot = loop._build_recommendation_context_snapshot(state)
+    exact_key, coarse_key = loop._solver_context_keys(state)
+    monkeypatch.setattr(
+        loop,
+        "_is_recommendation_context_still_valid",
+        lambda _ctx, _state: True,
+    )
+    recommendation = Recommendation(
+        action="BET",
+        amount=300,
+        reason="fresh solver after soft timeout",
+        strategy_source="solver",
+    )
+    loop._pending_recommendation_active_id = 32
+    loop._pending_recommendation_context = snapshot
+    loop._pending_recommendation_exact_key = exact_key
+    loop._pending_recommendation_coarse_key = coarse_key
+    loop._pending_recommendation_started_at = time.monotonic() - 10.0
+    loop._solver_soft_timeout_notified_request_id = 32
+    loop._pending_recommendation_completed[32] = _AsyncRecommendationResult(
+        request_id=32,
+        recommendation=recommendation,
+        snapshot=snapshot,
+        exact_key=exact_key,
+        coarse_key=coarse_key,
+    )
+
+    result = loop._poll_async_recommendation_result(state)
+
+    assert result is recommendation
+    assert loop._pending_recommendation_started_at is None
+    assert loop._solver_soft_timeout_notified_request_id is None
+
+
 def test_accepted_fresh_solver_result_is_not_suppressed(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -85,6 +85,14 @@ class RecommendationEngine:
         self.multiway_engine = multiway_engine
         self.delta_policy = PreflopDeltaPolicy(llm_pipeline=llm_pipeline, config=config)
         self.logger = logger
+        solver_config = config.get("solver", {}) if isinstance(config, dict) else {}
+        self.deep_spr_light_probe_enabled: bool = bool(
+            solver_config.get("deep_spr_light_probe_enabled", False)
+        )
+        self.deep_spr_threshold: float = float(
+            solver_config.get("deep_spr_threshold", 10.0)
+        )
+        self._deep_spr_light_probe_seen_keys: set[str] = set()
 
     def generate(
         self,
@@ -396,6 +404,31 @@ class RecommendationEngine:
         latency["solver_ms"] = self._elapsed_ms(solve_started)
         if not solver_output.get("success"):
             error_text = str(solver_output.get("error", "Solver failed"))
+            primary_result = {
+                "success": False,
+                "elapsed_ms": latency["solver_ms"],
+                "timeout_ms": timeout_ms,
+                "action": None,
+                "amount": None,
+                "probabilities": None,
+                "error": error_text,
+            }
+            self._log_deep_spr_primary_result(
+                game_state,
+                spr,
+                primary_result,
+            )
+            self._run_deep_spr_light_probe_if_needed(
+                game_state=game_state,
+                range_oop=range_oop,
+                range_ip=range_ip,
+                hero_is_ip=self._determine_hero_is_ip(game_state),
+                street_start_pot=street_start_pot,
+                street_start_effective_stack=street_start_effective_stack,
+                actions_played=actions_played,
+                spr=spr,
+                primary_result=primary_result,
+            )
             logger.info(
                 "HU solver failed: phase=%s elapsed_ms=%.0f timeout_ms=%d "
                 "bridge_timeout_sec=%.1f error=%s",
@@ -504,6 +537,29 @@ class RecommendationEngine:
                 sorted(solver_output.keys()),
             )
 
+        primary_result = {
+            "success": True,
+            "elapsed_ms": latency["solver_ms"],
+            "timeout_ms": timeout_ms,
+            "action": action,
+            "amount": amount,
+            "probabilities": probabilities,
+            "error": None,
+            "ev": self._extract_solver_ev(solver_output),
+        }
+        self._log_deep_spr_primary_result(game_state, spr, primary_result)
+        self._run_deep_spr_light_probe_if_needed(
+            game_state=game_state,
+            range_oop=range_oop,
+            range_ip=range_ip,
+            hero_is_ip=self._determine_hero_is_ip(game_state),
+            street_start_pot=street_start_pot,
+            street_start_effective_stack=street_start_effective_stack,
+            actions_played=actions_played,
+            spr=spr,
+            primary_result=primary_result,
+        )
+
         solver_mix = self._format_solver_mix(probabilities)
         reason = "HU solver recommendation"
         if solver_mix:
@@ -579,6 +635,227 @@ class RecommendationEngine:
                 solver_output.get("exploitability"),
             ),
             latency_breakdown=latency,
+        )
+
+    def _is_deep_spr_context(self, phase: str, spr: float) -> bool:
+        """Return True when the current HU spot qualifies for light-probe logging."""
+        return phase in {"flop", "turn"} and spr >= self.deep_spr_threshold
+
+    def _deep_spr_probe_key(
+        self,
+        game_state: GameState,
+        actions_played: list[str] | None,
+    ) -> str:
+        """Return a stable comparison-probe key for one deep-SPR context."""
+        payload = {
+            "hand_id": game_state.hand_id,
+            "phase": game_state.phase,
+            "board": list(game_state.board or []),
+            "hero_cards": list(game_state.hero.cards or []),
+            "pot": game_state.pot,
+            "actions_played": actions_played or [],
+        }
+        return json.dumps(payload, sort_keys=True, separators=(",", ":"))
+
+    def _extract_solver_ev(self, solver_output: JsonDict) -> float | None:
+        """Extract an EV value from solver output when the bridge exposes one."""
+        for key in ("ev", "hero_ev", "expected_value"):
+            value = self._optional_float(solver_output.get(key))
+            if value is not None:
+                return value
+        metadata = solver_output.get("metadata")
+        if isinstance(metadata, dict):
+            for key in ("ev", "hero_ev", "expected_value"):
+                value = self._optional_float(metadata.get(key))
+                if value is not None:
+                    return value
+        return None
+
+    def _log_deep_spr_primary_result(
+        self,
+        game_state: GameState,
+        spr: float,
+        primary_result: JsonDict,
+    ) -> None:
+        """Log primary Solver result for deep-SPR comparison analysis."""
+        if not self._is_deep_spr_context(game_state.phase, spr):
+            return
+        logger.info(
+            "DEEP_SPR_SOLVER_PRIMARY_RESULT: hand_id=%s phase=%s SPR=%.2f "
+            "success=%s elapsed_ms=%.0f timeout_ms=%s action=%s amount=%s "
+            "probabilities=%s error=%s",
+            game_state.hand_id,
+            game_state.phase,
+            spr,
+            primary_result.get("success"),
+            float(primary_result.get("elapsed_ms") or 0.0),
+            primary_result.get("timeout_ms"),
+            primary_result.get("action"),
+            primary_result.get("amount"),
+            primary_result.get("probabilities"),
+            primary_result.get("error"),
+        )
+
+    def _run_deep_spr_light_probe_if_needed(
+        self,
+        game_state: GameState,
+        range_oop: str,
+        range_ip: str,
+        hero_is_ip: bool,
+        street_start_pot: int | None,
+        street_start_effective_stack: int | None,
+        actions_played: list[str] | None,
+        spr: float,
+        primary_result: JsonDict,
+    ) -> None:
+        """Run a comparison-only lightweight deep-SPR Solver probe."""
+        if not self.deep_spr_light_probe_enabled:
+            return
+        if not self._is_deep_spr_context(game_state.phase, spr):
+            return
+        key = self._deep_spr_probe_key(game_state, actions_played)
+        if key in self._deep_spr_light_probe_seen_keys:
+            logger.info(
+                "DEEP_SPR_LIGHT_PROBE_SKIPPED: reason=already_probed key=%s",
+                key,
+            )
+            return
+        self._deep_spr_light_probe_seen_keys.add(key)
+
+        request = self.solver_request_builder.build_request(
+            game_state,
+            range_oop,
+            range_ip,
+            hero_is_ip,
+            street_start_pot=street_start_pot,
+            street_start_effective_stack=street_start_effective_stack,
+            actions_played=actions_played,
+            profile="deep_spr_light_probe",
+        )
+        if request is None:
+            logger.info(
+                "DEEP_SPR_LIGHT_PROBE_SKIPPED: reason=request_unavailable key=%s",
+                key,
+            )
+            return
+
+        timeout_ms = int(request.get("timeout_ms", 5000))
+        bridge_timeout_sec = max(timeout_ms / 1000.0 + 2.0, 7.0)
+        solve_started = time.perf_counter()
+        solver_output = self.solver_bridge.solve(request, timeout=bridge_timeout_sec)
+        elapsed_ms = self._elapsed_ms(solve_started)
+        light_result: JsonDict = {
+            "success": bool(solver_output.get("success")),
+            "elapsed_ms": elapsed_ms,
+            "timeout_ms": timeout_ms,
+            "action": None,
+            "amount": None,
+            "probabilities": None,
+            "error": solver_output.get("error"),
+            "ev": self._extract_solver_ev(solver_output),
+        }
+        if solver_output.get("success"):
+            try:
+                action, amount, probabilities = self._parse_solver_strategy(
+                    solver_output,
+                    game_state,
+                )
+                light_result.update(
+                    {
+                        "action": action,
+                        "amount": amount,
+                        "probabilities": probabilities,
+                        "error": None,
+                    }
+                )
+            except Exception as exc:
+                light_result["success"] = False
+                light_result["error"] = f"parse_exception: {exc}"
+
+        logger.info(
+            "DEEP_SPR_LIGHT_SOLVER_RESULT: hand_id=%s phase=%s SPR=%.2f "
+            "success=%s elapsed_ms=%.0f timeout_ms=%s action=%s amount=%s "
+            "probabilities=%s error=%s",
+            game_state.hand_id,
+            game_state.phase,
+            spr,
+            light_result.get("success"),
+            elapsed_ms,
+            timeout_ms,
+            light_result.get("action"),
+            light_result.get("amount"),
+            light_result.get("probabilities"),
+            light_result.get("error"),
+        )
+        self._log_deep_spr_solver_compare(game_state, spr, primary_result, light_result)
+
+    def _top_solver_probabilities(self, probabilities: object) -> dict[str, float]:
+        """Return top three probabilities for comparison logging."""
+        if not isinstance(probabilities, dict):
+            return {}
+        sorted_items = sorted(
+            probabilities.items(),
+            key=lambda item: float(item[1] or 0.0),
+            reverse=True,
+        )
+        return {str(key): float(value) for key, value in sorted_items[:3]}
+
+    def _log_deep_spr_solver_compare(
+        self,
+        game_state: GameState,
+        spr: float,
+        primary_result: JsonDict,
+        light_result: JsonDict,
+    ) -> None:
+        """Log primary-vs-light deep-SPR Solver comparison metrics."""
+        primary_success = bool(primary_result.get("success"))
+        light_success = bool(light_result.get("success"))
+        comparison_type = "standard"
+        if not primary_success and light_success:
+            comparison_type = "primary_timeout_light_success"
+        primary_elapsed = float(primary_result.get("elapsed_ms") or 0.0)
+        light_elapsed = float(light_result.get("elapsed_ms") or 0.0)
+        speedup_ratio: float | str
+        if light_elapsed > 0:
+            speedup_ratio = round(primary_elapsed / light_elapsed, 3)
+        else:
+            speedup_ratio = "unavailable"
+        primary_ev = primary_result.get("ev")
+        light_ev = light_result.get("ev")
+        ev_diff: float | str = "unavailable"
+        if primary_ev is not None and light_ev is not None:
+            ev_diff = float(primary_ev) - float(light_ev)
+        amount_diff: int | str = "unavailable"
+        if primary_result.get("amount") is not None and light_result.get("amount") is not None:
+            amount_diff = int(primary_result["amount"]) - int(light_result["amount"])
+        logger.info(
+            "DEEP_SPR_SOLVER_COMPARE: hand_id=%s phase=%s SPR=%.2f "
+            "primary_success=%s light_success=%s comparison_type=%s "
+            "primary_action=%s light_action=%s action_match=%s "
+            "primary_amount=%s light_amount=%s amount_diff=%s "
+            "primary_elapsed_ms=%.0f light_elapsed_ms=%.0f speedup_ratio=%s "
+            "primary_top_probs=%s light_top_probs=%s primary_ev=%s light_ev=%s "
+            "ev_diff=%s",
+            game_state.hand_id,
+            game_state.phase,
+            spr,
+            primary_success,
+            light_success,
+            comparison_type,
+            primary_result.get("action"),
+            light_result.get("action"),
+            primary_result.get("action") == light_result.get("action"),
+            primary_result.get("amount"),
+            light_result.get("amount"),
+            amount_diff,
+            primary_elapsed,
+            light_elapsed,
+            speedup_ratio,
+            self._top_solver_probabilities(primary_result.get("probabilities")),
+            self._top_solver_probabilities(light_result.get("probabilities")),
+            primary_ev if primary_ev is not None else "unavailable",
+            light_ev if light_ev is not None else "unavailable",
+            ev_diff,
         )
 
     def _generate_postflop_multiway(

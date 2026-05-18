@@ -13,6 +13,12 @@ TEST_CONFIG: dict[str, Any] = {
         "max_iterations": 200,
         "target_exploitability_pct": 0.5,
         "timeout_ms": 7000,
+        "deep_spr_threshold": 10.0,
+        "deep_spr_light_timeout_ms": 5000,
+        "deep_spr_light_max_iterations": 80,
+        "deep_spr_light_target_exploitability_pct": 1.5,
+        "deep_spr_light_bet_sizes": "50%",
+        "deep_spr_light_raise_sizes": "2.5x",
         "default_bet_sizes": "60%,a",
         "default_raise_sizes": "2.5x",
         "add_allin_threshold": 1.5,
@@ -299,6 +305,16 @@ def test_flop_deep_spr_extends_timeout() -> None:
     assert request["max_iterations"] == 300
 
 
+def test_is_deep_spr_for_flop_and_turn_only() -> None:
+    """Deep-SPR predicate is explicit and limited to flop/turn."""
+    builder = make_builder()
+
+    assert builder.is_deep_spr("flop", 500, 6000)
+    assert builder.is_deep_spr("turn", 500, 6000)
+    assert not builder.is_deep_spr("river", 500, 6000)
+    assert not builder.is_deep_spr("flop", 0, 6000)
+
+
 def test_flop_shallow_spr_keeps_default_timeout() -> None:
     """Flop with shallow SPR (<=10) keeps default timeout and max_iterations."""
     builder = make_builder()
@@ -332,3 +348,76 @@ def test_turn_deep_spr_keeps_default_timeout() -> None:
     assert request is not None
     assert request["timeout_ms"] == 7000
     assert request["max_iterations"] == 200
+
+
+def test_deep_spr_light_probe_overrides_solver_profile() -> None:
+    """Light probe request uses comparison-only lightweight settings."""
+    builder = make_builder()
+    state = make_state(
+        phase="flop",
+        hero_stack=10000,
+        opponent_stacks=[10000],
+    )
+    state.pot = 500
+
+    request = builder.build_request(
+        state,
+        "AA",
+        "KK",
+        False,
+        profile="deep_spr_light_probe",
+    )
+
+    assert request is not None
+    assert request["timeout_ms"] == 5000
+    assert request["max_iterations"] == 80
+    assert request["target_exploitability_pct"] == 1.5
+    assert request["flop_bet_sizes_oop"] == "50%"
+    assert request["flop_bet_sizes_ip"] == "50%"
+    assert request["flop_raise_sizes_oop"] == "2.5x"
+    assert request["flop_raise_sizes_ip"] == "2.5x"
+
+
+def test_light_probe_returns_none_for_non_deep_spr() -> None:
+    """Light probe is not built for shallow SPR contexts."""
+    builder = make_builder()
+    state = make_state(
+        phase="flop",
+        hero_stack=500,
+        opponent_stacks=[500],
+    )
+    state.pot = 500
+
+    request = builder.build_request(
+        state,
+        "AA",
+        "KK",
+        False,
+        profile="deep_spr_light_probe",
+    )
+
+    assert request is None
+
+
+def test_turn_deep_spr_light_probe_is_available() -> None:
+    """Turn deep-SPR can build a light probe without changing default request."""
+    builder = make_builder()
+    state = make_state(
+        phase="turn",
+        board=["8c", "7d", "8d", "Ah"],
+        hero_stack=10000,
+        opponent_stacks=[10000],
+    )
+    state.pot = 500
+
+    request = builder.build_request(
+        state,
+        "AA",
+        "KK",
+        False,
+        profile="deep_spr_light_probe",
+    )
+
+    assert request is not None
+    assert request["timeout_ms"] == 5000
+    assert request["max_iterations"] == 80

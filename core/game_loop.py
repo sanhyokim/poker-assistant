@@ -243,10 +243,16 @@ class GameLoop:
         self._pending_recommendation_cancelled_ids: set[int] = set()
         self._pending_recommendation_exact_key: str | None = None
         self._pending_recommendation_coarse_key: str | None = None
+        self._pending_recommendation_started_at: float | None = None
+        self._solver_soft_timeout_notified_request_id: int | None = None
         self._solver_timeout_contexts: dict[str, float] = {}
         self._solver_suppressed_contexts: dict[str, dict[str, object]] = {}
         self._solver_context_suppression_ttl_sec: float = float(
             recognition_config.get("solver_context_suppression_ttl_sec", 12.0)
+        )
+        solver_config = config.get("solver", {})
+        self._solver_hud_soft_timeout_sec: float = float(
+            solver_config.get("hud_soft_timeout_sec", 6.0)
         )
 
         if enable_strategy:
@@ -2189,9 +2195,13 @@ class GameLoop:
                                 game_state.hand_id,
                                 game_state.phase,
                             )
-                            self._notify_hud_computing(
-                                "SOLVER STILL RUNNING\nWaiting for current solver..."
-                            )
+                            if not self._maybe_notify_solver_hud_soft_timeout(
+                                game_state
+                            ):
+                                self._notify_hud_computing(
+                                    "SOLVER STILL RUNNING\n"
+                                    "Waiting for current solver..."
+                                )
                         self._save_human_action_to_hand_manager(game_state)
                         self._last_strategy_phase = phase
                         self._last_strategy_is_my_turn = True
@@ -2921,6 +2931,8 @@ class GameLoop:
             self._pending_recommendation_active_id = None
             self._pending_recommendation_exact_key = None
             self._pending_recommendation_coarse_key = None
+            self._pending_recommendation_started_at = None
+            self._solver_soft_timeout_notified_request_id = None
             self._cleanup_async_recommendation_state_locked()
 
     def _is_pending_recommendation_alive(self) -> bool:
@@ -3239,6 +3251,8 @@ class GameLoop:
             self._pending_recommendation_active_id = request_id
             self._pending_recommendation_exact_key = exact_key
             self._pending_recommendation_coarse_key = coarse_key
+            self._pending_recommendation_started_at = time.monotonic()
+            self._solver_soft_timeout_notified_request_id = None
             self._pending_recommendation_cancelled_ids.discard(request_id)
             self._pending_recommendation_completed.pop(request_id, None)
 
@@ -3304,6 +3318,43 @@ class GameLoop:
                 )
             )
         logger.info("Async recommendation completed: request_id=%d", request_id)
+
+    def _maybe_notify_solver_hud_soft_timeout(self, game_state: GameState) -> bool:
+        """Show a non-recommendation HUD notice when Solver is taking too long."""
+        if not game_state.hero.is_my_turn:
+            return False
+        with self._pending_recommendation_lock:
+            request_id = self._pending_recommendation_active_id
+            started_at = getattr(self, "_pending_recommendation_started_at", None)
+            already_notified = getattr(
+                self,
+                "_solver_soft_timeout_notified_request_id",
+                None,
+            )
+        if request_id is None or started_at is None:
+            return False
+        if already_notified == request_id:
+            return False
+        threshold_sec = max(
+            0.1,
+            float(getattr(self, "_solver_hud_soft_timeout_sec", 6.0)),
+        )
+        elapsed_sec = time.monotonic() - started_at
+        if elapsed_sec < threshold_sec:
+            return False
+        logger.info(
+            "SOLVER_HUD_SOFT_TIMEOUT: request_id=%s hand_id=%s phase=%s "
+            "elapsed_sec=%.1f threshold_sec=%.1f",
+            request_id,
+            game_state.hand_id,
+            game_state.phase,
+            elapsed_sec,
+            threshold_sec,
+        )
+        self._notify_hud_computing("SOLVER STILL RUNNING\nNo reliable result yet")
+        with self._pending_recommendation_lock:
+            self._solver_soft_timeout_notified_request_id = request_id
+        return True
 
     def _log_async_stale_detail(
         self,
@@ -3507,6 +3558,8 @@ class GameLoop:
             self._pending_recommendation_context = None
             self._pending_recommendation_exact_key = None
             self._pending_recommendation_coarse_key = None
+            self._pending_recommendation_started_at = None
+            self._solver_soft_timeout_notified_request_id = None
         thread = self._pending_recommendation_thread
         if thread is not None and not thread.is_alive():
             self._pending_recommendation_thread = None
