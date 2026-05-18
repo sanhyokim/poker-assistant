@@ -4189,6 +4189,67 @@ def test_worker_alive_suppresses_new_solver_start_and_logs(
     )
 
 
+def test_orphan_worker_logs_without_null_active_request_suppression(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """An alive worker with no active request id is reported as an orphan."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    computing_callback = MagicMock()
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hud_computing_callback = computing_callback
+    state = make_hu_solver_state()
+    snapshot = loop._build_recommendation_context_snapshot(state)
+
+    class AliveThread:
+        """Thread double that is still alive without an active request id."""
+
+        def is_alive(self) -> bool:
+            """Return True to mimic an orphan Solver worker."""
+            return True
+
+    loop._pending_recommendation_thread = AliveThread()  # type: ignore[assignment]
+    loop._pending_recommendation_active_id = None
+
+    started = loop._start_async_postflop_recommendation(state, snapshot)
+
+    assert started is False
+    assert "ASYNC_SOLVER_ORPHAN_WORKER_DETECTED" in caplog.text
+    null_request_log = (
+        "SOLVER_START_SUPPRESSED: reason=worker_already_alive "
+        "active_request_id=None"
+    )
+    assert null_request_log not in caplog.text
+    computing_callback.assert_called_with(
+        "SOLVER STILL RUNNING\nWaiting for current solver..."
+    )
+
+
+def test_solver_input_unstable_recommendation_is_not_saved(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Solver input instability is HUD-only and not persisted as strategy."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager.set_recommendation = MagicMock()  # type: ignore[method-assign]
+    recommendation = Recommendation(
+        action="SOLVER_INPUT_UNSTABLE",
+        amount=0,
+        confidence="low",
+        strategy_source="solver_input_unstable",
+        reason="Solver input unstable: waiting for stable HU postflop state",
+    )
+
+    loop._save_recommendation_to_hand_manager(recommendation, time.perf_counter())
+
+    loop._hand_manager.set_recommendation.assert_not_called()
+    assert "Recommendation not saved: reason=solver_input_unstable" in caplog.text
+
+
 def test_solver_hud_soft_timeout_logs_and_notifies(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

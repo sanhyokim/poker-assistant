@@ -2187,14 +2187,27 @@ class GameLoop:
                         else:
                             with self._pending_recommendation_lock:
                                 request_id = self._pending_recommendation_active_id
-                            logger.info(
-                                "SOLVER_START_SUPPRESSED: "
-                                "reason=worker_already_alive "
-                                "active_request_id=%s hand_id=%s phase=%s",
-                                request_id,
-                                game_state.hand_id,
-                                game_state.phase,
-                            )
+                                completed_keys = sorted(
+                                    self._pending_recommendation_completed.keys()
+                                )
+                            if request_id is None:
+                                logger.warning(
+                                    "ASYNC_SOLVER_ORPHAN_WORKER_DETECTED: "
+                                    "thread_alive=True active_request_id=None "
+                                    "pending_completed_keys=%s hand_id=%s phase=%s",
+                                    completed_keys,
+                                    game_state.hand_id,
+                                    game_state.phase,
+                                )
+                            else:
+                                logger.info(
+                                    "SOLVER_START_SUPPRESSED: "
+                                    "reason=worker_already_alive "
+                                    "active_request_id=%s hand_id=%s phase=%s",
+                                    request_id,
+                                    game_state.hand_id,
+                                    game_state.phase,
+                                )
                             if not self._maybe_notify_solver_hud_soft_timeout(
                                 game_state
                             ):
@@ -2515,6 +2528,12 @@ class GameLoop:
     ) -> None:
         """Persist the displayed recommendation on the current hand street."""
         if recommendation is None or self._hand_manager is None:
+            return
+        if (
+            recommendation.strategy_source == "solver_input_unstable"
+            or recommendation.action == "SOLVER_INPUT_UNSTABLE"
+        ):
+            logger.info("Recommendation not saved: reason=solver_input_unstable")
             return
         if self._hand_manager.phase in {"waiting", "hand_end"}:
             return
@@ -3234,13 +3253,24 @@ class GameLoop:
         with self._pending_recommendation_lock:
             existing_thread = self._pending_recommendation_thread
             if existing_thread is not None and existing_thread.is_alive():
-                logger.info(
-                    "SOLVER_START_SUPPRESSED: reason=worker_already_alive "
-                    "active_request_id=%s hand_id=%s phase=%s",
-                    self._pending_recommendation_active_id,
-                    game_state.hand_id,
-                    game_state.phase,
-                )
+                active_request_id = self._pending_recommendation_active_id
+                if active_request_id is None:
+                    logger.warning(
+                        "ASYNC_SOLVER_ORPHAN_WORKER_DETECTED: thread_alive=True "
+                        "active_request_id=None pending_completed_keys=%s "
+                        "hand_id=%s phase=%s",
+                        sorted(self._pending_recommendation_completed.keys()),
+                        game_state.hand_id,
+                        game_state.phase,
+                    )
+                else:
+                    logger.info(
+                        "SOLVER_START_SUPPRESSED: reason=worker_already_alive "
+                        "active_request_id=%s hand_id=%s phase=%s",
+                        active_request_id,
+                        game_state.hand_id,
+                        game_state.phase,
+                    )
                 self._notify_hud_computing(
                     "SOLVER STILL RUNNING\nWaiting for current solver..."
                 )

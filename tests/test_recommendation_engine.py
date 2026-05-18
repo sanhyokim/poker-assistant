@@ -45,6 +45,23 @@ def make_engine(config: dict | None = None) -> RecommendationEngine:
     solver_bridge = MagicMock()
     solver_bridge.disabled = False
     solver_request_builder = MagicMock()
+    solver_request_builder._get_active_opponents.side_effect = (
+        lambda state: [
+            {"seat": int(seat), "stack": player.stack or 0}
+            for seat, player in state.players.items()
+            if player.in_current_hand
+        ]
+    )
+    solver_request_builder.compute_effective_stack.side_effect = (
+        lambda state: min(
+            [state.hero.stack or 0]
+            + [
+                player.stack or 0
+                for player in state.players.values()
+                if player.in_current_hand
+            ]
+        )
+    )
     llm_pipeline = MagicMock()
     multiway_engine = MagicMock()
     return RecommendationEngine(
@@ -231,6 +248,69 @@ def test_build_actions_played_no_bets() -> None:
     state = make_state()
 
     assert engine._build_actions_played(state) is None
+
+
+def test_build_actions_played_from_current_street_actions() -> None:
+    """Current street BET/RAISE records become ordered solver actions."""
+    engine = make_engine()
+    state = make_state()
+    state.current_street_actions = [
+        ActionRecord(seat=2, action="BET", amount=100),
+        ActionRecord(seat=1, action="CALL", amount=100),
+        ActionRecord(seat=2, action="RAISE", amount=300),
+    ]
+
+    actions, status, reason_codes = engine._build_actions_played_from_street_actions(
+        state
+    )
+
+    assert actions == ["Bet 100", "Raise 300"]
+    assert status == "ok"
+    assert reason_codes == []
+
+
+def test_build_actions_played_from_empty_street_is_empty_ok() -> None:
+    """A root street with no actions is stable and buildable."""
+    engine = make_engine()
+    state = make_state()
+
+    actions, status, reason_codes = engine._build_actions_played_from_street_actions(
+        state
+    )
+
+    assert actions == []
+    assert status == "empty_ok"
+    assert reason_codes == []
+
+
+def test_build_actions_played_missing_history_with_bets_is_unstable() -> None:
+    """Visible bets without street history are not silently treated as root."""
+    engine = make_engine()
+    state = make_state()
+    state.players["2"].bet = 200
+
+    actions, status, reason_codes = engine._build_actions_played_from_street_actions(
+        state
+    )
+
+    assert actions == []
+    assert status == "unstable"
+    assert reason_codes == ["street_actions_missing_with_bets"]
+
+
+def test_build_actions_played_from_unsupported_street_action_is_unstable() -> None:
+    """Unsupported action records block Solver launch instead of being hidden."""
+    engine = make_engine()
+    state = make_state()
+    state.current_street_actions = [ActionRecord(seat=2, action="POST", amount=100)]
+
+    actions, status, reason_codes = engine._build_actions_played_from_street_actions(
+        state
+    )
+
+    assert actions == []
+    assert status == "unstable"
+    assert reason_codes == ["unsupported_action:POST"]
 
 
 def test_generate_preflop_uses_chart_amount() -> None:
@@ -1151,6 +1231,74 @@ def test_generate_postflop_headsup_solver_success() -> None:
     engine.llm_pipeline.generate_reason.assert_not_called()
 
 
+def test_stable_hu_postflop_input_calls_solver() -> None:
+    """Stable HU postflop input reaches the Solver bridge."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    engine.solver_request_builder.build_request.return_value = {
+        "board": "Td7c2h",
+        "timeout_ms": 12000,
+        "effective_stack": 4000,
+        "starting_pot": 600,
+        "actions_played": [],
+    }
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
+        },
+    }
+
+    recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "solver"
+    engine.solver_bridge.solve.assert_called_once()
+
+
+def test_active_position_mismatch_blocks_solver_start(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """HU Solver is blocked when active seats and position lock disagree."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    state.players["3"] = PlayerState(
+        name="p3",
+        stack=3000,
+        bet=0,
+        is_seated=True,
+        in_current_hand=True,
+    )
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "solver_input_unstable"
+    assert recommendation.action == "SOLVER_INPUT_UNSTABLE"
+    engine.solver_bridge.solve.assert_not_called()
+    assert "HU_SOLVER_POSITION_INPUT_CHECK" in caplog.text
+    assert "active_position_mismatch" in caplog.text
+    assert "HU_SOLVER_START_BLOCKED" in caplog.text
+
+
+def test_unstable_actions_played_blocks_solver_start(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Unconvertible street history blocks Solver launch without fallback action."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    state.current_street_actions = [ActionRecord(seat=2, action="POST", amount=100)]
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "solver_input_unstable"
+    assert recommendation.action == "SOLVER_INPUT_UNSTABLE"
+    engine.solver_bridge.solve.assert_not_called()
+    assert "HU_SOLVER_ACTIONS_PLAYED_BUILD" in caplog.text
+    assert "actions_played_unstable" in caplog.text
+
+
 def test_headsup_solver_timeout_from_request(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -1260,7 +1408,7 @@ def test_headsup_solver_failure_uses_correct_timeout(
 def test_deep_spr_primary_and_light_success_logs_compare(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Deep-SPR primary/light success logs comparison without changing return."""
+    """Deep-SPR light probe is not run synchronously in the live path."""
     engine = make_engine(DEEP_SPR_CONFIG)
     state = make_state(phase="flop", active_player_count=2)
     state.hand_id = 31
@@ -1272,36 +1420,19 @@ def test_deep_spr_primary_and_light_success_logs_compare(
         "starting_pot": 500,
         "actions_played": [],
     }
-    light_request = {
-        "board": "Td7c2h",
-        "timeout_ms": 5000,
-        "effective_stack": 10000,
-        "starting_pot": 500,
-        "actions_played": [],
-    }
 
     def build_request(*_args: object, **kwargs: object) -> dict[str, object]:
-        if kwargs.get("profile") == "deep_spr_light_probe":
-            return light_request
+        assert kwargs.get("profile") != "deep_spr_light_probe"
         return primary_request
 
     engine.solver_request_builder.build_request.side_effect = build_request
-    engine.solver_bridge.solve.side_effect = [
-        {
-            "success": True,
-            "root_strategy": {
-                "actions": ["Check", "Bet 120"],
-                "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
-            },
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "average_strategy": {"Check": 0.25, "Bet 120": 0.75},
         },
-        {
-            "success": True,
-            "root_strategy": {
-                "actions": ["Check", "Bet 100"],
-                "average_strategy": {"Check": 0.30, "Bet 100": 0.70},
-            },
-        },
-    ]
+    }
 
     with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
         recommendation = engine.generate(state, {"2": {"total_hands": 1}})
@@ -1309,18 +1440,18 @@ def test_deep_spr_primary_and_light_success_logs_compare(
     assert recommendation.strategy_source == "solver"
     assert recommendation.action == "BET"
     assert recommendation.amount == 120
-    assert engine.solver_bridge.solve.call_count == 2
+    assert engine.solver_bridge.solve.call_count == 1
     assert "DEEP_SPR_SOLVER_PRIMARY_RESULT" in caplog.text
-    assert "DEEP_SPR_LIGHT_SOLVER_RESULT" in caplog.text
-    assert "DEEP_SPR_SOLVER_COMPARE" in caplog.text
-    assert "primary_action=BET" in caplog.text
-    assert "light_action=BET" in caplog.text
+    assert "DEEP_SPR_LIGHT_PROBE_SKIPPED" in caplog.text
+    assert "reason=disabled_in_live_sync_path" in caplog.text
+    assert "DEEP_SPR_LIGHT_SOLVER_RESULT" not in caplog.text
+    assert "DEEP_SPR_SOLVER_COMPARE" not in caplog.text
 
 
 def test_deep_spr_primary_timeout_light_success_logs_compare(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Primary timeout plus light success is logged but light is not returned."""
+    """Primary timeout does not trigger a synchronous light probe."""
     engine = make_engine(DEEP_SPR_CONFIG)
     state = make_state(phase="flop", active_player_count=2)
     state.hand_id = 32
@@ -1332,40 +1463,24 @@ def test_deep_spr_primary_timeout_light_success_logs_compare(
         "starting_pot": 500,
         "actions_played": [],
     }
-    light_request = {
-        "board": "Td7c2h",
-        "timeout_ms": 5000,
-        "effective_stack": 10000,
-        "starting_pot": 500,
-        "actions_played": [],
-    }
 
     def build_request(*_args: object, **kwargs: object) -> dict[str, object]:
-        if kwargs.get("profile") == "deep_spr_light_probe":
-            return light_request
+        assert kwargs.get("profile") != "deep_spr_light_probe"
         return primary_request
 
     engine.solver_request_builder.build_request.side_effect = build_request
-    engine.solver_bridge.solve.side_effect = [
-        {"success": False, "error": "timeout"},
-        {
-            "success": True,
-            "root_strategy": {
-                "actions": ["Check", "Bet 100"],
-                "average_strategy": {"Check": 0.10, "Bet 100": 0.90},
-            },
-        },
-    ]
+    engine.solver_bridge.solve.return_value = {"success": False, "error": "timeout"}
 
     with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
         recommendation = engine.generate(state, {"2": {"total_hands": 1}})
 
     assert recommendation.strategy_source == "solver_timeout"
     assert recommendation.action == "SOLVER_TIMEOUT"
-    assert engine.solver_bridge.solve.call_count == 2
-    assert "DEEP_SPR_LIGHT_SOLVER_RESULT" in caplog.text
-    assert "comparison_type=primary_timeout_light_success" in caplog.text
-    assert "light_success=True" in caplog.text
+    assert engine.solver_bridge.solve.call_count == 1
+    assert "DEEP_SPR_LIGHT_PROBE_SKIPPED" in caplog.text
+    assert "reason=disabled_in_live_sync_path" in caplog.text
+    assert "DEEP_SPR_LIGHT_SOLVER_RESULT" not in caplog.text
+    assert "comparison_type=primary_timeout_light_success" not in caplog.text
 
 
 def test_deep_spr_light_probe_disabled_does_not_call_light_solver() -> None:
@@ -1670,7 +1785,7 @@ def test_solver_debug_json_saved_when_enabled(workspace_tmp: Path) -> None:
     state.hero.bet = 50
     state.players["2"].bet = 200
     state.players["3"].in_current_hand = False
-    state.actions_since_last_frame = [
+    state.current_street_actions = [
         ActionRecord(seat=2, action="BET", amount=200, confidence="high")
     ]
     solver_request = {"board": "Td7c2h", "range_oop": "OOP_RANGE"}

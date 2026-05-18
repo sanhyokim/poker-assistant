@@ -305,9 +305,11 @@ class RecommendationEngine:
         street_start_effective_stack = (
             self._compute_street_start_effective_stack(game_state)
         )
-        actions_played_raw = self._build_actions_played(game_state)
-        actions_played_status = "ok" if actions_played_raw else "empty"
-        actions_played = actions_played_raw or []
+        (
+            actions_played,
+            actions_played_status,
+            actions_played_reason_codes,
+        ) = self._build_actions_played_from_street_actions(game_state)
         hero_is_ip = self._determine_hero_is_ip(game_state)
         effective_stack_for_log = self.solver_request_builder.compute_effective_stack(
             game_state
@@ -344,6 +346,46 @@ class RecommendationEngine:
             ],
             game_state.board,
         )
+        logger.info(
+            "HU_SOLVER_ACTIONS_PLAYED_BUILD: hand_id=%s phase=%s "
+            "source=current_street_actions status=%s actions_played=%s "
+            "reason_codes=%s current_street_actions=%s hero_bet=%s "
+            "max_opponent_bet=%s",
+            game_state.hand_id,
+            game_state.phase,
+            actions_played_status,
+            actions_played,
+            actions_played_reason_codes,
+            [
+                {"seat": a.seat, "action": a.action, "amount": a.amount}
+                for a in getattr(game_state, "current_street_actions", [])
+            ],
+            game_state.hero.bet,
+            self._max_opponent_bet(game_state),
+        )
+        stability = self._validate_hu_solver_input(
+            game_state=game_state,
+            street_start_pot=street_start_pot,
+            street_start_effective_stack=street_start_effective_stack,
+            actions_played=actions_played,
+            actions_played_status=actions_played_status,
+            hero_is_ip=hero_is_ip,
+            actions_played_reason_codes=actions_played_reason_codes,
+        )
+        if not bool(stability.get("ok")):
+            latency["request_build_ms"] = self._elapsed_ms(request_started)
+            logger.info(
+                "HU_SOLVER_START_BLOCKED: reason=solver_input_unstable "
+                "hand_id=%s phase=%s reason_codes=%s",
+                game_state.hand_id,
+                game_state.phase,
+                stability.get("reason_codes"),
+            )
+            return self._solver_input_unstable_recommendation(
+                latency,
+                started_at,
+                stability,
+            )
         request = self.solver_request_builder.build_request(
             game_state,
             range_oop,
@@ -772,6 +814,134 @@ class RecommendationEngine:
             latency_breakdown=latency,
         )
 
+    def _solver_input_unstable_recommendation(
+        self,
+        latency: dict[str, float],
+        started_at: float,
+        stability: JsonDict,
+    ) -> Recommendation:
+        """Return a non-strategic Recommendation for unstable Solver inputs."""
+        latency["headsup_total_ms"] = self._elapsed_ms(started_at)
+        return Recommendation(
+            action="SOLVER_INPUT_UNSTABLE",
+            amount=0,
+            confidence="low",
+            strategy_source="solver_input_unstable",
+            reason=(
+                "Solver input unstable: waiting for stable HU postflop state "
+                f"({stability.get('reason_codes')})"
+            ),
+            latency_breakdown=latency,
+        )
+
+    def _validate_hu_solver_input(
+        self,
+        game_state: GameState,
+        street_start_pot: int | None,
+        street_start_effective_stack: int | None,
+        actions_played: list[str],
+        actions_played_status: str,
+        hero_is_ip: bool,
+        actions_played_reason_codes: list[str],
+    ) -> JsonDict:
+        """Validate HU postflop state before launching the Solver."""
+        reason_codes: list[str] = []
+        expected_board_counts = {"flop": 3, "turn": 4, "river": 5}
+        board_count = len(game_state.board or [])
+        expected_board_count = expected_board_counts.get(game_state.phase)
+        if game_state.active_player_count != 2:
+            reason_codes.append("invalid_active_player_count")
+        if expected_board_count is None or board_count != expected_board_count:
+            reason_codes.append("board_count_mismatch")
+        if not game_state.hero.cards or len(game_state.hero.cards) != 2:
+            reason_codes.append("hero_cards_unstable")
+        if not game_state.hero.position:
+            reason_codes.append("hero_position_missing")
+        if not isinstance(hero_is_ip, bool):
+            reason_codes.append("hero_is_ip_unknown")
+        if street_start_effective_stack is None or street_start_effective_stack <= 0:
+            reason_codes.append("effective_stack_missing")
+        if street_start_pot is None or street_start_pot <= 0:
+            reason_codes.append("street_start_pot_invalid")
+        if actions_played_status == "unstable":
+            reason_codes.append("actions_played_unstable")
+        reason_codes.extend(actions_played_reason_codes)
+
+        position_check = self._check_hu_solver_position_input(game_state, hero_is_ip)
+        if not bool(position_check.get("ok")):
+            reason_codes.extend(position_check.get("reason_codes", []))
+
+        diagnostics: JsonDict = {
+            "board_count": board_count,
+            "expected_board_count": expected_board_count,
+            "street_start_pot": street_start_pot,
+            "street_start_effective_stack": street_start_effective_stack,
+            "actions_played": actions_played,
+            "actions_played_status": actions_played_status,
+            "hero_is_ip": hero_is_ip,
+            "position_check": position_check,
+        }
+        ok = not reason_codes
+        logger.info(
+            "HU_SOLVER_INPUT_STABILITY_CHECK: hand_id=%s phase=%s ok=%s "
+            "reason_codes=%s diagnostics=%s",
+            game_state.hand_id,
+            game_state.phase,
+            ok,
+            reason_codes,
+            diagnostics,
+        )
+        return {"ok": ok, "reason_codes": reason_codes, "diagnostics": diagnostics}
+
+    def _check_hu_solver_position_input(
+        self,
+        game_state: GameState,
+        hero_is_ip: bool,
+    ) -> JsonDict:
+        """Check active seats and position fields before HU Solver launch."""
+        active_seats = {1}
+        active_seats.update(
+            int(seat)
+            for seat, player in game_state.players.items()
+            if player.in_current_hand
+        )
+        position_seats = {1} if game_state.hero.position else set()
+        folded_seats = {
+            action.seat
+            for action in list(game_state.preflop_actions or [])
+            + list(game_state.current_street_actions or [])
+            if action.action.upper() == "FOLD"
+        }
+        reason_codes: list[str] = []
+        if len(active_seats) != 2 or game_state.active_player_count != 2:
+            reason_codes.append("active_position_mismatch")
+        if folded_seats & active_seats:
+            reason_codes.append("folded_seat_in_position_lock")
+        ok = not reason_codes
+        logger.info(
+            "HU_SOLVER_POSITION_INPUT_CHECK: hand_id=%s phase=%s active_seats=%s "
+            "position_seats=%s folded_seats=%s hero_position=%s hero_is_ip=%s "
+            "ok=%s reason_codes=%s",
+            game_state.hand_id,
+            game_state.phase,
+            sorted(active_seats),
+            sorted(position_seats),
+            sorted(folded_seats),
+            game_state.hero.position,
+            hero_is_ip,
+            ok,
+            reason_codes,
+        )
+        return {
+            "ok": ok,
+            "active_seats": sorted(active_seats),
+            "position_seats": sorted(position_seats),
+            "folded_seats": sorted(folded_seats),
+            "hero_position": game_state.hero.position,
+            "hero_is_ip": hero_is_ip,
+            "reason_codes": reason_codes,
+        }
+
     def _is_deep_spr_context(self, phase: str, spr: float) -> bool:
         """Return True when the current HU spot qualifies for light-probe logging."""
         return phase in {"flop", "turn"} and spr >= self.deep_spr_threshold
@@ -843,86 +1013,25 @@ class RecommendationEngine:
         spr: float,
         primary_result: JsonDict,
     ) -> None:
-        """Run a comparison-only lightweight deep-SPR Solver probe."""
+        """Skip live synchronous deep-SPR light probes.
+
+        The light profile is comparison-only. Running it synchronously after the
+        primary Solver timeout delays live recommendations, so the live path only
+        records that a probe would have been eligible.
+        """
         if not self.deep_spr_light_probe_enabled:
             return
         if not self._is_deep_spr_context(game_state.phase, spr):
             return
         key = self._deep_spr_probe_key(game_state, actions_played)
-        if key in self._deep_spr_light_probe_seen_keys:
-            logger.info(
-                "DEEP_SPR_LIGHT_PROBE_SKIPPED: reason=already_probed key=%s",
-                key,
-            )
-            return
         self._deep_spr_light_probe_seen_keys.add(key)
-
-        request = self.solver_request_builder.build_request(
-            game_state,
-            range_oop,
-            range_ip,
-            hero_is_ip,
-            street_start_pot=street_start_pot,
-            street_start_effective_stack=street_start_effective_stack,
-            actions_played=actions_played,
-            profile="deep_spr_light_probe",
-        )
-        if request is None:
-            logger.info(
-                "DEEP_SPR_LIGHT_PROBE_SKIPPED: reason=request_unavailable key=%s",
-                key,
-            )
-            return
-
-        timeout_ms = int(request.get("timeout_ms", 5000))
-        bridge_timeout_sec = max(timeout_ms / 1000.0 + 2.0, 7.0)
-        solve_started = time.perf_counter()
-        solver_output = self.solver_bridge.solve(request, timeout=bridge_timeout_sec)
-        elapsed_ms = self._elapsed_ms(solve_started)
-        light_result: JsonDict = {
-            "success": bool(solver_output.get("success")),
-            "elapsed_ms": elapsed_ms,
-            "timeout_ms": timeout_ms,
-            "action": None,
-            "amount": None,
-            "probabilities": None,
-            "error": solver_output.get("error"),
-            "ev": self._extract_solver_ev(solver_output),
-        }
-        if solver_output.get("success"):
-            try:
-                action, amount, probabilities = self._parse_solver_strategy(
-                    solver_output,
-                    game_state,
-                )
-                light_result.update(
-                    {
-                        "action": action,
-                        "amount": amount,
-                        "probabilities": probabilities,
-                        "error": None,
-                    }
-                )
-            except Exception as exc:
-                light_result["success"] = False
-                light_result["error"] = f"parse_exception: {exc}"
-
         logger.info(
-            "DEEP_SPR_LIGHT_SOLVER_RESULT: hand_id=%s phase=%s SPR=%.2f "
-            "success=%s elapsed_ms=%.0f timeout_ms=%s action=%s amount=%s "
-            "probabilities=%s error=%s",
+            "DEEP_SPR_LIGHT_PROBE_SKIPPED: "
+            "reason=disabled_in_live_sync_path hand_id=%s phase=%s key=%s",
             game_state.hand_id,
             game_state.phase,
-            spr,
-            light_result.get("success"),
-            elapsed_ms,
-            timeout_ms,
-            light_result.get("action"),
-            light_result.get("amount"),
-            light_result.get("probabilities"),
-            light_result.get("error"),
+            key,
         )
-        self._log_deep_spr_solver_compare(game_state, spr, primary_result, light_result)
 
     def _top_solver_probabilities(self, probabilities: object) -> dict[str, float]:
         """Return top three probabilities for comparison logging."""
@@ -1664,6 +1773,58 @@ class RecommendationEngine:
             return None
 
         return actions or None
+
+    def _build_actions_played_from_street_actions(
+        self,
+        game_state: GameState,
+    ) -> tuple[list[str], str, list[str]]:
+        """Build solver actions from ordered current-street action records.
+
+        Returns:
+            A tuple of solver action strings, status, and reason codes.
+        """
+        street_actions = list(getattr(game_state, "current_street_actions", []) or [])
+        if not street_actions:
+            if int(game_state.hero.bet or 0) > 0 or self._max_opponent_bet(game_state) > 0:
+                return [], "unstable", ["street_actions_missing_with_bets"]
+            return [], "empty_ok", []
+
+        actions_played: list[str] = []
+        reason_codes: list[str] = []
+        ignored_actions = {
+            "CHECK",
+            "CALL",
+            "FOLD",
+            "BLIND_SB",
+            "BLIND_BB",
+            "POST_SB",
+            "POST_BB",
+        }
+        for action in street_actions:
+            action_name = str(action.action or "").upper()
+            amount = int(action.amount or 0)
+            if action_name in ignored_actions:
+                continue
+            if action_name == "BET":
+                if amount <= 0:
+                    reason_codes.append("invalid_bet_amount")
+                    continue
+                actions_played.append(f"Bet {amount}")
+                continue
+            if action_name in {"RAISE", "ALL_IN"}:
+                if amount <= 0:
+                    reason_codes.append("invalid_raise_amount")
+                    continue
+                verb = "Raise" if actions_played else "Bet"
+                actions_played.append(f"{verb} {amount}")
+                continue
+            reason_codes.append(f"unsupported_action:{action_name}")
+
+        if reason_codes:
+            return actions_played, "unstable", reason_codes
+        if actions_played:
+            return actions_played, "ok", []
+        return [], "empty_ok", []
 
     def _llm_headsup_fallback(
         self,
