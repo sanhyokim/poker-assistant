@@ -121,6 +121,111 @@ class SolverRequestBuilder:
 
         return min(game_state.hero.stack, active_opponents[0]["stack"])
 
+    def diagnose_request_unavailable(
+        self,
+        game_state: GameState,
+        street_start_pot: int | None,
+        street_start_effective_stack: int | None,
+        actions_played: list[str] | None,
+        hero_is_ip: bool | None,
+    ) -> dict[str, object]:
+        """Return diagnostics explaining why a solver request may be unavailable.
+
+        Args:
+            game_state: Current recognized game state.
+            street_start_pot: Pot at the start of the current street.
+            street_start_effective_stack: Effective stack at street start.
+            actions_played: Solver action path, if one was built.
+            hero_is_ip: Whether hero is in position.
+
+        Returns:
+            Structured diagnostic fields and reason codes for logging.
+        """
+        reason_codes: list[str] = []
+        board_count = len(game_state.board or [])
+        expected_board_counts = {"flop": 3, "turn": 4, "river": 5}
+        expected_board_count = expected_board_counts.get(game_state.phase)
+        if game_state.phase not in {"flop", "turn", "river"}:
+            reason_codes.append("invalid_phase")
+        if expected_board_count is not None and board_count < expected_board_count:
+            reason_codes.append("invalid_board_count")
+        hero_stack = game_state.hero.stack
+        if hero_stack is None or hero_stack <= 0:
+            reason_codes.append("hero_stack_missing_or_zero")
+
+        active_opponents_raw = [
+            {
+                "seat": int(seat_key),
+                "stack": player.stack,
+                "bet": player.bet,
+                "in_current_hand": player.in_current_hand,
+            }
+            for seat_key, player in game_state.players.items()
+            if seat_key != "1" and player.in_current_hand
+        ]
+        active_opponents = self._get_active_opponents(game_state)
+        if len(active_opponents) != 1:
+            reason_codes.append("active_opponent_count_not_one")
+        if active_opponents_raw and not active_opponents:
+            reason_codes.append("active_opponent_stack_missing_or_zero")
+
+        effective_stack = self.compute_effective_stack(game_state)
+        if effective_stack is None:
+            reason_codes.append("effective_stack_missing")
+        if street_start_pot is None or street_start_pot <= 0:
+            reason_codes.append("street_start_pot_missing")
+
+        actions_status = "empty"
+        if actions_played is None:
+            actions_status = "empty"
+        elif not isinstance(actions_played, list):
+            actions_status = "failed"
+            reason_codes.append("actions_played_unavailable")
+        elif actions_played:
+            actions_status = "ok"
+
+        if self._is_facing_all_in(game_state):
+            reason_codes.append("facing_all_in")
+
+        diagnostics = {
+            "can_use_solver": self.can_use_solver(game_state),
+            "phase": game_state.phase,
+            "board_count": board_count,
+            "hero_stack": hero_stack,
+            "active_opponents": active_opponents_raw,
+            "active_opponent_count": len(active_opponents_raw),
+            "active_opponent_stacks": [
+                opponent.get("stack") for opponent in active_opponents_raw
+            ],
+            "effective_stack": effective_stack,
+            "street_start_effective_stack": street_start_effective_stack,
+            "street_start_pot": street_start_pot,
+            "actions_played": actions_played or [],
+            "actions_played_status": actions_status,
+            "hero_is_ip": bool(hero_is_ip) if hero_is_ip is not None else None,
+            "current_street_actions": [
+                {
+                    "seat": action.seat,
+                    "action": action.action,
+                    "amount": action.amount,
+                }
+                for action in game_state.current_street_actions
+            ],
+            "reason_codes": reason_codes,
+        }
+        return diagnostics
+
+    @staticmethod
+    def _is_facing_all_in(game_state: GameState) -> bool:
+        """Return True when hero appears to face an opponent all-in."""
+        hero_bet = int(game_state.hero.bet or 0)
+        max_opponent_bet = 0
+        for action in game_state.current_street_actions:
+            if action.seat == 1 or action.action.upper() != "ALL_IN":
+                continue
+            max_opponent_bet = max(max_opponent_bet, int(action.amount or 0))
+        return max_opponent_bet > hero_bet
+
     def build_request(
         self,
         game_state: GameState,

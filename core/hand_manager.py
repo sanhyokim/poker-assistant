@@ -2085,6 +2085,13 @@ class HandManager:
 
     def _update_current_players(self, game_state: GameState) -> None:
         """Store latest player metadata and recover delayed participant OCR."""
+        missing_names_before = sorted(
+            seat_key
+            for seat_key, in_hand in self._players_in_hand.items()
+            if seat_key != "1"
+            and in_hand
+            and not self._current_players.get(seat_key, {}).get("name")
+        )
         for seat_key, player in game_state.players.items():
             existing = self._current_players.get(seat_key, {})
             name = player.name if player.name is not None else existing.get("name")
@@ -2109,7 +2116,26 @@ class HandManager:
                     player.bet,
                     seat_key in self._folded_seats,
                 )
+        supplemented = {
+            seat_key: str(self._current_players[seat_key]["name"])
+            for seat_key in missing_names_before
+            if self._current_players.get(seat_key, {}).get("name")
+        }
+        if missing_names_before:
+            logger.info(
+                "PLAYER_NAME_LOCK_SUPPLEMENT_REQUESTED: hand_id=%s missing_seats=%s",
+                self._hand_id,
+                missing_names_before,
+            )
+        if supplemented:
+            logger.info(
+                "PLAYER_NAME_LOCK_SUPPLEMENTED: hand_id=%s added=%s",
+                self._hand_id,
+                supplemented,
+            )
+        self._supplement_participant_names(game_state)
         self._update_participant_observation(game_state)
+        self._supplement_participant_names(game_state)
 
     def _participant_action_seats(self, actions: list[ActionRecord]) -> set[str]:
         """Return opponent seats with actions that prove hand participation."""
@@ -2135,6 +2161,7 @@ class HandManager:
                 "Participant observation ended: players_in_hand=%s",
                 dict(self._players_in_hand),
             )
+            self._supplement_participant_names(game_state)
             return
 
         action_participant_seats = self._participant_action_seats(
@@ -2166,6 +2193,50 @@ class HandManager:
                     seat_key,
                     reason,
                 )
+
+    def _supplement_participant_names(self, game_state: GameState) -> None:
+        """Fill missing names for late-observed current-hand participants."""
+        missing_seats = sorted(
+            seat_key
+            for seat_key, in_hand in self._players_in_hand.items()
+            if seat_key != "1"
+            and in_hand
+            and not self._current_players.get(seat_key, {}).get("name")
+        )
+        if not missing_seats:
+            return
+
+        logger.info(
+            "PLAYER_NAME_LOCK_SUPPLEMENT_REQUESTED: hand_id=%s missing_seats=%s",
+            self._hand_id,
+            missing_seats,
+        )
+        added: dict[str, str] = {}
+        still_missing: list[str] = []
+        for seat_key in missing_seats:
+            player = game_state.players.get(seat_key)
+            name = player.name if player is not None else None
+            if name and name != "-":
+                existing = self._current_players.get(seat_key, {})
+                updated = dict(existing)
+                updated["name"] = name
+                self._current_players[seat_key] = updated
+                added[seat_key] = name
+            else:
+                still_missing.append(seat_key)
+
+        if added:
+            logger.info(
+                "PLAYER_NAME_LOCK_SUPPLEMENTED: hand_id=%s added=%s",
+                self._hand_id,
+                added,
+            )
+        if still_missing:
+            logger.info(
+                "PLAYER_NAME_LOCK_STILL_MISSING: hand_id=%s missing_seats=%s",
+                self._hand_id,
+                still_missing,
+            )
 
     def _save_replay_json(self) -> None:
         """Save the current hand replay JSON."""

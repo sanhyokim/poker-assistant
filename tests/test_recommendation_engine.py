@@ -1435,6 +1435,67 @@ def test_headsup_solver_request_unavailable_logs_fallback_reason(
     assert "HU solver fallback reason=request_unavailable" in caplog.text
     assert "hand_id=8" in caplog.text
     assert "reason=Solver request unavailable" in caplog.text
+    assert "SOLVER_REQUEST_UNAVAILABLE_DETAIL" in caplog.text
+
+
+def test_all_in_request_available_still_uses_solver() -> None:
+    """Facing ALL-IN still tries and uses Solver when request can be built."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    state.hero.bet = 100
+    state.current_street_actions = [
+        ActionRecord(seat=2, action="ALL_IN", amount=1000),
+    ]
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = {
+        "board": "Td7c2h",
+        "timeout_ms": 12000,
+        "effective_stack": 5000,
+        "starting_pot": 600,
+        "actions_played": ["Bet 100", "Raise 1000"],
+    }
+    engine.solver_bridge.solve.return_value = {
+        "success": True,
+        "root_strategy": {
+            "actions": ["Fold", "Call"],
+            "average_strategy": {"Fold": 0.7, "Call": 0.3},
+        },
+    }
+
+    recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "solver"
+    engine.solver_bridge.solve.assert_called_once()
+
+
+def test_all_in_request_unavailable_uses_pot_odds_without_solver(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Facing ALL-IN uses math-only fallback only when request is unavailable."""
+    engine = make_engine()
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 33
+    state.hero.bet = 100
+    state.pot = 600
+    state.current_street_actions = [
+        ActionRecord(seat=2, action="ALL_IN", amount=1000),
+    ]
+    engine.solver_request_builder.build_request.return_value = None
+    engine.solver_request_builder.diagnose_request_unavailable.return_value = {
+        "reason_codes": ["facing_all_in", "effective_stack_missing"],
+    }
+
+    with caplog.at_level(logging.INFO, logger="strategy.recommendation_engine"):
+        recommendation = engine.generate(state, {"2": {"total_hands": 1}})
+
+    assert recommendation.strategy_source == "all_in_pot_odds"
+    assert recommendation.action == "FOLD"
+    assert "call_amount=900" in recommendation.reason
+    assert "pot_after_call=1500" in recommendation.reason
+    assert "必要勝率は約60%" in recommendation.reason
+    engine.solver_bridge.solve.assert_not_called()
+    assert "SOLVER_REQUEST_UNAVAILABLE_DETAIL" in caplog.text
+    assert "HU_ALL_IN_DECISION_CONTEXT" in caplog.text
 
 
 def test_headsup_solver_parse_exception_logs_fallback_reason(

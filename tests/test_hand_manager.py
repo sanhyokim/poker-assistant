@@ -1161,6 +1161,75 @@ class TestPlayersInHandRecovery:
 
         assert 6 in manager.get_players_in_hand()
 
+    def test_late_participant_name_is_supplemented(
+        self,
+        manager: HandManager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A late participant gets its missing name filled from the current frame."""
+        manager._phase = "preflop"
+        manager._hand_id = 7
+        manager._players_in_hand = {"1": True, "4": True}
+        manager._participated_seats = {"1", "4"}
+        manager._current_players = {"4": {"name": None}}
+        state = make_state(
+            player_names={"4": "LateName"},
+            player_cards_visible={"4"},
+        )
+
+        with caplog.at_level(logging.INFO, logger="core.hand_manager"):
+            manager._update_current_players(state)
+
+        assert manager._current_players["4"]["name"] == "LateName"
+        assert "PLAYER_NAME_LOCK_SUPPLEMENT_REQUESTED" in caplog.text
+        assert "PLAYER_NAME_LOCK_SUPPLEMENTED" in caplog.text
+
+    def test_late_participant_name_still_missing_logs(
+        self,
+        manager: HandManager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Unreadable late participant names remain visible in diagnostics."""
+        manager._phase = "preflop"
+        manager._hand_id = 8
+        manager._players_in_hand = {"1": True, "4": True}
+        manager._participated_seats = {"1", "4"}
+        manager._current_players = {"4": {"name": None}}
+        state = make_state(player_cards_visible={"4"})
+
+        with caplog.at_level(logging.INFO, logger="core.hand_manager"):
+            manager._update_current_players(state)
+
+        assert "PLAYER_NAME_LOCK_STILL_MISSING" in caplog.text
+
+    def test_observation_window_end_fills_missing_player_name(
+        self,
+        manager: HandManager,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Observation-window expiry also attempts participant name supplement."""
+        manager._phase = "preflop"
+        manager._hand_id = 9
+        manager._players_in_hand = {"1": True, "5": True}
+        manager._participated_seats = {"1", "5"}
+        manager._current_players = {"5": {"name": None}}
+        manager._participant_observation_active = True
+        manager._participant_observation_started_at = (
+            time.monotonic() - manager._participant_observation_duration_sec - 0.1
+        )
+        state = make_state(
+            player_names={"5": "WindowName"},
+            player_cards_visible={"5"},
+        )
+
+        with caplog.at_level(logging.INFO, logger="core.hand_manager"):
+            manager._update_current_players(state)
+
+        assert manager._participant_observation_active is False
+        assert manager._current_players["5"]["name"] == "WindowName"
+        assert "Participant observation ended" in caplog.text
+        assert "PLAYER_NAME_LOCK_SUPPLEMENTED" in caplog.text
+
     def test_observation_window_does_not_recover_folded_player(
         self,
         manager: HandManager,

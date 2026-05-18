@@ -4273,6 +4273,39 @@ def test_fresh_solver_result_after_soft_timeout_is_accepted(
     assert loop._solver_soft_timeout_notified_request_id is None
 
 
+def test_game_loop_late_participant_supplements_player_name(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """GameLoop frame processing lets HandManager fill late participant names."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager._hand_id = 12
+    loop._hand_manager._players_in_hand = {"1": True, "3": True}
+    loop._hand_manager._participated_seats = {"1", "3"}
+    loop._hand_manager._current_players = {"3": {"name": None}}
+    state = create_empty_game_state()
+    state.phase = "preflop"
+    state.hand_id = 12
+    state.hero.cards = ["Ah", "Kd"]
+    state.hero.stack = 5000
+    state.players["3"] = PlayerState(
+        name="LateLoopName",
+        stack=5000,
+        bet=0,
+        is_seated=True,
+        cards_visible=True,
+        in_current_hand=True,
+    )
+
+    with caplog.at_level(logging.INFO, logger="core.hand_manager"):
+        loop.process_game_state_after_frame(state)
+
+    assert loop._hand_manager._current_players["3"]["name"] == "LateLoopName"
+    assert "PLAYER_NAME_LOCK_SUPPLEMENTED" in caplog.text
+
+
 def test_accepted_fresh_solver_result_is_not_suppressed(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

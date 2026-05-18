@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from core.game_state import GameState, HeroState, PlayerState
+from core.game_state import ActionRecord, GameState, HeroState, PlayerState
 from strategy.solver_request_builder import SolverRequestBuilder
 
 
@@ -421,3 +421,44 @@ def test_turn_deep_spr_light_probe_is_available() -> None:
     assert request is not None
     assert request["timeout_ms"] == 5000
     assert request["max_iterations"] == 80
+
+
+def test_request_unavailable_diagnostic_returns_facing_all_in() -> None:
+    """Diagnostics include facing_all_in and key missing-input reason codes."""
+    state = make_state(hero_stack=0, opponent_stacks=[5000])
+    state.hero.bet = 100
+    state.current_street_actions = [
+        ActionRecord(seat=2, action="ALL_IN", amount=1000),
+    ]
+
+    diagnostics = make_builder().diagnose_request_unavailable(
+        state,
+        street_start_pot=None,
+        street_start_effective_stack=None,
+        actions_played=None,
+        hero_is_ip=False,
+    )
+
+    assert "facing_all_in" in diagnostics["reason_codes"]
+    assert "hero_stack_missing_or_zero" in diagnostics["reason_codes"]
+    assert "street_start_pot_missing" in diagnostics["reason_codes"]
+    assert diagnostics["actions_played"] == []
+    assert diagnostics["actions_played_status"] == "empty"
+    assert diagnostics["hero_is_ip"] is False
+
+
+def test_request_unavailable_diagnostic_actions_played_ok() -> None:
+    """Diagnostics expose actions_played and status when available."""
+    state = make_state()
+
+    diagnostics = make_builder().diagnose_request_unavailable(
+        state,
+        street_start_pot=500,
+        street_start_effective_stack=3000,
+        actions_played=["Bet 300"],
+        hero_is_ip=True,
+    )
+
+    assert diagnostics["actions_played"] == ["Bet 300"]
+    assert diagnostics["actions_played_status"] == "ok"
+    assert diagnostics["hero_is_ip"] is True

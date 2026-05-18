@@ -305,18 +305,71 @@ class RecommendationEngine:
         street_start_effective_stack = (
             self._compute_street_start_effective_stack(game_state)
         )
-        actions_played = self._build_actions_played(game_state)
+        actions_played_raw = self._build_actions_played(game_state)
+        actions_played_status = "ok" if actions_played_raw else "empty"
+        actions_played = actions_played_raw or []
+        hero_is_ip = self._determine_hero_is_ip(game_state)
+        effective_stack_for_log = self.solver_request_builder.compute_effective_stack(
+            game_state
+        )
+        active_opponents_for_log = self.solver_request_builder._get_active_opponents(
+            game_state
+        )
+        logger.info(
+            "HU_SOLVER_INPUT_PRECHECK: hand_id=%s phase=%s hero_position=%s "
+            "hero_is_ip=%s hero_stack=%s hero_bet=%s active_opponents=%s "
+            "effective_stack=%s street_start_pot=%s "
+            "street_start_effective_stack=%s actions_played=%s "
+            "actions_played_status=%s current_street_actions=%s "
+            "preflop_actions=%s board=%s",
+            game_state.hand_id,
+            game_state.phase,
+            game_state.hero.position,
+            hero_is_ip,
+            game_state.hero.stack,
+            game_state.hero.bet,
+            active_opponents_for_log,
+            effective_stack_for_log,
+            street_start_pot,
+            street_start_effective_stack,
+            actions_played,
+            actions_played_status,
+            [
+                {"seat": a.seat, "action": a.action, "amount": a.amount}
+                for a in getattr(game_state, "current_street_actions", [])
+            ],
+            [
+                {"seat": a.seat, "action": a.action, "amount": a.amount}
+                for a in getattr(game_state, "preflop_actions", [])
+            ],
+            game_state.board,
+        )
         request = self.solver_request_builder.build_request(
             game_state,
             range_oop,
             range_ip,
-            self._determine_hero_is_ip(game_state),
+            hero_is_ip,
             street_start_pot=street_start_pot,
             street_start_effective_stack=street_start_effective_stack,
             actions_played=actions_played,
         )
         latency["request_build_ms"] = self._elapsed_ms(request_started)
         if request is None:
+            diagnostics = self.solver_request_builder.diagnose_request_unavailable(
+                game_state,
+                street_start_pot,
+                street_start_effective_stack,
+                actions_played,
+                hero_is_ip,
+            )
+            logger.info(
+                "SOLVER_REQUEST_UNAVAILABLE_DETAIL: hand_id=%s phase=%s "
+                "reason_codes=%s diagnostics=%s",
+                game_state.hand_id,
+                game_state.phase,
+                diagnostics.get("reason_codes"),
+                diagnostics,
+            )
             logger.info(
                 "HU solver fallback reason=request_unavailable phase=%s hand_id=%s "
                 "hero_cards=%s board=%s pot=%s active=%s "
@@ -336,6 +389,14 @@ class RecommendationEngine:
                     for a in getattr(game_state, "preflop_actions", [])
                 ],
             )
+            facing_all_in = self._detect_facing_all_in(game_state)
+            if facing_all_in is not None:
+                return self._all_in_pot_odds_recommendation(
+                    game_state,
+                    facing_all_in,
+                    latency,
+                    started_at,
+                )
             return self._llm_headsup_fallback(
                 game_state,
                 opponent_stats,
@@ -396,7 +457,7 @@ class RecommendationEngine:
             },
             request.get("actions_played"),
             game_state.hero.position,
-            request.get("hero_is_ip"),
+            hero_is_ip,
         )
 
         solve_started = time.perf_counter()
@@ -422,7 +483,7 @@ class RecommendationEngine:
                 game_state=game_state,
                 range_oop=range_oop,
                 range_ip=range_ip,
-                hero_is_ip=self._determine_hero_is_ip(game_state),
+                hero_is_ip=hero_is_ip,
                 street_start_pot=street_start_pot,
                 street_start_effective_stack=street_start_effective_stack,
                 actions_played=actions_played,
@@ -552,7 +613,7 @@ class RecommendationEngine:
             game_state=game_state,
             range_oop=range_oop,
             range_ip=range_ip,
-            hero_is_ip=self._determine_hero_is_ip(game_state),
+            hero_is_ip=hero_is_ip,
             street_start_pot=street_start_pot,
             street_start_effective_stack=street_start_effective_stack,
             actions_played=actions_played,
@@ -633,6 +694,80 @@ class RecommendationEngine:
             action_probabilities=probabilities,
             solver_exploitability=self._optional_float(
                 solver_output.get("exploitability"),
+            ),
+            latency_breakdown=latency,
+        )
+
+    def _detect_facing_all_in(self, game_state: GameState) -> JsonDict | None:
+        """Return pot-odds context when hero is facing an opponent all-in."""
+        if game_state.active_player_count != 2:
+            return None
+        if game_state.phase not in {"flop", "turn", "river"}:
+            return None
+        hero_bet = int(game_state.hero.bet or 0)
+        all_in_actions = [
+            action
+            for action in game_state.current_street_actions
+            if action.seat != 1 and action.action.upper() == "ALL_IN"
+        ]
+        if not all_in_actions:
+            return None
+        max_opponent_bet = max(int(action.amount or 0) for action in all_in_actions)
+        call_amount = max(0, max_opponent_bet - hero_bet)
+        if call_amount <= 0:
+            return None
+        pot_after_call = int(game_state.pot or 0) + call_amount
+        required_equity = (
+            call_amount / pot_after_call if pot_after_call > 0 else None
+        )
+        return {
+            "max_opponent_bet": max_opponent_bet,
+            "call_amount": call_amount,
+            "pot_after_call": pot_after_call,
+            "required_equity": required_equity,
+        }
+
+    def _all_in_pot_odds_recommendation(
+        self,
+        game_state: GameState,
+        context: JsonDict,
+        latency: dict[str, float],
+        started_at: float,
+    ) -> Recommendation:
+        """Return a conservative math-only fallback for unsolved all-in spots."""
+        required_equity = context.get("required_equity")
+        required_equity_text = (
+            f"{float(required_equity):.0%}" if required_equity is not None else "不明"
+        )
+        logger.info(
+            "HU_ALL_IN_DECISION_CONTEXT: hand_id=%s phase=%s hero_cards=%s "
+            "board=%s pot=%s call_amount=%s pot_after_call=%s "
+            "required_equity=%s current_street_actions=%s",
+            game_state.hand_id,
+            game_state.phase,
+            game_state.hero.cards,
+            game_state.board,
+            game_state.pot,
+            context.get("call_amount"),
+            context.get("pot_after_call"),
+            required_equity,
+            [
+                {"seat": a.seat, "action": a.action, "amount": a.amount}
+                for a in game_state.current_street_actions
+            ],
+        )
+        latency["headsup_total_ms"] = self._elapsed_ms(started_at)
+        return Recommendation(
+            action="FOLD",
+            amount=0,
+            confidence="low",
+            strategy_source="all_in_pot_odds",
+            reason=(
+                "相手ALL-INに対するpot odds評価。"
+                f"call_amount={context.get('call_amount')}、"
+                f"pot_after_call={context.get('pot_after_call')}、"
+                f"必要勝率は約{required_equity_text}。"
+                "Solver requestを作成できず実勝率は未計算のため、安全側にFOLD。"
             ),
             latency_breakdown=latency,
         )
