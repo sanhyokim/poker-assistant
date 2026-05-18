@@ -4189,6 +4189,30 @@ def test_worker_alive_suppresses_new_solver_start_and_logs(
     )
 
 
+@pytest.mark.parametrize(
+    "reason",
+    ["hero_turn_ended", "new_street", "hand_end", "waiting"],
+)
+def test_clear_pending_state_resets_solver_process_for_cancel(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    reason: str,
+) -> None:
+    """Clearing an active Solver request resets the resident Solver process."""
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    engine = MagicMock()
+    loop._recommendation_engine = engine
+    loop._pending_recommendation_active_id = 41
+    loop._pending_recommendation_context = {"hand_id": 6, "phase": "flop"}
+    loop._pending_recommendation_exact_key = "exact"
+    loop._pending_recommendation_coarse_key = "coarse"
+
+    loop._clear_pending_state(reason)
+
+    engine.reset_solver_process.assert_called_once_with(reason)
+    assert loop._pending_recommendation_active_id is None
+
+
 def test_orphan_worker_logs_without_null_active_request_suppression(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -4199,6 +4223,8 @@ def test_orphan_worker_logs_without_null_active_request_suppression(
     computing_callback = MagicMock()
     loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
     loop._hud_computing_callback = computing_callback
+    engine = MagicMock()
+    loop._recommendation_engine = engine
     state = make_hu_solver_state()
     snapshot = loop._build_recommendation_context_snapshot(state)
 
@@ -4221,6 +4247,7 @@ def test_orphan_worker_logs_without_null_active_request_suppression(
         "active_request_id=None"
     )
     assert null_request_log not in caplog.text
+    engine.reset_solver_process.assert_called_once_with("orphan_worker")
     computing_callback.assert_called_with(
         "SOLVER STILL RUNNING\nWaiting for current solver..."
     )
@@ -4248,6 +4275,30 @@ def test_solver_input_unstable_recommendation_is_not_saved(
 
     loop._hand_manager.set_recommendation.assert_not_called()
     assert "Recommendation not saved: reason=solver_input_unstable" in caplog.text
+
+
+def test_solver_timeout_recommendation_is_not_saved(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Solver timeout is a non-strategic HUD state and is not persisted."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "flop"
+    loop._hand_manager.set_recommendation = MagicMock()  # type: ignore[method-assign]
+    recommendation = Recommendation(
+        action="SOLVER_TIMEOUT",
+        amount=0,
+        confidence="low",
+        strategy_source="solver_timeout",
+        reason="Solver timeout: no reliable solver result",
+    )
+
+    loop._save_recommendation_to_hand_manager(recommendation, time.perf_counter())
+
+    loop._hand_manager.set_recommendation.assert_not_called()
+    assert "Recommendation not saved: reason=solver_timeout" in caplog.text
 
 
 def test_solver_hud_soft_timeout_logs_and_notifies(

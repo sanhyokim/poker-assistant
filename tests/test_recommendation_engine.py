@@ -1804,9 +1804,17 @@ def test_solver_debug_json_saved_when_enabled(workspace_tmp: Path) -> None:
     recommendation = engine.generate(state, {"2": {"vpip": 30, "total_hands": 49}})
 
     files = list((workspace_tmp / "solver_io").rglob("*.json"))
-    assert len(files) == 1
-    debug_data = json.loads(files[0].read_text(encoding="utf-8"))
-    assert files[0].name.startswith("hand_000004_flop_")
+    assert len(files) == 2
+    debug_file = next(path for path in files if path.name.startswith("hand_000004_flop_"))
+    request_file = next(
+        path for path in files if path.name.startswith("hand_000004_req_")
+    )
+    debug_data = json.loads(debug_file.read_text(encoding="utf-8"))
+    request_data = json.loads(request_file.read_text(encoding="utf-8"))
+    assert request_data["meta"]["hand_id"] == 4
+    assert request_data["meta"]["phase"] == "flop"
+    assert request_data["meta"]["reason"] == "hu_postflop_solver"
+    assert request_data["request"] == solver_request
     assert debug_data["hand_id"] == 4
     assert debug_data["phase"] == "flop"
     assert debug_data["hero_cards"] == ["Ah", "As"]
@@ -1817,6 +1825,47 @@ def test_solver_debug_json_saved_when_enabled(workspace_tmp: Path) -> None:
     assert debug_data["recommendation"]["action"] == recommendation.action
     assert debug_data["recommendation"]["amount"] == recommendation.amount
     assert "latency" in debug_data
+
+
+def test_solver_request_json_saved_before_solve(workspace_tmp: Path) -> None:
+    """The exact Solver request JSON is saved before invoking solve()."""
+    config = {
+        "game": {"blind_bb": 100},
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": True,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 9
+    solver_request = {"board": "Td7c2h", "range_oop": "OOP_RANGE"}
+    engine.llm_pipeline.get_baseline_range.side_effect = ["OOP_RANGE", "IP_RANGE"]
+    engine.solver_request_builder.build_request.return_value = solver_request
+    engine.solver_bridge.solve.return_value = {"success": False, "error": "timeout"}
+
+    engine.generate(state, {"2": {"vpip": 30, "total_hands": 49}})
+
+    request_files = [
+        path
+        for path in (workspace_tmp / "solver_io").rglob("*.json")
+        if path.name.startswith("hand_000009_req_")
+    ]
+    assert len(request_files) == 1
+    saved = json.loads(request_files[0].read_text(encoding="utf-8"))
+    assert saved["meta"]["hand_id"] == 9
+    assert saved["meta"]["reason"] == "hu_postflop_solver"
+    assert saved["request"] == solver_request
+
+
+def test_reset_solver_process_delegates_to_bridge() -> None:
+    """RecommendationEngine reset wrapper delegates to solver_bridge.reset_process."""
+    engine = make_engine()
+    engine.solver_bridge.reset_process.return_value = True
+
+    assert engine.reset_solver_process("hero_turn_ended") is True
+    engine.solver_bridge.reset_process.assert_called_once_with("hero_turn_ended")
 
 
 def test_solver_debug_json_not_saved_when_disabled(workspace_tmp: Path) -> None:

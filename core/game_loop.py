@@ -2199,6 +2199,10 @@ class GameLoop:
                                     game_state.hand_id,
                                     game_state.phase,
                                 )
+                                self._reset_solver_process_for_cancel(
+                                    "orphan_worker",
+                                    None,
+                                )
                             else:
                                 logger.info(
                                     "SOLVER_START_SUPPRESSED: "
@@ -2534,6 +2538,12 @@ class GameLoop:
             or recommendation.action == "SOLVER_INPUT_UNSTABLE"
         ):
             logger.info("Recommendation not saved: reason=solver_input_unstable")
+            return
+        if (
+            recommendation.strategy_source == "solver_timeout"
+            or recommendation.action == "SOLVER_TIMEOUT"
+        ):
+            logger.info("Recommendation not saved: reason=solver_timeout")
             return
         if self._hand_manager.phase in {"waiting", "hand_end"}:
             return
@@ -2938,11 +2948,13 @@ class GameLoop:
         )
 
     def _clear_pending_state(self, reason: str = "pending_cleared") -> None:
-        """Clear active pending metadata without stopping the worker thread."""
+        """Clear active pending metadata and reset unnecessary Solver process."""
+        reset_request_id: int | None = None
         with self._pending_recommendation_lock:
             active_id = self._pending_recommendation_active_id
             if active_id is not None:
                 self._cancel_pending_recommendation_locked(reason)
+                reset_request_id = active_id
             thread = self._pending_recommendation_thread
             if thread is not None and not thread.is_alive():
                 self._pending_recommendation_thread = None
@@ -2953,6 +2965,26 @@ class GameLoop:
             self._pending_recommendation_started_at = None
             self._solver_soft_timeout_notified_request_id = None
             self._cleanup_async_recommendation_state_locked()
+        if reset_request_id is not None:
+            self._reset_solver_process_for_cancel(reason, reset_request_id)
+
+    def _reset_solver_process_for_cancel(
+        self,
+        reason: str,
+        request_id: int | None,
+    ) -> bool:
+        """Reset the Solver CLI process after async work becomes unnecessary."""
+        if self._recommendation_engine is None:
+            return False
+        reset = getattr(self._recommendation_engine, "reset_solver_process", None)
+        if reset is None:
+            return False
+        logger.info(
+            "ASYNC_SOLVER_CANCEL_RESET_REQUESTED: request_id=%s reason=%s",
+            request_id,
+            reason,
+        )
+        return bool(reset(reason))
 
     def _is_pending_recommendation_alive(self) -> bool:
         """Return True when a background solver thread is still running."""
@@ -3263,6 +3295,7 @@ class GameLoop:
                         game_state.hand_id,
                         game_state.phase,
                     )
+                    self._reset_solver_process_for_cancel("orphan_worker", None)
                 else:
                     logger.info(
                         "SOLVER_START_SUPPRESSED: reason=worker_already_alive "

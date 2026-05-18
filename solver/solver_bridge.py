@@ -34,6 +34,8 @@ class PostflopSolverBridge:
         self._restart_failures: int = 0
         self._max_restart_failures: int = 3
         self._disabled: bool = False
+        self._reset_count: int = 0
+        self._process_lock = threading.RLock()
         self._logger = logger
 
     @property
@@ -51,14 +53,21 @@ class PostflopSolverBridge:
         if self.is_alive():
             return
 
-        self.process = subprocess.Popen(
-            [self.cli_path],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
+        self._logger.info("SOLVER_CLI_PATH: %s", self.cli_path)
+        self._logger.info(
+            "SOLVER_BACKEND_NOTE: postflop_cli.exe local CLI; "
+            "backend crate/build source must be verified"
         )
+
+        with self._process_lock:
+            self.process = subprocess.Popen(
+                [self.cli_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                bufsize=1,
+            )
 
         ready_event = threading.Event()
         stderr_thread = threading.Thread(
@@ -94,7 +103,8 @@ class PostflopSolverBridge:
         if not self.is_alive() and not self._try_restart():
             return self._error("Solver disabled after repeated failures")
 
-        process = self.process
+        with self._process_lock:
+            process = self.process
         if process is None or process.stdin is None or process.stdout is None:
             return self._error("Solver process pipes are unavailable")
 
@@ -119,6 +129,11 @@ class PostflopSolverBridge:
         try:
             result = result_queue.get(timeout=timeout)
         except queue.Empty:
+            self._logger.warning(
+                "SOLVER_TIMEOUT_PROCESS_RESET: timeout=%s reason=timeout",
+                timeout,
+            )
+            self.reset_process(reason="timeout")
             return self._error(f"Solver timeout (no response within {timeout}s)")
 
         if isinstance(result, BaseException):
@@ -162,6 +177,49 @@ class PostflopSolverBridge:
             self.process = None
 
         self._logger.info("Solver CLI stopped")
+
+    def reset_process(self, reason: str) -> bool:
+        """Kill the solver process and prepare a clean one for the next request.
+
+        Args:
+            reason: Operational reason for resetting the resident CLI process.
+
+        Returns:
+            True when a live process was killed; False when no live process existed.
+        """
+        self._logger.info("SOLVER_PROCESS_RESET_REQUESTED: reason=%s", reason)
+        with self._process_lock:
+            process = self.process
+            if process is None:
+                self.process = None
+                self._reset_count += 1
+                self._logger.info("SOLVER_PROCESS_RESET_DONE: reason=%s", reason)
+                return False
+
+            killed = False
+            pid = getattr(process, "pid", "unknown")
+            try:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+                    killed = True
+                    self._logger.info(
+                        "SOLVER_PROCESS_KILLED: reason=%s pid=%s",
+                        reason,
+                        pid,
+                    )
+            except Exception as error:
+                self._logger.error(
+                    "Solver CLI process reset kill failed: reason=%s error=%s",
+                    reason,
+                    error,
+                )
+            finally:
+                self.process = None
+                self._reset_count += 1
+
+        self._logger.info("SOLVER_PROCESS_RESET_DONE: reason=%s", reason)
+        return killed
 
     def _try_restart(self) -> bool:
         """Attempt to restart the solver process after a health check failure."""

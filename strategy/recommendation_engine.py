@@ -93,6 +93,7 @@ class RecommendationEngine:
             solver_config.get("deep_spr_threshold", 10.0)
         )
         self._deep_spr_light_probe_seen_keys: set[str] = set()
+        self._solver_request_json_sequence: int = 0
 
     def generate(
         self,
@@ -500,6 +501,11 @@ class RecommendationEngine:
             request.get("actions_played"),
             game_state.hero.position,
             hero_is_ip,
+        )
+        self._save_solver_request_json(
+            game_state=game_state,
+            solver_request=request,
+            reason="hu_postflop_solver",
         )
 
         solve_started = time.perf_counter()
@@ -1330,6 +1336,72 @@ class RecommendationEngine:
             self.logger.debug("Solver debug saved: %s", filepath)
         except Exception as exc:
             self.logger.warning("Solver debug save failed: %s", exc)
+
+    def _save_solver_request_json(
+        self,
+        game_state: GameState,
+        solver_request: dict[str, Any],
+        reason: str,
+    ) -> str | None:
+        """Save the exact Solver request JSON before sending it to the CLI.
+
+        Args:
+            game_state: Current GameState at request creation.
+            solver_request: Complete request dictionary sent to the solver.
+            reason: Short reason code for this request.
+
+        Returns:
+            Saved path, or None if saving failed.
+        """
+        debug_config = self.config.get("debug", {})
+        if not debug_config.get("save_solver_io", False):
+            return None
+        try:
+            now = datetime.now(timezone.utc)
+            base_dir = str(debug_config.get("solver_io_dir", "debug/solver_io"))
+            day_dir = os.path.join(base_dir, now.strftime("%Y%m%d"))
+            os.makedirs(day_dir, exist_ok=True)
+            self._solver_request_json_sequence += 1
+            hand_id = int(game_state.hand_id or 0)
+            phase = game_state.phase or "unknown"
+            filename = (
+                f"hand_{hand_id:06d}_req_{self._solver_request_json_sequence:06d}_"
+                f"{phase}.json"
+            )
+            filepath = os.path.join(day_dir, filename)
+            payload = {
+                "meta": {
+                    "hand_id": game_state.hand_id,
+                    "phase": game_state.phase,
+                    "request_id": self._solver_request_json_sequence,
+                    "created_at": now.isoformat(),
+                    "reason": reason,
+                },
+                "request": solver_request,
+            }
+            with open(filepath, "w", encoding="utf-8") as file:
+                json.dump(payload, file, ensure_ascii=False, indent=2)
+            logger.info("SOLVER_REQUEST_JSON_SAVED: path=%s", filepath)
+            return filepath
+        except Exception as exc:
+            logger.warning("Failed to save solver request JSON: %s", exc)
+            return None
+
+    def reset_solver_process(self, reason: str) -> bool:
+        """Delegate Solver process reset to the bridge when available.
+
+        Args:
+            reason: Operational reason for resetting the Solver process.
+
+        Returns:
+            True when the bridge reset killed a live process; otherwise False.
+        """
+        if self.solver_bridge is None:
+            return False
+        reset = getattr(self.solver_bridge, "reset_process", None)
+        if reset is None:
+            return False
+        return bool(reset(reason))
 
     def _generate_fallback(self, game_state: GameState, reason: str) -> Recommendation:
         """Generate the final low-confidence fallback recommendation."""

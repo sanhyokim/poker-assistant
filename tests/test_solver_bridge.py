@@ -97,7 +97,7 @@ def test_solve_sends_request_and_returns_response(
 
 
 def test_solve_timeout_returns_error() -> None:
-    """solve() returns a failure dict when stdout does not answer in time."""
+    """solve() resets the process when stdout does not answer in time."""
     fake_process = FakeProcess()
     fake_process.stdout = SlowStdout()
     bridge = PostflopSolverBridge("fake_solver.exe")
@@ -107,6 +107,54 @@ def test_solve_timeout_returns_error() -> None:
 
     assert response["success"] is False
     assert response["error"] == "Solver timeout (no response within 0.01s)"
+    assert fake_process.killed
+    assert bridge.process is None
+
+
+def test_reset_process_kills_alive_process_and_clears_process() -> None:
+    """reset_process() kills a live solver process and clears the handle."""
+    fake_process = FakeProcess()
+    bridge = PostflopSolverBridge("fake_solver.exe")
+    bridge.process = fake_process  # type: ignore[assignment]
+
+    killed = bridge.reset_process("unit_test")
+
+    assert killed is True
+    assert fake_process.killed
+    assert bridge.process is None
+
+
+def test_reset_process_safe_when_process_is_none() -> None:
+    """reset_process() is safe when no process exists."""
+    bridge = PostflopSolverBridge("fake_solver.exe")
+
+    killed = bridge.reset_process("no_process")
+
+    assert killed is False
+    assert bridge.process is None
+
+
+def test_solve_after_reset_starts_clean_process(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A solve after reset starts a fresh process through the normal path."""
+    first_process = FakeProcess()
+    second_process = FakeProcess('{"success": true, "fresh": true}\n')
+    processes = [first_process, second_process]
+
+    def fake_popen(*_args: Any, **_kwargs: Any) -> FakeProcess:
+        return processes.pop(0)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    bridge = PostflopSolverBridge("fake_solver.exe")
+    bridge.start()
+    bridge.reset_process("unit_test")
+
+    response = bridge.solve({"board": "QsJh2h"}, timeout=0.5)
+
+    assert first_process.killed
+    assert response == {"success": True, "fresh": True}
+    assert bridge.process is second_process
 
 
 def test_solve_invalid_json_returns_error() -> None:
