@@ -12,6 +12,7 @@ import pytest
 
 from scripts.compare_solver_requests import (
     build_summary,
+    build_light_probe_request,
     compare_solver_requests,
     extract_action_summary,
     load_solver_request,
@@ -107,11 +108,11 @@ def test_parse_solver_action_handles_all_in_label() -> None:
 def test_compare_solver_requests_stops_primary_before_compare(
     workspace_tmp: Path,
 ) -> None:
-    """Primary and compare requests run in clean separate solver processes."""
+    """Primary, compare, and generated light requests run in clean processes."""
     primary_path = workspace_tmp / "hand_000005_req_000004_flop.json"
     compare_path = workspace_tmp / "hand_000005_req_000005_flop_compare_no_allin.json"
     out_dir = workspace_tmp / "out"
-    _write_json(primary_path, {"request": {"name": "primary"}})
+    _write_json(primary_path, {"request": {"name": "primary", "timeout_ms": 20000}})
     _write_json(compare_path, {"request": {"name": "compare"}})
     FakeBridge.responses = [
         {
@@ -121,6 +122,10 @@ def test_compare_solver_requests_stops_primary_before_compare(
         {
             "success": True,
             "node_strategy": {"average_strategy": {"CALL": 0.9, "FOLD": 0.1}},
+        },
+        {
+            "success": True,
+            "node_strategy": {"average_strategy": {"CALL": 0.7, "FOLD": 0.3}},
         },
     ]
 
@@ -139,11 +144,18 @@ def test_compare_solver_requests_stops_primary_before_compare(
         "create:1",
         "solve:1:compare:30",
         "stop:1",
+        "create:2",
+        "solve:2:primary:30",
+        "stop:2",
     ]
     assert result["primary"]["action"] == "CALL"
     assert result["compare"]["action"] == "CALL"
-    assert result["summary"]["action_match"] is True
-    assert result["summary"]["amount_match"] is True
+    assert result["light"]["action"] == "CALL"
+    assert result["light"]["path"] == f"generated_light_probe_from:{primary_path}"
+    assert result["summary"]["compare_action_match"] is True
+    assert result["summary"]["compare_amount_match"] is True
+    assert result["summary"]["light_action_match"] is True
+    assert result["summary"]["light_amount_match"] is True
 
     output_path = Path(result["output_path"])
     assert output_path == out_dir / "hand_000005_flop_compare_result.json"
@@ -151,6 +163,71 @@ def test_compare_solver_requests_stops_primary_before_compare(
     saved = json.loads(output_path.read_text(encoding="utf-8"))
     assert saved["primary"]["path"] == str(primary_path)
     assert saved["compare"]["path"] == str(compare_path)
+    assert saved["light"]["path"] == f"generated_light_probe_from:{primary_path}"
+
+
+def test_compare_solver_requests_uses_light_file_when_provided(
+    workspace_tmp: Path,
+) -> None:
+    """Explicit --light-style path is used instead of generating a light request."""
+    primary_path = workspace_tmp / "hand_000006_req_000007_flop.json"
+    compare_path = workspace_tmp / "hand_000006_req_000008_flop_compare_no_allin.json"
+    light_path = workspace_tmp / "hand_000006_req_000007_flop_light_probe.json"
+    _write_json(primary_path, {"request": {"name": "primary"}})
+    _write_json(compare_path, {"request": {"name": "compare"}})
+    _write_json(light_path, {"request": {"name": "light_file"}})
+    FakeBridge.responses = [
+        {"success": True, "probabilities": {"CHECK": 1.0}},
+        {"success": True, "probabilities": {"CHECK": 1.0}},
+        {"success": True, "probabilities": {"BET 120": 1.0}},
+    ]
+
+    result = compare_solver_requests(
+        primary_path,
+        compare_path,
+        light_path=light_path,
+        timeout=30,
+        out_dir=workspace_tmp / "out",
+        bridge_factory=FakeBridge,
+    )
+
+    assert FakeBridge.events[7] == "solve:2:light_file:30"
+    assert result["light"]["path"] == str(light_path)
+    assert result["summary"]["light_action_match"] is False
+
+
+def test_build_light_probe_request_overrides_solver_light_fields() -> None:
+    """Generated light request applies deep_spr_light_probe-style settings."""
+    primary = {
+        "timeout_ms": 20000,
+        "max_iterations": 300,
+        "target_exploitability_pct": 0.5,
+        "flop_bet_sizes_oop": "60%,a",
+        "flop_bet_sizes_ip": "60%,a",
+        "flop_raise_sizes_oop": "3x",
+        "flop_raise_sizes_ip": "3x",
+        "turn_bet_sizes_oop": "60%,a",
+        "turn_bet_sizes_ip": "60%,a",
+        "turn_raise_sizes_oop": "3x",
+        "turn_raise_sizes_ip": "3x",
+        "river_bet_sizes_oop": "60%,a",
+    }
+
+    light = build_light_probe_request(primary)
+
+    assert light["timeout_ms"] == 5000
+    assert light["max_iterations"] == 80
+    assert light["target_exploitability_pct"] == 1.5
+    assert light["flop_bet_sizes_oop"] == "50%"
+    assert light["flop_bet_sizes_ip"] == "50%"
+    assert light["flop_raise_sizes_oop"] == "2.5x"
+    assert light["flop_raise_sizes_ip"] == "2.5x"
+    assert light["turn_bet_sizes_oop"] == "50%"
+    assert light["turn_bet_sizes_ip"] == "50%"
+    assert light["turn_raise_sizes_oop"] == "2.5x"
+    assert light["turn_raise_sizes_ip"] == "2.5x"
+    assert light["river_bet_sizes_oop"] == "60%,a"
+    assert primary["timeout_ms"] == 20000
 
 
 def test_result_filename_falls_back_to_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,10 +259,14 @@ def test_build_summary_calculates_speedup() -> None:
     summary = build_summary(
         {"action": "CALL", "amount": 324, "elapsed_ms": 20000},
         {"action": "CALL", "amount": 324, "elapsed_ms": 4000},
+        {"action": "BET", "amount": 324, "elapsed_ms": 5000},
     )
 
     assert summary == {
-        "action_match": True,
-        "amount_match": True,
-        "speedup_ratio": 5.0,
+        "compare_action_match": True,
+        "compare_amount_match": True,
+        "compare_speedup_ratio": 5.0,
+        "light_action_match": False,
+        "light_amount_match": True,
+        "light_speedup_ratio": 4.0,
     }

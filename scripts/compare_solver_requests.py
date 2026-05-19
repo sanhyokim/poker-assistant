@@ -65,6 +65,32 @@ def run_solver_request(
         Normalized result dictionary containing timing and parsed action fields.
     """
     request = load_solver_request(path)
+    return run_solver_request_payload(
+        request,
+        path_label=str(path),
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
+
+
+def run_solver_request_payload(
+    request: JsonDict,
+    *,
+    path_label: str,
+    timeout: float,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+) -> JsonDict:
+    """Run one request payload and return a normalized diagnostic result.
+
+    Args:
+        request: Solver request dictionary.
+        path_label: Source label recorded in the result JSON.
+        timeout: Timeout seconds for the solver bridge.
+        bridge_factory: Factory used by tests to inject a fake bridge.
+
+    Returns:
+        Normalized result dictionary containing timing and parsed action fields.
+    """
     bridge = bridge_factory()
     started_at = time.perf_counter()
     raw_result: JsonDict
@@ -78,7 +104,7 @@ def run_solver_request(
 
     action, amount, probabilities = extract_action_summary(raw_result)
     return {
-        "path": str(path),
+        "path": path_label,
         "success": bool(raw_result.get("success")),
         "elapsed_ms": elapsed_ms,
         "action": action,
@@ -86,6 +112,29 @@ def run_solver_request(
         "probabilities": probabilities,
         "error": raw_result.get("error"),
     }
+
+
+def build_light_probe_request(primary_request: JsonDict) -> JsonDict:
+    """Return a light-probe request derived from a primary Solver request.
+
+    Args:
+        primary_request: Original production Solver request dictionary.
+
+    Returns:
+        New request dictionary using deep_spr_light_probe-style parameters.
+    """
+    light_request = dict(primary_request)
+    light_request["timeout_ms"] = 5000
+    light_request["max_iterations"] = 80
+    light_request["target_exploitability_pct"] = 1.5
+
+    for street in ("flop", "turn"):
+        light_request[f"{street}_bet_sizes_oop"] = "50%"
+        light_request[f"{street}_bet_sizes_ip"] = "50%"
+        light_request[f"{street}_raise_sizes_oop"] = "2.5x"
+        light_request[f"{street}_raise_sizes_ip"] = "2.5x"
+
+    return light_request
 
 
 def extract_action_summary(result: JsonDict) -> tuple[str | None, int | None, JsonDict]:
@@ -130,17 +179,41 @@ def parse_solver_action(action_text: str) -> tuple[str, int]:
     return action, amount
 
 
-def build_summary(primary: JsonDict, compare: JsonDict) -> JsonDict:
-    """Build comparison summary fields for two normalized solver results."""
+def build_summary(
+    primary: JsonDict,
+    compare: JsonDict,
+    light: JsonDict | None = None,
+) -> JsonDict:
+    """Build comparison summary fields for normalized solver results."""
+    compare_summary = _variant_summary(primary, compare)
+    light_summary = _variant_summary(primary, light) if light is not None else {
+        "action_match": None,
+        "amount_match": None,
+        "speedup_ratio": None,
+    }
+    return {
+        "compare_action_match": compare_summary["action_match"],
+        "compare_amount_match": compare_summary["amount_match"],
+        "compare_speedup_ratio": compare_summary["speedup_ratio"],
+        "light_action_match": light_summary["action_match"],
+        "light_amount_match": light_summary["amount_match"],
+        "light_speedup_ratio": light_summary["speedup_ratio"],
+    }
+
+
+def _variant_summary(primary: JsonDict, variant: JsonDict | None) -> JsonDict:
+    """Return match and speedup summary for one variant against primary."""
+    if variant is None:
+        return {"action_match": None, "amount_match": None, "speedup_ratio": None}
     primary_elapsed = _optional_float(primary.get("elapsed_ms"))
-    compare_elapsed = _optional_float(compare.get("elapsed_ms"))
+    variant_elapsed = _optional_float(variant.get("elapsed_ms"))
     speedup_ratio = None
-    if primary_elapsed is not None and compare_elapsed and compare_elapsed > 0:
-        speedup_ratio = round(primary_elapsed / compare_elapsed, 3)
+    if primary_elapsed is not None and variant_elapsed and variant_elapsed > 0:
+        speedup_ratio = round(primary_elapsed / variant_elapsed, 3)
 
     return {
-        "action_match": primary.get("action") == compare.get("action"),
-        "amount_match": primary.get("amount") == compare.get("amount"),
+        "action_match": primary.get("action") == variant.get("action"),
+        "amount_match": primary.get("amount") == variant.get("amount"),
         "speedup_ratio": speedup_ratio,
     }
 
@@ -149,15 +222,17 @@ def compare_solver_requests(
     primary_path: Path,
     compare_path: Path,
     *,
+    light_path: Path | None = None,
     timeout: float,
     out_dir: Path,
     bridge_factory: BridgeFactory = PostflopSolverBridge,
 ) -> JsonDict:
-    """Run primary and compare requests in separate solver processes.
+    """Run primary, compare, and light requests in separate solver processes.
 
     Args:
         primary_path: Primary request JSON path.
         compare_path: compare_no_allin request JSON path.
+        light_path: Optional prebuilt light_probe request JSON path.
         timeout: Timeout seconds per request.
         out_dir: Directory where the comparison result JSON is saved.
         bridge_factory: Factory used by tests to inject a fake bridge.
@@ -165,20 +240,40 @@ def compare_solver_requests(
     Returns:
         Full comparison result dictionary.
     """
-    primary = run_solver_request(
-        primary_path,
+    primary_request = load_solver_request(primary_path)
+    compare_request = load_solver_request(compare_path)
+    light_request = (
+        load_solver_request(light_path)
+        if light_path is not None
+        else build_light_probe_request(primary_request)
+    )
+    light_label = str(light_path) if light_path is not None else (
+        f"generated_light_probe_from:{primary_path}"
+    )
+
+    primary = run_solver_request_payload(
+        primary_request,
+        path_label=str(primary_path),
         timeout=timeout,
         bridge_factory=bridge_factory,
     )
-    compare = run_solver_request(
-        compare_path,
+    compare = run_solver_request_payload(
+        compare_request,
+        path_label=str(compare_path),
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
+    light = run_solver_request_payload(
+        light_request,
+        path_label=light_label,
         timeout=timeout,
         bridge_factory=bridge_factory,
     )
     result = {
         "primary": primary,
         "compare": compare,
-        "summary": build_summary(primary, compare),
+        "light": light,
+        "summary": build_summary(primary, compare, light),
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -202,6 +297,7 @@ def print_summary(result: JsonDict) -> None:
     """Print a compact comparison summary for manual CLI runs."""
     primary = result["primary"]
     compare = result["compare"]
+    light = result["light"]
     summary = result["summary"]
     print(
         "PRIMARY: "
@@ -214,10 +310,14 @@ def print_summary(result: JsonDict) -> None:
         f"action={compare['action']} amount={compare['amount']}"
     )
     print(
+        "LIGHT: "
+        f"success={light['success']} elapsed_ms={light['elapsed_ms']} "
+        f"action={light['action']} amount={light['amount']}"
+    )
+    print(
         "SUMMARY: "
-        f"action_match={summary['action_match']} "
-        f"amount_match={summary['amount_match']} "
-        f"speedup_ratio={summary['speedup_ratio']}"
+        f"compare_speedup_ratio={summary['compare_speedup_ratio']} "
+        f"light_speedup_ratio={summary['light_speedup_ratio']}"
     )
     print(f"RESULT_JSON: {result['output_path']}")
 
@@ -236,6 +336,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--primary", required=True, type=Path)
     parser.add_argument("--compare", required=True, type=Path)
+    parser.add_argument("--light", default=None, type=Path)
     parser.add_argument("--timeout", default=30.0, type=float)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
@@ -243,6 +344,7 @@ def main(argv: list[str] | None = None) -> int:
     result = compare_solver_requests(
         args.primary,
         args.compare,
+        light_path=args.light,
         timeout=args.timeout,
         out_dir=args.out,
     )

@@ -740,3 +740,10 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - 本番GameLoop / RecommendationEngine / Solverルーティングからは呼ばない
 - CLIで手動実行したときだけ動く
 - Solver速度調査完了後、削除またはdiagnostics用として残すか判断する
+- 2026-05-19: compare_no_allin検証では速度改善なし
+  - hand5: primary 21614ms / compare 21536ms / speedup 1.004
+  - hand6: primary 28173ms / compare 29770ms / speedup 0.946
+- 次の検証対象: deep_spr_light_probe相当の軽量request
+  - max_iterations=80
+  - target_exploitability_pct=1.5
+  - flop/turn bet_sizes=50%
