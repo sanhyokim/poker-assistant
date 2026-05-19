@@ -189,6 +189,31 @@ class MultiwayEngine:
                 "[LLM FOLD overridden by pot-odds guard]"
             ).strip()
 
+        if (
+            parsed_action == "check"
+            and metrics["facing_bet"] == 0
+            and equity >= 0.75
+            and game_state.phase in {"turn", "river"}
+            and int(game_state.pot or 0) > 0
+        ):
+            parsed_size = max(int(int(game_state.pot or 0) * 0.6), self.blind_bb)
+            self.logger.info(
+                "Multiway CHECK overridden by value-bet guard: "
+                "equity=%.3f phase=%s pot=%d original_action=check "
+                "final_action=bet size=%d",
+                equity,
+                game_state.phase,
+                int(game_state.pot or 0),
+                parsed_size,
+            )
+            parsed_action = "bet"
+            guard_applied = True
+            parsed_reasoning = (
+                f"{parsed_reasoning} "
+                "[LLM CHECK overridden by value-bet guard: "
+                "strong made hand / high equity]"
+            ).strip()
+
         if parsed_action:
             final_action = parsed_action
             final_amount = parsed_size

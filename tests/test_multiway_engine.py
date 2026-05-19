@@ -641,6 +641,93 @@ def test_multiway_guard_only_triggers_on_fold_with_bet() -> None:
     assert result.get("guard_applied") is not True
 
 
+def test_high_equity_turn_check_overridden_to_value_bet(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Strong turn hands with no facing bet override passive LLM CHECK to BET."""
+    caplog.set_level("INFO", logger="strategy.multiway_engine")
+    state = make_state(hero_cards=["Ks", "Kh"], board=["Jd", "3c", "Kd", "5c"])
+    state.phase = "turn"
+    state.board_card_count = 4
+    state.pot = 1000
+    engine = make_engine()
+    engine.calculate_equity = MagicMock(return_value=0.88)  # type: ignore[method-assign]
+    engine.llm.decide_multiway.return_value = {
+        "action": "check",
+        "size": None,
+        "confidence": "medium",
+        "reasoning": "Pot control",
+        "raw_response": '{"action": "check"}',
+    }
+
+    result = engine.evaluate(state, [])
+
+    assert result["action"] == "bet"
+    assert result["size"] == 600
+    assert result.get("guard_applied") is True
+    assert "LLM CHECK overridden by value-bet guard" in result["reasoning"]
+    assert "Multiway CHECK overridden by value-bet guard" in caplog.text
+
+
+def test_high_equity_river_check_uses_blind_minimum_for_small_pot() -> None:
+    """Value-bet guard uses blind_bb as the minimum bet size."""
+    state = make_state(hero_cards=["Ks", "Kh"], board=["Jd", "3c", "Kd", "5c", "2h"])
+    state.phase = "river"
+    state.board_card_count = 5
+    state.pot = 120
+    engine = make_engine()
+    engine.calculate_equity = MagicMock(return_value=0.80)  # type: ignore[method-assign]
+    engine.llm.decide_multiway.return_value = {
+        "action": "check",
+        "size": None,
+        "confidence": "medium",
+        "reasoning": "",
+        "raw_response": "",
+    }
+
+    result = engine.evaluate(state, [])
+
+    assert result["action"] == "bet"
+    assert result["size"] == 100
+    assert result.get("guard_applied") is True
+
+
+@pytest.mark.parametrize(
+    ("phase", "equity", "facing_bet"),
+    [
+        ("turn", 0.74, 0),
+        ("turn", 0.88, 300),
+        ("flop", 0.88, 0),
+    ],
+)
+def test_value_bet_guard_does_not_override_outside_safe_conditions(
+    phase: str,
+    equity: float,
+    facing_bet: int,
+) -> None:
+    """CHECK is only overridden on turn/river, no facing bet, and high equity."""
+    state = make_state()
+    state.phase = phase
+    state.board = ["Jd", "3c", "Kd"] if phase == "flop" else ["Jd", "3c", "Kd", "5c"]
+    state.board_card_count = len(state.board)
+    state.pot = 1000
+    state.players["2"].bet = facing_bet
+    engine = make_engine()
+    engine.calculate_equity = MagicMock(return_value=equity)  # type: ignore[method-assign]
+    engine.llm.decide_multiway.return_value = {
+        "action": "check",
+        "size": None,
+        "confidence": "medium",
+        "reasoning": "Check back",
+        "raw_response": "",
+    }
+
+    result = engine.evaluate(state, [])
+
+    assert result["action"] == "check"
+    assert result.get("guard_applied") is not True
+
+
 def test_cumulative_actions_passed_to_llm_three_actions() -> None:
     """BET/CALL/RAISE cumulative actions reach the LLM via current_street_actions."""
     engine = make_engine()
