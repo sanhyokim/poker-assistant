@@ -24,6 +24,7 @@ from scripts.compare_solver_requests import (
     find_compare_request_for_primary,
     load_solver_request,
     parse_solver_action,
+    probability_summary,
     result_filename,
     sample_id,
 )
@@ -111,6 +112,19 @@ def test_extract_action_summary_prefers_average_strategy() -> None:
 def test_parse_solver_action_handles_all_in_label() -> None:
     """Action parser preserves ALL_IN and extracts chip amount."""
     assert parse_solver_action("ALL-IN 2934") == ("ALL_IN", 2934)
+
+
+def test_probability_summary_extracts_top_second_and_margin() -> None:
+    """Probability summary reports top action, runner-up, and margin."""
+    summary = probability_summary({"CHECK": 0.635, "BET 120": 0.365})
+
+    assert summary == {
+        "top_action": "CHECK",
+        "top_probability": 0.635,
+        "second_action": "BET",
+        "second_probability": 0.365,
+        "top_margin": 0.27,
+    }
 
 
 def test_compare_solver_requests_stops_primary_before_compare(
@@ -271,6 +285,11 @@ def test_compare_solver_requests_batch_writes_items_and_summary(
     assert summary_path.exists()
     saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
     assert saved_summary["items"][0]["sample_id"] == "hand_000016_req_000009_flop"
+    saved_item = saved_summary["items"][0]
+    assert saved_item["primary_top_action"] == "CHECK"
+    assert saved_item["primary_top_probability"] == 1.0
+    assert saved_item["primary_top_margin"] is None
+    assert saved_item["light_clear_check_to_bet"] is False
 
 
 def test_compare_solver_requests_uses_light_file_when_provided(
@@ -535,30 +554,47 @@ def test_build_batch_summary_aggregates_profile_metrics() -> None:
                 "primary_elapsed_ms": 20000,
                 "primary_action": "CHECK",
                 "primary_amount": 0,
+                "primary_top_margin": 0.25,
                 "light_success": True,
                 "light_elapsed_ms": 10000,
                 "light_action": "BET",
                 "light_amount": 120,
                 "light_action_match": False,
                 "light_amount_match": False,
+                "light_action_mismatch_near_tie": False,
+                "light_dangerous_flip": True,
+                "light_clear_check_to_bet": True,
+                "light_call_or_raise_to_fold": False,
                 "compare_success": True,
                 "compare_elapsed_ms": 19000,
                 "compare_action": "CHECK",
                 "compare_amount": 0,
                 "compare_action_match": True,
                 "compare_amount_match": True,
+                "compare_action_mismatch_near_tie": False,
+                "compare_dangerous_flip": False,
+                "compare_clear_check_to_bet": False,
+                "compare_call_or_raise_to_fold": False,
                 "middle_success": True,
                 "middle_elapsed_ms": 14000,
                 "middle_action": "CHECK",
                 "middle_amount": 0,
                 "middle_action_match": True,
                 "middle_amount_match": True,
+                "middle_action_mismatch_near_tie": False,
+                "middle_dangerous_flip": False,
+                "middle_clear_check_to_bet": False,
+                "middle_call_or_raise_to_fold": False,
                 "fast_middle_success": False,
                 "fast_middle_elapsed_ms": 30000,
                 "fast_middle_action": None,
                 "fast_middle_amount": None,
                 "fast_middle_action_match": False,
                 "fast_middle_amount_match": False,
+                "fast_middle_action_mismatch_near_tie": False,
+                "fast_middle_dangerous_flip": True,
+                "fast_middle_clear_check_to_bet": False,
+                "fast_middle_call_or_raise_to_fold": False,
             }
         ],
     )
@@ -569,4 +605,6 @@ def test_build_batch_summary_aggregates_profile_metrics() -> None:
     assert summary["profiles"]["light"]["under_15s_rate"] == 1.0
     assert summary["profiles"]["light"]["action_match_rate"] == 0.0
     assert summary["profiles"]["light"]["check_to_bet_count"] == 1
+    assert summary["profiles"]["light"]["dangerous_flip_count"] == 1
+    assert summary["profiles"]["light"]["clear_check_to_bet_count"] == 1
     assert summary["profiles"]["fast_middle"]["error_count"] == 1

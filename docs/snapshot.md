@@ -784,3 +784,20 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
     - LIGHT: avg=8690ms / median=7494ms / under_15s=90.0% / action_match=20.0% / CHECK→BET=7
     - MIDDLE: avg=15275ms / median=14293ms / under_15s=70.0% / action_match=60.0% / CHECK→BET=3
     - FAST_MIDDLE: avg=17939ms / median=17016ms / under_15s=0.0% / action_match=70.0% / CHECK→BET=2
+- 2026-05-19:
+  - batch比較ではMIDDLEが最有力だが、action一致率だけでは判断不可
+  - primary probability marginを集計し、僅差不一致と明確な反転を分ける
+  - 採用候補条件:
+    - 15秒以内
+    - primary action一致
+    - またはprimary top_margin <= 0.10 の僅差不一致
+  - 不採用寄り条件:
+    - primary top_margin >= 0.20 でCHECK→BET
+    - primary CALL/RAISEをFOLDへ反転
+  - margin付きbatch実行結果:
+    - total_primary_files=12 / compared=10 / skipped_missing_compare=2
+    - PRIMARY: avg=23100ms / median=21779ms / under_15s=0.0% / errors=1
+    - COMPARE: action_match=50.0% / near_tie_mismatch=2 / dangerous_flip=2 / CHECK→BET=2
+    - LIGHT: under_15s=90.0% / action_match=10.0% / near_tie_mismatch=1 / dangerous_flip=7 / CHECK→BET=7
+    - MIDDLE: under_15s=70.0% / action_match=50.0% / near_tie_mismatch=1 / dangerous_flip=3 / CHECK→BET=3
+    - FAST_MIDDLE: under_15s=0.0% / action_match=60.0% / near_tie_mismatch=1 / dangerous_flip=2 / CHECK→BET=2

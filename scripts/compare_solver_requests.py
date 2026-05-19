@@ -569,6 +569,26 @@ def _batch_profile_summary(items: list[JsonDict], profile: str) -> JsonDict:
             for item in items
             if item.get("primary_action") != item.get(f"{profile}_action")
         )
+        near_tie_mismatch_count = sum(
+            1
+            for item in items
+            if item.get(f"{profile}_action_mismatch_near_tie") is True
+        )
+        dangerous_flip_count = sum(
+            1
+            for item in items
+            if item.get(f"{profile}_dangerous_flip") is True
+        )
+        clear_check_to_bet_count = sum(
+            1
+            for item in items
+            if item.get(f"{profile}_clear_check_to_bet") is True
+        )
+        call_or_raise_to_fold_count = sum(
+            1
+            for item in items
+            if item.get(f"{profile}_call_or_raise_to_fold") is True
+        )
         summary.update(
             {
                 "action_match_count": action_match_count,
@@ -578,6 +598,10 @@ def _batch_profile_summary(items: list[JsonDict], profile: str) -> JsonDict:
                 "action_flip_count": action_flip_count,
                 "check_to_bet_count": check_to_bet_count,
                 "bet_to_check_count": bet_to_check_count,
+                "near_tie_mismatch_count": near_tie_mismatch_count,
+                "dangerous_flip_count": dangerous_flip_count,
+                "clear_check_to_bet_count": clear_check_to_bet_count,
+                "call_or_raise_to_fold_count": call_or_raise_to_fold_count,
             }
         )
     return summary
@@ -593,6 +617,11 @@ def _batch_item_summary(primary_path: Path, result: JsonDict) -> JsonDict:
         item[f"{profile}_action"] = profile_result["action"]
         item[f"{profile}_amount"] = profile_result["amount"]
         item[f"{profile}_error"] = profile_result["error"]
+        probabilities = profile_result.get("probabilities")
+        if not isinstance(probabilities, dict):
+            probabilities = {}
+        for key, value in probability_summary(probabilities).items():
+            item[f"{profile}_{key}"] = value
     for profile in PROFILE_NAMES:
         if profile == "primary":
             continue
@@ -603,7 +632,70 @@ def _batch_item_summary(primary_path: Path, result: JsonDict) -> JsonDict:
             item[f"{profile}_amount"] == item["primary_amount"]
         )
         item[f"{profile}_under_15s"] = _under_15s(result[profile])
+        item.update(_variant_margin_flags(item, profile))
     return item
+
+
+def probability_summary(probabilities: dict[str, float]) -> JsonDict:
+    """Return top/second action and margin from a probability mapping."""
+    if not probabilities:
+        return {
+            "top_action": None,
+            "top_probability": None,
+            "second_action": None,
+            "second_probability": None,
+            "top_margin": None,
+        }
+    ranked = sorted(probabilities.items(), key=lambda item: item[1], reverse=True)
+    top_action, top_probability = ranked[0]
+    second_action = None
+    second_probability = None
+    if len(ranked) >= 2:
+        second_action, second_probability = ranked[1]
+    margin = None
+    if second_probability is not None:
+        margin = round(float(top_probability) - float(second_probability), 3)
+    return {
+        "top_action": parse_solver_action(str(top_action))[0],
+        "top_probability": round(float(top_probability), 3),
+        "second_action": (
+            parse_solver_action(str(second_action))[0]
+            if second_action is not None
+            else None
+        ),
+        "second_probability": (
+            round(float(second_probability), 3)
+            if second_probability is not None
+            else None
+        ),
+        "top_margin": margin,
+    }
+
+
+def _variant_margin_flags(item: JsonDict, profile: str) -> JsonDict:
+    """Return mismatch severity flags for one variant against primary."""
+    primary_action = item.get("primary_action")
+    variant_action = item.get(f"{profile}_action")
+    primary_margin = _optional_float(item.get("primary_top_margin"))
+    action_mismatch = primary_action != variant_action
+    near_tie_mismatch = (
+        action_mismatch and primary_margin is not None and primary_margin <= 0.10
+    )
+    dangerous_flip = (
+        action_mismatch and primary_margin is not None and primary_margin >= 0.20
+    )
+    clear_check_to_bet = (
+        dangerous_flip and primary_action == "CHECK" and variant_action == "BET"
+    )
+    call_or_raise_to_fold = (
+        primary_action in {"CALL", "RAISE"} and variant_action == "FOLD"
+    )
+    return {
+        f"{profile}_action_mismatch_near_tie": near_tie_mismatch,
+        f"{profile}_dangerous_flip": dangerous_flip,
+        f"{profile}_clear_check_to_bet": clear_check_to_bet,
+        f"{profile}_call_or_raise_to_fold": call_or_raise_to_fold,
+    }
 
 
 def sample_id(primary_path: Path) -> str:
@@ -699,6 +791,10 @@ def print_batch_summary(summary: JsonDict) -> None:
                 f" action_match={_percent(stats['action_match_rate'])}"
                 f" amount_match={_percent(stats['amount_match_rate'])}"
                 f" check_to_bet={stats['check_to_bet_count']}"
+                f" near_tie_mismatch={stats['near_tie_mismatch_count']}"
+                f" dangerous_flip={stats['dangerous_flip_count']}"
+                f" clear_check_to_bet={stats['clear_check_to_bet_count']}"
+                f" call_or_raise_to_fold={stats['call_or_raise_to_fold_count']}"
                 f" errors={stats['error_count']}"
             )
         else:
