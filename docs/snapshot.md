@@ -729,3 +729,14 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - CoinPoker固有処理をDecision Engineへ直接混ぜない
 - 局所guardを無制限に増やさない
 ```
+
+---
+
+## Temporary Diagnostic Tool
+
+一時診断ツール:
+- `scripts/compare_solver_requests.py`
+- 目的: deep-SPR flopのprimary requestとcompare_no_allin requestの速度差確認
+- 本番GameLoop / RecommendationEngine / Solverルーティングからは呼ばない
+- CLIで手動実行したときだけ動く
+- Solver速度調査完了後、削除またはdiagnostics用として残すか判断する
