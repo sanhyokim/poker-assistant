@@ -1,4 +1,24 @@
 # Commander Snapshot
+
+## Latest diagnostic note: 2026-05-19
+
+- teacher standard は候補BETサイズが広すぎて3件すべて失敗
+- 次は teacher_narrow を追加
+- teacher_narrow:
+  - max_iterations=500
+  - target_exploitability_pct=0.4
+  - timeout_ms=180000
+  - bet_sizes=60%,a
+  - raise_sizes=2.5x
+- 目的:
+  - まず現状primaryと同じBET候補で、より高精度なteacherが作れるか確認
+- teacher_narrow 実行結果:
+  - samples=3 / success_count=0 / error_count=3
+  - hand_000004_req_000004_flop: 180秒timeout
+  - hand_000006_req_000007_flop: 180秒timeout
+  - hand_000016_req_000011_flop: 180秒timeout
+  - BET候補をprimary同等に戻してもteacher作成は成功せず
+
 ## Updated: 2026-05-18 JST
 ## Status: Post-Fix85 architecture reset point
 

@@ -47,6 +47,13 @@ TEACHER_PROFILES: dict[str, JsonDict] = {
         "bet_sizes": "33%,50%,60%,75%,a",
         "raise_sizes": "2.5x",
     },
+    "narrow": {
+        "max_iterations": 500,
+        "target_exploitability_pct": 0.4,
+        "timeout_ms": 180000,
+        "bet_sizes": "60%,a",
+        "raise_sizes": "2.5x",
+    },
     "high": {
         "max_iterations": 800,
         "target_exploitability_pct": 0.3,

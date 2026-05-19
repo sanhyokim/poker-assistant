@@ -579,6 +579,40 @@ def test_build_teacher_request_applies_standard_and_high_profiles() -> None:
     assert primary["max_iterations"] == 300
 
 
+def test_build_teacher_request_applies_narrow_profile() -> None:
+    """Narrow teacher profile keeps primary bet sizes while increasing precision."""
+    primary = {
+        "max_iterations": 300,
+        "target_exploitability_pct": 0.6,
+        "timeout_ms": 20000,
+        "flop_bet_sizes_oop": "60%,a",
+        "flop_bet_sizes_ip": "60%,a",
+        "flop_raise_sizes_oop": "3x",
+        "flop_raise_sizes_ip": "3x",
+        "turn_bet_sizes_oop": "60%,a",
+        "turn_bet_sizes_ip": "60%,a",
+        "turn_raise_sizes_oop": "3x",
+        "turn_raise_sizes_ip": "3x",
+    }
+
+    narrow = build_teacher_request(primary, "narrow")
+
+    assert narrow["max_iterations"] == 500
+    assert narrow["target_exploitability_pct"] == 0.4
+    assert narrow["timeout_ms"] == 180000
+    assert narrow["flop_bet_sizes_oop"] == "60%,a"
+    assert narrow["flop_bet_sizes_ip"] == "60%,a"
+    assert narrow["flop_raise_sizes_oop"] == "2.5x"
+    assert narrow["flop_raise_sizes_ip"] == "2.5x"
+    assert narrow["turn_bet_sizes_oop"] == "60%,a"
+    assert narrow["turn_bet_sizes_ip"] == "60%,a"
+    assert narrow["turn_raise_sizes_oop"] == "2.5x"
+    assert narrow["turn_raise_sizes_ip"] == "2.5x"
+    assert teacher_request_config("narrow")["bet_sizes"] == "60%,a"
+    assert primary["max_iterations"] == 300
+    assert primary["timeout_ms"] == 20000
+
+
 def test_compare_solver_requests_teacher_writes_items_and_summary(
     workspace_tmp: Path,
 ) -> None:
