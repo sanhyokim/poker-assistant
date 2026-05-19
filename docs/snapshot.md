@@ -747,3 +747,12 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
   - max_iterations=80
   - target_exploitability_pct=1.5
   - flop/turn bet_sizes=50%
+- light_probe検証結果:
+  - hand5: primary CHECK 63.5% / BET 36.5%、light BET 58.3% / CHECK 41.7%
+  - hand6: primary CHECK 60.2% / BET 36.1% / ALL-IN 3.7%、light BET 60.4% / CHECK 39.6%
+  - lightは速度改善するが、primaryのCHECK優勢をBET優勢へ反転させるため、そのまま本番採用は危険
+- 次の検証対象: middle_probe
+  - max_iterations=150
+  - target_exploitability_pct=1.0
+  - flop/turn bet_sizes=60%
+  - 目的: primaryに近い判断を保ちながら速度改善できるか確認
