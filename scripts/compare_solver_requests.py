@@ -77,6 +77,33 @@ TEACHER_PROFILES: dict[str, JsonDict] = {
 }
 
 
+def load_env_file(env_path: Path | None = None) -> None:
+    """Load simple KEY=VALUE lines from .env without overriding env vars."""
+    path = env_path or (REPO_ROOT / ".env")
+    if not path.exists():
+        return
+
+    for raw_line in path.read_text(encoding="utf-8").splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+
+        key, value = line.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if not key:
+            continue
+
+        quoted = (
+            (value.startswith('"') and value.endswith('"'))
+            or (value.startswith("'") and value.endswith("'"))
+        )
+        if quoted:
+            value = value[1:-1]
+
+        os.environ.setdefault(key, value)
+
+
 def load_solver_request(path: Path) -> JsonDict:
     """Load a solver request JSON file with optional metadata wrapping.
 
@@ -2304,6 +2331,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         Process exit code.
     """
+    load_env_file()
     parser = argparse.ArgumentParser(
         description="Compare primary and compare_no_allin solver request JSON files."
     )

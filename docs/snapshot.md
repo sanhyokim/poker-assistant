@@ -45,6 +45,16 @@
   - error=OPENROUTER_API_KEY missing
   - baseline primary Solver結果は保存済み
   - APIキー設定後に同じ `--llm-dir` 診断を再実行する
+- LLM診断の.env読み込み:
+  - compare_solver_requests.py はこれまで os.getenv() のみ参照していた
+  - PowerShell環境変数にOPENROUTER_API_KEYがない場合、.envに設定済みでも
+    LLM診断が OPENROUTER_API_KEY missing になっていた
+  - 診断スクリプト内で repo root の .env を読み込む処理を追加
+  - 既存の環境変数は .env で上書きしない
+  - 再実行結果:
+    - OPENROUTER_API_KEY missing は解消
+    - OpenRouter応答は HTTP Error 401: Unauthorized
+    - 次は .env のキー値またはOpenRouter側認証状態を確認する
 
 ## Updated: 2026-05-18 JST
 ## Status: Post-Fix85 architecture reset point

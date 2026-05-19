@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import uuid
 from pathlib import Path
@@ -37,6 +38,7 @@ from scripts.compare_solver_requests import (
     find_compare_request_for_primary,
     grid_profile_id,
     grid_score,
+    load_env_file,
     load_solver_request,
     parse_solver_action,
     parse_llm_decision_json,
@@ -104,6 +106,61 @@ def reset_fake_bridge() -> None:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_load_env_file_reads_openrouter_key(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env loader reads OPENROUTER_API_KEY from a simple .env file."""
+    env_path = workspace_tmp / ".env"
+    env_path.write_text("OPENROUTER_API_KEY=test-key\n", encoding="utf-8")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+    load_env_file(env_path)
+
+    assert os.environ["OPENROUTER_API_KEY"] == "test-key"
+
+
+def test_load_env_file_does_not_override_existing_env(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env loader preserves values already present in the environment."""
+    env_path = workspace_tmp / ".env"
+    env_path.write_text("OPENROUTER_API_KEY=env-file-key\n", encoding="utf-8")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "existing-key")
+
+    load_env_file(env_path)
+
+    assert os.environ["OPENROUTER_API_KEY"] == "existing-key"
+
+
+def test_load_env_file_ignores_comments_and_strips_quotes(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env loader ignores comments and strips surrounding quotes."""
+    env_path = workspace_tmp / ".env"
+    env_path.write_text(
+        "\n".join(
+            [
+                "# comment",
+                "",
+                'OPENROUTER_PROVIDER_ORDER="OpenAI"',
+                "OPENROUTER_ALLOW_FALLBACKS='false'",
+                "not-an-env-line",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENROUTER_PROVIDER_ORDER", raising=False)
+    monkeypatch.delenv("OPENROUTER_ALLOW_FALLBACKS", raising=False)
+
+    load_env_file(env_path)
+
+    assert os.environ["OPENROUTER_PROVIDER_ORDER"] == "OpenAI"
+    assert os.environ["OPENROUTER_ALLOW_FALLBACKS"] == "false"
 
 
 def test_load_solver_request_supports_wrapped_and_raw_payloads(
