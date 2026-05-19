@@ -4557,6 +4557,30 @@ def test_solver_timeout_recommendation_is_not_saved(
     assert "Recommendation not saved: reason=solver_timeout" in caplog.text
 
 
+def test_preflop_deferred_recommendation_is_not_saved(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Preflop action-history wait states are not persisted as strategy."""
+    caplog.set_level(logging.INFO, logger="core.game_loop")
+    loop = make_loop(workspace_tmp, monkeypatch, NoneCapture())
+    loop._hand_manager._phase = "preflop"
+    loop._hand_manager.set_recommendation = MagicMock()  # type: ignore[method-assign]
+    recommendation = Recommendation(
+        action="PREFLOP_ACTION_HISTORY_PENDING",
+        amount=0,
+        confidence="low",
+        strategy_source="preflop_deferred",
+        reason="Preflop action history pending",
+    )
+
+    loop._save_recommendation_to_hand_manager(recommendation, time.perf_counter())
+
+    loop._hand_manager.set_recommendation.assert_not_called()
+    assert "Recommendation not saved: reason=preflop_deferred" in caplog.text
+
+
 def test_solver_hud_soft_timeout_logs_and_notifies(
     workspace_tmp: Path,
     monkeypatch: pytest.MonkeyPatch,

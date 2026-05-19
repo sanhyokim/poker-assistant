@@ -194,12 +194,12 @@ class RecommendationEngine:
         if hero_position == "BB" and not action_history:
             logger.debug("BB with no preflop actions yet, deferring recommendation")
             return Recommendation(
-                action="CHECK",
+                action="PREFLOP_ACTION_HISTORY_PENDING",
                 amount=0,
-                reason="アクション履歴収集中",
+                reason="Preflop action history pending",
                 confidence="low",
-                strategy_source="deferred",
-                action_probabilities={"CHECK": 1.0},
+                strategy_source="preflop_deferred",
+                action_probabilities={},
                 latency_breakdown={"preflop_deferred_ms": self._elapsed_ms(started_at)},
             )
 

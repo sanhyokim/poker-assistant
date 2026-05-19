@@ -467,6 +467,33 @@ def test_internal_solver_state_shows_stable_wait_when_no_worker(
     hud_computing_callback.assert_called_once_with("WAITING FOR STABLE STATE...")
 
 
+def test_preflop_deferred_is_shown_as_stable_wait_not_recommendation(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Preflop deferred states show stable wait instead of a CHECK sign."""
+    hud_callback = MagicMock()
+    hud_computing_callback = MagicMock()
+    loop = _make_loop(
+        workspace_tmp,
+        monkeypatch,
+        hud_callback=hud_callback,
+        hud_computing_callback=hud_computing_callback,
+    )
+    recommendation = Recommendation(
+        action="PREFLOP_ACTION_HISTORY_PENDING",
+        amount=0,
+        reason="Preflop action history pending",
+        confidence="low",
+        strategy_source="preflop_deferred",
+    )
+
+    loop._notify_hud(recommendation)
+
+    hud_callback.assert_not_called()
+    hud_computing_callback.assert_called_once_with("WAITING FOR STABLE STATE...")
+
+
 # ---------------------------------------------------------------------------
 # Phase 30-Fix38: Route-specific computing status messages
 # ---------------------------------------------------------------------------

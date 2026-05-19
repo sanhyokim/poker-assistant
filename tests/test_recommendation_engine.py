@@ -458,8 +458,8 @@ def test_generate_preflop_bb_vs_limp_raises_premium_hand() -> None:
     assert recommendation.strategy_source == "preflop_chart"
 
 
-def test_bb_empty_actions_returns_deferred() -> None:
-    """BB with no preflop action history defers recommendation."""
+def test_preflop_bb_without_action_history_returns_non_displayable_deferred() -> None:
+    """BB with no preflop action history returns an internal wait state."""
     engine = make_real_chart_engine()
     state = make_state(
         phase="preflop",
@@ -471,9 +471,11 @@ def test_bb_empty_actions_returns_deferred() -> None:
 
     recommendation = engine.generate(state, preflop_actions=[])
 
-    assert recommendation.action == "CHECK"
+    assert recommendation.action == "PREFLOP_ACTION_HISTORY_PENDING"
     assert recommendation.amount == 0
-    assert recommendation.strategy_source == "deferred"
+    assert recommendation.strategy_source == "preflop_deferred"
+    assert "アクション履歴収集中" not in recommendation.reason
+    assert recommendation.action_probabilities == {}
 
 
 def test_bb_with_actions_returns_chart() -> None:

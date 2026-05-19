@@ -33,7 +33,11 @@ logger = logging.getLogger(__name__)
 HERO_NON_FOLD_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "ALL_IN"}
 HERO_FOLD_BADGE_RECENT_ACTION_GUARD_SEC = 1.0
 DISPLAYABLE_RECOMMENDATION_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "FOLD", "ALL_IN"}
-INTERNAL_HUD_STRATEGY_SOURCES = {"solver_input_unstable", "solver_timeout"}
+INTERNAL_HUD_STRATEGY_SOURCES = {
+    "preflop_deferred",
+    "solver_input_unstable",
+    "solver_timeout",
+}
 HUD_STATUS_STABLE_WAIT = "WAITING FOR STABLE STATE..."
 HUD_STATUS_SOLVER_THINKING = "SOLVER THINKING..."
 HUD_STATUS_LLM_THINKING = "LLM ANALYZING..."
@@ -2610,6 +2614,12 @@ class GameLoop:
             or recommendation.action == "SOLVER_TIMEOUT"
         ):
             logger.info("Recommendation not saved: reason=solver_timeout")
+            return
+        if (
+            recommendation.strategy_source == "preflop_deferred"
+            or recommendation.action == "PREFLOP_ACTION_HISTORY_PENDING"
+        ):
+            logger.info("Recommendation not saved: reason=preflop_deferred")
             return
         if self._hand_manager.phase in {"waiting", "hand_end"}:
             return
