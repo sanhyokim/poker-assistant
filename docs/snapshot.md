@@ -801,3 +801,17 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
     - LIGHT: under_15s=90.0% / action_match=10.0% / near_tie_mismatch=1 / dangerous_flip=7 / CHECK→BET=7
     - MIDDLE: under_15s=70.0% / action_match=50.0% / near_tie_mismatch=1 / dangerous_flip=3 / CHECK→BET=3
     - FAST_MIDDLE: under_15s=0.0% / action_match=60.0% / near_tie_mismatch=1 / dangerous_flip=2 / CHECK→BET=2
+- HU deep-SPR flop最適化方針:
+  - turn / LLMにはまだ進まない
+  - 現状deep-SPR flop primaryを基準に、grid探索で15秒以内かつ整合性の高い設定を探す
+  - max_iterations / target_exploitability_pct / bet_sizes / all-in候補有無を比較
+  - 低精度・高速側から試し、20秒超え枝はpruningする
+  - 本番設定は変更しない
+  - 代表3件grid実行結果:
+    - samples=3 / planned=504 / executed=36 / skipped_by_pruning=468
+    - 上位scoreは `iter150_target0_9_bets60_allin`,
+      `iter150_target1_0_bets60_allin`,
+      `iter150_target1_2_bets60_allin`
+    - 上位3profileはいずれも action_match_rate=100.0% / dangerous_flip=0
+    - ただし avg_elapsed_ms は約23.7秒〜24.0秒で under_15s_rate=0.0%
+    - 15秒以内候補は代表3件gridでは見つからず

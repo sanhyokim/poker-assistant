@@ -13,15 +13,20 @@ import pytest
 from scripts.compare_solver_requests import (
     batch_result_filename,
     build_batch_summary,
+    build_grid_probe_request,
+    build_grid_summary,
     build_summary,
     build_fast_middle_probe_request,
     build_light_probe_request,
     build_middle_probe_request,
+    compare_solver_requests_grid,
     compare_solver_requests_batch,
     compare_solver_requests,
     discover_primary_request_files,
     extract_action_summary,
     find_compare_request_for_primary,
+    grid_profile_id,
+    grid_score,
     load_solver_request,
     parse_solver_action,
     probability_summary,
@@ -490,6 +495,110 @@ def test_build_fast_middle_probe_request_overrides_solver_fields() -> None:
     assert fast_middle["turn_raise_sizes_ip"] == "2.5x"
     assert fast_middle["river_bet_sizes_oop"] == "60%,a"
     assert primary["max_iterations"] == 300
+
+
+def test_build_grid_probe_request_overrides_candidate_fields() -> None:
+    """Generated grid request updates only the diagnostic search dimensions."""
+    primary = {
+        "timeout_ms": 20000,
+        "max_iterations": 300,
+        "target_exploitability_pct": 0.6,
+        "flop_bet_sizes_oop": "60%,a",
+        "flop_bet_sizes_ip": "60%,a",
+        "turn_bet_sizes_oop": "60%,a",
+        "turn_bet_sizes_ip": "60%,a",
+    }
+
+    grid = build_grid_probe_request(
+        primary,
+        max_iterations=180,
+        target_exploitability_pct=0.9,
+        bet_sizes="50%,60%",
+    )
+
+    assert grid["timeout_ms"] == 20000
+    assert grid["max_iterations"] == 180
+    assert grid["target_exploitability_pct"] == 0.9
+    assert grid["flop_bet_sizes_oop"] == "50%,60%"
+    assert grid["flop_bet_sizes_ip"] == "50%,60%"
+    assert grid["turn_bet_sizes_oop"] == "50%,60%"
+    assert grid["turn_bet_sizes_ip"] == "50%,60%"
+    assert primary["max_iterations"] == 300
+    assert grid_profile_id(
+        max_iterations=180,
+        target_exploitability_pct=0.9,
+        bet_sizes="60%,a",
+    ) == "iter180_target0_9_bets60_allin"
+
+
+def test_grid_score_penalizes_dangerous_flips() -> None:
+    """Grid score rewards speed/matches and penalizes dangerous action flips."""
+    assert grid_score(
+        under_15s=True,
+        action_match=True,
+        amount_match=True,
+        primary_top_margin=0.30,
+        dangerous_flip=False,
+        clear_check_to_bet=False,
+        call_or_raise_to_fold=False,
+    ) == 8
+    assert grid_score(
+        under_15s=False,
+        action_match=False,
+        amount_match=False,
+        primary_top_margin=0.30,
+        dangerous_flip=True,
+        clear_check_to_bet=True,
+        call_or_raise_to_fold=False,
+    ) == -12
+
+
+def test_compare_solver_requests_grid_prunes_heavy_iterations(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Grid mode records pruned profiles after a slow candidate."""
+    grid_dir = workspace_tmp / "grid"
+    out_dir = workspace_tmp / "grid_out"
+    grid_dir.mkdir()
+    primary = grid_dir / "hand_000004_req_000004_flop.json"
+    _write_json(primary, {"request": {"name": "primary", "max_iterations": 300}})
+    monkeypatch.setattr("scripts.compare_solver_requests.GRID_MAX_ITERATIONS", (150, 180))
+    monkeypatch.setattr("scripts.compare_solver_requests.GRID_TARGET_EXPLOITABILITY", (1.2,))
+    monkeypatch.setattr("scripts.compare_solver_requests.GRID_BET_SIZES", ("60%",))
+    FakeBridge.responses = [
+        {
+            "success": True,
+            "diagnostic_elapsed_ms": 22000,
+            "probabilities": {"CHECK": 0.8, "BET 120": 0.2},
+        },
+        {
+            "success": True,
+            "diagnostic_elapsed_ms": 21001,
+            "probabilities": {"BET 120": 0.7, "CHECK": 0.3},
+        },
+    ]
+
+    summary = compare_solver_requests_grid(
+        grid_dir,
+        phase="flop",
+        sample_ids=["hand_000004_req_000004_flop"],
+        timeout=30,
+        out_dir=out_dir,
+        bridge_factory=FakeBridge,
+    )
+
+    assert summary["total_samples"] == 1
+    assert summary["total_planned_profiles"] == 2
+    assert summary["executed_count"] == 1
+    assert summary["skipped_by_pruning_count"] == 1
+    profile = summary["profiles"]["iter150_target1_2_bets60"]
+    assert profile["dangerous_flip_count"] == 1
+    item_path = out_dir / "items" / "hand_000004_req_000004_flop_grid.json"
+    item = json.loads(item_path.read_text(encoding="utf-8"))
+    assert item["baseline_probability_summary"]["top_margin"] == 0.6
+    assert item["results"][0]["dangerous_flip"] is True
+    assert item["results"][1]["skipped_by_pruning"] is True
 
 
 def test_result_filename_falls_back_to_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:

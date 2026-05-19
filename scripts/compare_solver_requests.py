@@ -36,6 +36,9 @@ VARIANT_SUFFIXES = (
     "_fast_middle_probe",
 )
 PROFILE_NAMES = ("primary", "compare", "light", "middle", "fast_middle")
+GRID_MAX_ITERATIONS = (150, 180, 200, 230, 250, 280, 300)
+GRID_TARGET_EXPLOITABILITY = (1.2, 1.0, 0.9, 0.8, 0.7, 0.6)
+GRID_BET_SIZES = ("60%,a", "60%", "50%,60%", "33%,60%")
 
 
 def load_solver_request(path: Path) -> JsonDict:
@@ -109,6 +112,9 @@ def run_solver_request_payload(
     finally:
         elapsed_ms = int((time.perf_counter() - started_at) * 1000)
         bridge.stop()
+    diagnostic_elapsed = _optional_int(raw_result.get("diagnostic_elapsed_ms"))
+    if diagnostic_elapsed is not None:
+        elapsed_ms = diagnostic_elapsed
 
     action, amount, probabilities = extract_action_summary(raw_result)
     return {
@@ -189,6 +195,39 @@ def build_fast_middle_probe_request(primary_request: JsonDict) -> JsonDict:
         fast_middle_request[f"{street}_raise_sizes_ip"] = "2.5x"
 
     return fast_middle_request
+
+
+def build_grid_probe_request(
+    primary_request: JsonDict,
+    *,
+    max_iterations: int,
+    target_exploitability_pct: float,
+    bet_sizes: str,
+) -> JsonDict:
+    """Return a grid-search request derived from a primary Solver request."""
+    grid_request = dict(primary_request)
+    grid_request["max_iterations"] = max_iterations
+    grid_request["target_exploitability_pct"] = target_exploitability_pct
+    for street in ("flop", "turn"):
+        grid_request[f"{street}_bet_sizes_oop"] = bet_sizes
+        grid_request[f"{street}_bet_sizes_ip"] = bet_sizes
+    return grid_request
+
+
+def grid_profile_id(
+    *,
+    max_iterations: int,
+    target_exploitability_pct: float,
+    bet_sizes: str,
+) -> str:
+    """Return a compact grid profile id."""
+    bet_label = (
+        bet_sizes.replace("%", "")
+        .replace(",", "_")
+        .replace("a", "allin")
+    )
+    target_label = str(target_exploitability_pct).replace(".", "_")
+    return f"iter{max_iterations}_target{target_label}_bets{bet_label}"
 
 
 def extract_action_summary(result: JsonDict) -> tuple[str | None, int | None, JsonDict]:
@@ -461,6 +500,405 @@ def compare_solver_requests_batch(
     return summary
 
 
+def compare_solver_requests_grid(
+    grid_dir: Path,
+    *,
+    phase: str,
+    sample_ids: list[str] | None,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+) -> JsonDict:
+    """Run a diagnostic grid search against primary deep-SPR flop requests."""
+    primary_paths = discover_primary_request_files(grid_dir, phase)
+    if sample_ids:
+        selected = set(sample_ids)
+        primary_paths = [
+            path for path in primary_paths if sample_id(path) in selected
+        ]
+
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    all_results: list[JsonDict] = []
+    planned_profiles = len(grid_profile_configs())
+    print(
+        "GRID DISCOVERY: "
+        f"grid_dir={grid_dir} phase={phase} samples={len(primary_paths)} "
+        f"profiles_per_sample={planned_profiles}"
+    )
+
+    for primary_path in primary_paths:
+        item = _run_grid_for_sample(
+            primary_path,
+            timeout=timeout,
+            bridge_factory=bridge_factory,
+        )
+        all_results.extend(item["results"])
+        output_path = items_dir / f"{sample_id(primary_path)}_grid.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_grid_summary(
+        total_samples=len(primary_paths),
+        total_planned_profiles=len(primary_paths) * planned_profiles,
+        results=all_results,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "grid_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def grid_profile_configs() -> list[JsonDict]:
+    """Return grid profile configurations in fastest-to-slowest order."""
+    profiles: list[JsonDict] = []
+    for bet_sizes in GRID_BET_SIZES:
+        for target in GRID_TARGET_EXPLOITABILITY:
+            for max_iterations in GRID_MAX_ITERATIONS:
+                profiles.append(
+                    {
+                        "profile_id": grid_profile_id(
+                            max_iterations=max_iterations,
+                            target_exploitability_pct=target,
+                            bet_sizes=bet_sizes,
+                        ),
+                        "max_iterations": max_iterations,
+                        "target_exploitability_pct": target,
+                        "bet_sizes": bet_sizes,
+                    }
+                )
+    return profiles
+
+
+def _run_grid_for_sample(
+    primary_path: Path,
+    *,
+    timeout: float,
+    bridge_factory: BridgeFactory,
+) -> JsonDict:
+    """Run baseline and grid profiles for one sample."""
+    primary_request = load_solver_request(primary_path)
+    baseline = run_solver_request_payload(
+        primary_request,
+        path_label=str(primary_path),
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
+    baseline_probabilities = baseline.get("probabilities")
+    if not isinstance(baseline_probabilities, dict):
+        baseline_probabilities = {}
+    baseline_summary = probability_summary(baseline_probabilities)
+    results: list[JsonDict] = []
+
+    for bet_sizes in GRID_BET_SIZES:
+        skip_stricter_targets = False
+        consecutive_slow_targets = 0
+        for target in GRID_TARGET_EXPLOITABILITY:
+            target_slow = False
+            if skip_stricter_targets:
+                for max_iterations in GRID_MAX_ITERATIONS:
+                    config = _grid_config(max_iterations, target, bet_sizes)
+                    results.append(
+                        _skipped_grid_result(
+                            primary_path,
+                            baseline,
+                            baseline_summary,
+                            config,
+                            "slower_target_pruned",
+                        )
+                    )
+                continue
+
+            prune_heavier_iterations = False
+            for max_iterations in GRID_MAX_ITERATIONS:
+                config = _grid_config(max_iterations, target, bet_sizes)
+                if prune_heavier_iterations:
+                    results.append(
+                        _skipped_grid_result(
+                            primary_path,
+                            baseline,
+                            baseline_summary,
+                            config,
+                            "heavier_iterations_pruned",
+                        )
+                    )
+                    continue
+
+                request = build_grid_probe_request(
+                    primary_request,
+                    max_iterations=int(config["max_iterations"]),
+                    target_exploitability_pct=float(
+                        config["target_exploitability_pct"]
+                    ),
+                    bet_sizes=str(config["bet_sizes"]),
+                )
+                result = run_solver_request_payload(
+                    request,
+                    path_label=f"generated_grid_probe_from:{primary_path}",
+                    timeout=timeout,
+                    bridge_factory=bridge_factory,
+                )
+                grid_result = _grid_result_summary(
+                    primary_path,
+                    baseline,
+                    baseline_summary,
+                    config,
+                    result,
+                )
+                results.append(grid_result)
+                elapsed_ms = _optional_int(result.get("elapsed_ms"))
+                if elapsed_ms is not None and elapsed_ms > 20000:
+                    target_slow = True
+                    prune_heavier_iterations = True
+
+            if target >= 0.9 and target_slow:
+                consecutive_slow_targets += 1
+            else:
+                consecutive_slow_targets = 0
+            if target == 0.9 and consecutive_slow_targets >= 2:
+                skip_stricter_targets = True
+
+    return {
+        "sample_id": sample_id(primary_path),
+        "primary_path": str(primary_path),
+        "baseline": baseline,
+        "baseline_probability_summary": baseline_summary,
+        "results": results,
+    }
+
+
+def _grid_config(
+    max_iterations: int,
+    target_exploitability_pct: float,
+    bet_sizes: str,
+) -> JsonDict:
+    """Return a normalized grid config dictionary."""
+    return {
+        "profile_id": grid_profile_id(
+            max_iterations=max_iterations,
+            target_exploitability_pct=target_exploitability_pct,
+            bet_sizes=bet_sizes,
+        ),
+        "max_iterations": max_iterations,
+        "target_exploitability_pct": target_exploitability_pct,
+        "bet_sizes": bet_sizes,
+    }
+
+
+def _grid_result_summary(
+    primary_path: Path,
+    baseline: JsonDict,
+    baseline_summary: JsonDict,
+    config: JsonDict,
+    result: JsonDict,
+) -> JsonDict:
+    """Return one executed grid result row."""
+    action_match = baseline.get("action") == result.get("action")
+    amount_match = baseline.get("amount") == result.get("amount")
+    flags = _mismatch_flags(
+        baseline.get("action"),
+        result.get("action"),
+        _optional_float(baseline_summary.get("top_margin")),
+    )
+    probabilities = result.get("probabilities")
+    if not isinstance(probabilities, dict):
+        probabilities = {}
+    row: JsonDict = {
+        "sample_id": sample_id(primary_path),
+        **config,
+        "skipped_by_pruning": False,
+        "success": result["success"],
+        "elapsed_ms": result["elapsed_ms"],
+        "under_15s": _under_15s(result),
+        "action": result["action"],
+        "amount": result["amount"],
+        "action_match": action_match,
+        "amount_match": amount_match,
+        "dangerous_flip": flags["dangerous_flip"],
+        "clear_check_to_bet": flags["clear_check_to_bet"],
+        "call_or_raise_to_fold": flags["call_or_raise_to_fold"],
+        "near_tie_mismatch": flags["action_mismatch_near_tie"],
+        "score": grid_score(
+            under_15s=_under_15s(result),
+            action_match=action_match,
+            amount_match=amount_match,
+            primary_top_margin=_optional_float(baseline_summary.get("top_margin")),
+            dangerous_flip=flags["dangerous_flip"],
+            clear_check_to_bet=flags["clear_check_to_bet"],
+            call_or_raise_to_fold=flags["call_or_raise_to_fold"],
+        ),
+        "probabilities": probabilities,
+        "error": result["error"],
+        "baseline_action": baseline.get("action"),
+        "baseline_amount": baseline.get("amount"),
+        "baseline_probabilities": baseline.get("probabilities"),
+        "baseline_top_action": baseline_summary.get("top_action"),
+        "baseline_top_probability": baseline_summary.get("top_probability"),
+        "baseline_second_action": baseline_summary.get("second_action"),
+        "baseline_second_probability": baseline_summary.get("second_probability"),
+        "baseline_top_margin": baseline_summary.get("top_margin"),
+    }
+    return row
+
+
+def _skipped_grid_result(
+    primary_path: Path,
+    baseline: JsonDict,
+    baseline_summary: JsonDict,
+    config: JsonDict,
+    reason: str,
+) -> JsonDict:
+    """Return a skipped grid result row."""
+    return {
+        "sample_id": sample_id(primary_path),
+        **config,
+        "skipped_by_pruning": True,
+        "skip_reason": reason,
+        "success": None,
+        "elapsed_ms": None,
+        "under_15s": None,
+        "action": None,
+        "amount": None,
+        "action_match": None,
+        "amount_match": None,
+        "dangerous_flip": None,
+        "clear_check_to_bet": None,
+        "call_or_raise_to_fold": None,
+        "near_tie_mismatch": None,
+        "score": None,
+        "probabilities": {},
+        "error": None,
+        "baseline_action": baseline.get("action"),
+        "baseline_amount": baseline.get("amount"),
+        "baseline_probabilities": baseline.get("probabilities"),
+        "baseline_top_action": baseline_summary.get("top_action"),
+        "baseline_top_probability": baseline_summary.get("top_probability"),
+        "baseline_second_action": baseline_summary.get("second_action"),
+        "baseline_second_probability": baseline_summary.get("second_probability"),
+        "baseline_top_margin": baseline_summary.get("top_margin"),
+    }
+
+
+def grid_score(
+    *,
+    under_15s: bool | None,
+    action_match: bool,
+    amount_match: bool,
+    primary_top_margin: float | None,
+    dangerous_flip: bool,
+    clear_check_to_bet: bool,
+    call_or_raise_to_fold: bool,
+) -> int:
+    """Score one grid result for diagnostics."""
+    score = 0
+    if under_15s:
+        score += 3
+    if action_match:
+        score += 4
+    if amount_match:
+        score += 1
+    if not action_match and primary_top_margin is not None and primary_top_margin <= 0.10:
+        score += 1
+    if dangerous_flip:
+        score -= 5
+    if clear_check_to_bet:
+        score -= 7
+    if call_or_raise_to_fold:
+        score -= 10
+    return score
+
+
+def build_grid_summary(
+    *,
+    total_samples: int,
+    total_planned_profiles: int,
+    results: list[JsonDict],
+) -> JsonDict:
+    """Aggregate all grid result rows."""
+    executed = [row for row in results if not row.get("skipped_by_pruning")]
+    skipped_count = len(results) - len(executed)
+    profiles: dict[str, JsonDict] = {}
+    for profile_id in sorted({str(row["profile_id"]) for row in results}):
+        rows = [row for row in results if row["profile_id"] == profile_id]
+        profiles[profile_id] = _grid_profile_summary(rows)
+
+    top_profiles_by_score = sorted(
+        profiles.values(),
+        key=lambda row: (
+            _optional_float(row.get("avg_score")) or -999.0,
+            _optional_float(row.get("under_15s_rate")) or 0.0,
+        ),
+        reverse=True,
+    )[:10]
+    top_profiles_under_15s = sorted(
+        profiles.values(),
+        key=lambda row: (
+            _optional_float(row.get("under_15s_rate")) or 0.0,
+            _optional_float(row.get("action_match_rate")) or 0.0,
+            -int(row.get("dangerous_flip_count") or 0),
+        ),
+        reverse=True,
+    )[:10]
+    return {
+        "total_samples": total_samples,
+        "total_planned_profiles": total_planned_profiles,
+        "executed_count": len(executed),
+        "skipped_by_pruning_count": skipped_count,
+        "top_profiles_by_score": top_profiles_by_score,
+        "top_profiles_under_15s": top_profiles_under_15s,
+        "profiles": profiles,
+    }
+
+
+def _grid_profile_summary(rows: list[JsonDict]) -> JsonDict:
+    """Aggregate a single grid profile across samples."""
+    executed = [row for row in rows if not row.get("skipped_by_pruning")]
+    elapsed_values = [
+        int(row["elapsed_ms"])
+        for row in executed
+        if row.get("elapsed_ms") is not None
+    ]
+    scores = [
+        int(row["score"])
+        for row in executed
+        if row.get("score") is not None
+    ]
+    profile_id = str(rows[0]["profile_id"]) if rows else ""
+    return {
+        "profile_id": profile_id,
+        "planned_count": len(rows),
+        "executed_count": len(executed),
+        "skipped_by_pruning_count": len(rows) - len(executed),
+        "success_count": sum(1 for row in executed if row.get("success") is True),
+        "error_count": sum(1 for row in executed if row.get("success") is False),
+        "avg_elapsed_ms": _average(elapsed_values),
+        "under_15s_rate": _rate(
+            sum(1 for value in elapsed_values if value <= 15000),
+            len(elapsed_values),
+        ),
+        "action_match_rate": _rate(
+            sum(1 for row in executed if row.get("action_match") is True),
+            len(executed),
+        ),
+        "amount_match_rate": _rate(
+            sum(1 for row in executed if row.get("amount_match") is True),
+            len(executed),
+        ),
+        "dangerous_flip_count": sum(
+            1 for row in executed if row.get("dangerous_flip") is True
+        ),
+        "clear_check_to_bet_count": sum(
+            1 for row in executed if row.get("clear_check_to_bet") is True
+        ),
+        "call_or_raise_to_fold_count": sum(
+            1 for row in executed if row.get("call_or_raise_to_fold") is True
+        ),
+        "avg_score": _average(scores),
+    }
+
+
 def discover_primary_request_files(batch_dir: Path, phase: str) -> list[Path]:
     """Return primary request files for a phase, excluding diagnostic variants."""
     pattern = f"hand_*_req_*_{phase}.json"
@@ -674,9 +1112,25 @@ def probability_summary(probabilities: dict[str, float]) -> JsonDict:
 
 def _variant_margin_flags(item: JsonDict, profile: str) -> JsonDict:
     """Return mismatch severity flags for one variant against primary."""
-    primary_action = item.get("primary_action")
-    variant_action = item.get(f"{profile}_action")
-    primary_margin = _optional_float(item.get("primary_top_margin"))
+    flags = _mismatch_flags(
+        item.get("primary_action"),
+        item.get(f"{profile}_action"),
+        _optional_float(item.get("primary_top_margin")),
+    )
+    return {
+        f"{profile}_action_mismatch_near_tie": flags["action_mismatch_near_tie"],
+        f"{profile}_dangerous_flip": flags["dangerous_flip"],
+        f"{profile}_clear_check_to_bet": flags["clear_check_to_bet"],
+        f"{profile}_call_or_raise_to_fold": flags["call_or_raise_to_fold"],
+    }
+
+
+def _mismatch_flags(
+    primary_action: object,
+    variant_action: object,
+    primary_margin: float | None,
+) -> JsonDict:
+    """Return mismatch severity flags for two actions."""
     action_mismatch = primary_action != variant_action
     near_tie_mismatch = (
         action_mismatch and primary_margin is not None and primary_margin <= 0.10
@@ -691,10 +1145,10 @@ def _variant_margin_flags(item: JsonDict, profile: str) -> JsonDict:
         primary_action in {"CALL", "RAISE"} and variant_action == "FOLD"
     )
     return {
-        f"{profile}_action_mismatch_near_tie": near_tie_mismatch,
-        f"{profile}_dangerous_flip": dangerous_flip,
-        f"{profile}_clear_check_to_bet": clear_check_to_bet,
-        f"{profile}_call_or_raise_to_fold": call_or_raise_to_fold,
+        "action_mismatch_near_tie": near_tie_mismatch,
+        "dangerous_flip": dangerous_flip,
+        "clear_check_to_bet": clear_check_to_bet,
+        "call_or_raise_to_fold": call_or_raise_to_fold,
     }
 
 
@@ -803,6 +1257,26 @@ def print_batch_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_grid_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for a grid run."""
+    print("GRID SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"planned={summary['total_planned_profiles']}")
+    print(f"executed={summary['executed_count']}")
+    print(f"skipped_by_pruning={summary['skipped_by_pruning_count']}")
+    print("")
+    print("TOP PROFILES")
+    for index, profile in enumerate(summary["top_profiles_by_score"], start=1):
+        print(
+            f"{index}. {profile['profile_id']} "
+            f"score={profile['avg_score']} "
+            f"under_15s_rate={_percent(profile['under_15s_rate'])} "
+            f"action_match_rate={_percent(profile['action_match_rate'])} "
+            f"dangerous_flip={profile['dangerous_flip_count']}"
+        )
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the comparison CLI.
 
@@ -821,10 +1295,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--middle", default=None, type=Path)
     parser.add_argument("--fast-middle", default=None, type=Path)
     parser.add_argument("--batch-dir", default=None, type=Path)
+    parser.add_argument("--grid-dir", default=None, type=Path)
     parser.add_argument("--phase", default="flop")
+    parser.add_argument("--sample-ids", default=None)
     parser.add_argument("--timeout", default=30.0, type=float)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
+
+    if args.grid_dir is not None:
+        sample_ids = None
+        if args.sample_ids:
+            sample_ids = [
+                sample_id_text.strip()
+                for sample_id_text in args.sample_ids.split(",")
+                if sample_id_text.strip()
+            ]
+        result = compare_solver_requests_grid(
+            args.grid_dir,
+            phase=args.phase,
+            sample_ids=sample_ids,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_grid_summary(result)
+        return 0
 
     if args.batch_dir is not None:
         result = compare_solver_requests_batch(
