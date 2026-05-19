@@ -815,3 +815,15 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
     - 上位3profileはいずれも action_match_rate=100.0% / dangerous_flip=0
     - ただし avg_elapsed_ms は約23.7秒〜24.0秒で under_15s_rate=0.0%
     - 15秒以内候補は代表3件gridでは見つからず
+- all-in候補について:
+  - grid結果ではall-in候補を外しても速度改善はほぼ見られない
+  - all-in候補ありの方が現状primaryと整合するケースがある
+  - 現時点ではflop deep-SPR primaryの `60%,a` は維持方針
+- 次の検証:
+  - 同一deep-SPR flop primary requestを複数回実行し、Solver出力の再現性を確認する
+  - repeatability実行結果:
+    - samples=3 / repeat_count=5 / unstable_sample_count=1
+    - hand_000004_req_000004_flop: action_stable=True / action_set=[CHECK] / elapsed_spread_ms=715
+    - hand_000006_req_000007_flop: action_stable=True / action_set=[CHECK] / elapsed_spread_ms=2041
+    - hand_000016_req_000011_flop: action_stable=False / action_set=[FOLD, RAISE] / elapsed_spread_ms=601
+    - hand_000016_req_000011_flop は top_margin_range=[0.010, 0.012] の極端な僅差でactionが揺れている

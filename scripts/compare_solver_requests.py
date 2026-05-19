@@ -551,6 +551,186 @@ def compare_solver_requests_grid(
     return summary
 
 
+def compare_solver_requests_repeat(
+    *,
+    repeat_path: Path | None,
+    repeat_dir: Path | None,
+    sample_ids: list[str] | None,
+    repeat_count: int,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+) -> JsonDict:
+    """Run identical Solver requests multiple times for repeatability checks."""
+    request_paths = discover_repeat_request_files(repeat_path, repeat_dir, sample_ids)
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+
+    print(
+        "REPEAT DISCOVERY: "
+        f"samples={len(request_paths)} repeat_count={repeat_count}"
+    )
+    for request_path in request_paths:
+        item = _run_repeat_for_sample(
+            request_path,
+            repeat_count=repeat_count,
+            timeout=timeout,
+            bridge_factory=bridge_factory,
+        )
+        items.append(item)
+        output_path = items_dir / f"{sample_id(request_path)}_repeat.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_repeatability_summary(items)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "repeatability_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def discover_repeat_request_files(
+    repeat_path: Path | None,
+    repeat_dir: Path | None,
+    sample_ids: list[str] | None,
+) -> list[Path]:
+    """Return request files for repeatability mode."""
+    if repeat_path is not None:
+        return [repeat_path]
+    if repeat_dir is None:
+        return []
+    paths = discover_primary_request_files(repeat_dir, "flop")
+    if not sample_ids:
+        return paths
+    selected = set(sample_ids)
+    return [path for path in paths if sample_id(path) in selected]
+
+
+def _run_repeat_for_sample(
+    request_path: Path,
+    *,
+    repeat_count: int,
+    timeout: float,
+    bridge_factory: BridgeFactory,
+) -> JsonDict:
+    """Run the same request repeatedly and summarize the sample."""
+    request = load_solver_request(request_path)
+    runs: list[JsonDict] = []
+    for run_index in range(1, repeat_count + 1):
+        result = run_solver_request_payload(
+            request,
+            path_label=str(request_path),
+            timeout=timeout,
+            bridge_factory=bridge_factory,
+        )
+        runs.append(
+            {
+                "run": run_index,
+                "success": result["success"],
+                "elapsed_ms": result["elapsed_ms"],
+                "action": result["action"],
+                "amount": result["amount"],
+                "probabilities": result["probabilities"],
+                "error": result["error"],
+            }
+        )
+
+    summary = repeatability_item_summary(sample_id(request_path), runs)
+    if summary["unstable"]:
+        print(
+            "SOLVER_REPEATABILITY_UNSTABLE: "
+            f"sample_id={summary['sample_id']} "
+            f"action_set={summary['action_set']} amount_set={summary['amount_set']}"
+        )
+    return {
+        "sample_id": sample_id(request_path),
+        "path": str(request_path),
+        "repeat_count": repeat_count,
+        "runs": runs,
+        "summary": summary,
+    }
+
+
+def repeatability_item_summary(sample_id_value: str, runs: list[JsonDict]) -> JsonDict:
+    """Aggregate repeated run results for one request."""
+    actions = sorted({run.get("action") for run in runs if run.get("action") is not None})
+    amounts = sorted({run.get("amount") for run in runs if run.get("amount") is not None})
+    elapsed_values = [
+        int(run["elapsed_ms"])
+        for run in runs
+        if run.get("elapsed_ms") is not None
+    ]
+    top_margins = [
+        summary["top_margin"]
+        for summary in (
+            probability_summary(_probabilities_from_run(run)) for run in runs
+        )
+        if summary["top_margin"] is not None
+    ]
+    top_actions = sorted(
+        {
+            summary["top_action"]
+            for summary in (
+                probability_summary(_probabilities_from_run(run)) for run in runs
+            )
+            if summary["top_action"] is not None
+        }
+    )
+    action_stable = len(actions) <= 1
+    amount_stable = len(amounts) <= 1
+    return {
+        "sample_id": sample_id_value,
+        "run_count": len(runs),
+        "action_set": actions,
+        "amount_set": amounts,
+        "action_stable": action_stable,
+        "amount_stable": amount_stable,
+        "unstable": not action_stable,
+        "avg_elapsed_ms": _average(elapsed_values),
+        "min_elapsed_ms": min(elapsed_values) if elapsed_values else None,
+        "max_elapsed_ms": max(elapsed_values) if elapsed_values else None,
+        "elapsed_spread_ms": (
+            max(elapsed_values) - min(elapsed_values) if elapsed_values else None
+        ),
+        "probability_top_action_set": top_actions,
+        "probability_top_margin_range": (
+            [round(min(top_margins), 3), round(max(top_margins), 3)]
+            if top_margins
+            else None
+        ),
+    }
+
+
+def build_repeatability_summary(items: list[JsonDict]) -> JsonDict:
+    """Aggregate repeatability item summaries."""
+    summaries = [item["summary"] for item in items]
+    unstable_samples = [
+        summary["sample_id"] for summary in summaries if summary["unstable"]
+    ]
+    elapsed_spreads = [
+        int(summary["elapsed_spread_ms"])
+        for summary in summaries
+        if summary.get("elapsed_spread_ms") is not None
+    ]
+    return {
+        "total_samples": len(items),
+        "unstable_sample_count": len(unstable_samples),
+        "unstable_samples": unstable_samples,
+        "avg_elapsed_spread_ms": _average(elapsed_spreads),
+        "items": summaries,
+    }
+
+
+def _probabilities_from_run(run: JsonDict) -> dict[str, float]:
+    probabilities = run.get("probabilities")
+    if not isinstance(probabilities, dict):
+        return {}
+    return {str(action): float(probability) for action, probability in probabilities.items()}
+
+
 def grid_profile_configs() -> list[JsonDict]:
     """Return grid profile configurations in fastest-to-slowest order."""
     profiles: list[JsonDict] = []
@@ -1277,6 +1457,24 @@ def print_grid_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_repeatability_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for a repeatability run."""
+    print("REPEATABILITY SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"unstable_sample_count={summary['unstable_sample_count']}")
+    print(f"avg_elapsed_spread_ms={summary['avg_elapsed_spread_ms']}")
+    for item in summary["items"]:
+        print(
+            f"{item['sample_id']}: "
+            f"action_stable={item['action_stable']} "
+            f"amount_stable={item['amount_stable']} "
+            f"actions={item['action_set']} "
+            f"amounts={item['amount_set']} "
+            f"elapsed_spread_ms={item['elapsed_spread_ms']}"
+        )
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the comparison CLI.
 
@@ -1296,20 +1494,36 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fast-middle", default=None, type=Path)
     parser.add_argument("--batch-dir", default=None, type=Path)
     parser.add_argument("--grid-dir", default=None, type=Path)
+    parser.add_argument("--repeat-path", default=None, type=Path)
+    parser.add_argument("--repeat-dir", default=None, type=Path)
+    parser.add_argument("--repeat-count", default=5, type=int)
     parser.add_argument("--phase", default="flop")
     parser.add_argument("--sample-ids", default=None)
     parser.add_argument("--timeout", default=30.0, type=float)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
 
+    sample_ids = None
+    if args.sample_ids:
+        sample_ids = [
+            sample_id_text.strip()
+            for sample_id_text in args.sample_ids.split(",")
+            if sample_id_text.strip()
+        ]
+
+    if args.repeat_path is not None or args.repeat_dir is not None:
+        result = compare_solver_requests_repeat(
+            repeat_path=args.repeat_path,
+            repeat_dir=args.repeat_dir,
+            sample_ids=sample_ids,
+            repeat_count=args.repeat_count,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_repeatability_summary(result)
+        return 0
+
     if args.grid_dir is not None:
-        sample_ids = None
-        if args.sample_ids:
-            sample_ids = [
-                sample_id_text.strip()
-                for sample_id_text in args.sample_ids.split(",")
-                if sample_id_text.strip()
-            ]
         result = compare_solver_requests_grid(
             args.grid_dir,
             phase=args.phase,

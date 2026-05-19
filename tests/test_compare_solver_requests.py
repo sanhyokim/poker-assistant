@@ -15,10 +15,12 @@ from scripts.compare_solver_requests import (
     build_batch_summary,
     build_grid_probe_request,
     build_grid_summary,
+    build_repeatability_summary,
     build_summary,
     build_fast_middle_probe_request,
     build_light_probe_request,
     build_middle_probe_request,
+    compare_solver_requests_repeat,
     compare_solver_requests_grid,
     compare_solver_requests_batch,
     compare_solver_requests,
@@ -30,6 +32,7 @@ from scripts.compare_solver_requests import (
     load_solver_request,
     parse_solver_action,
     probability_summary,
+    repeatability_item_summary,
     result_filename,
     sample_id,
 )
@@ -599,6 +602,102 @@ def test_compare_solver_requests_grid_prunes_heavy_iterations(
     assert item["baseline_probability_summary"]["top_margin"] == 0.6
     assert item["results"][0]["dangerous_flip"] is True
     assert item["results"][1]["skipped_by_pruning"] is True
+
+
+def test_repeatability_item_summary_detects_unstable_actions() -> None:
+    """Repeatability item summary reports action and elapsed instability."""
+    summary = repeatability_item_summary(
+        "hand_000006_req_000007_flop",
+        [
+            {
+                "action": "CHECK",
+                "amount": 0,
+                "elapsed_ms": 28000,
+                "probabilities": {"CHECK": 0.6, "BET 120": 0.4},
+            },
+            {
+                "action": "BET",
+                "amount": 120,
+                "elapsed_ms": 30000,
+                "probabilities": {"BET 120": 0.55, "CHECK": 0.45},
+            },
+        ],
+    )
+
+    assert summary["action_stable"] is False
+    assert summary["amount_stable"] is False
+    assert summary["unstable"] is True
+    assert summary["action_set"] == ["BET", "CHECK"]
+    assert summary["amount_set"] == [0, 120]
+    assert summary["elapsed_spread_ms"] == 2000
+    assert summary["probability_top_action_set"] == ["BET", "CHECK"]
+    assert summary["probability_top_margin_range"] == [0.1, 0.2]
+
+
+def test_compare_solver_requests_repeat_writes_items_and_summary(
+    workspace_tmp: Path,
+) -> None:
+    """Repeat mode runs the same request N times and writes summaries."""
+    request_path = workspace_tmp / "hand_000006_req_000007_flop.json"
+    out_dir = workspace_tmp / "repeat_out"
+    _write_json(request_path, {"request": {"name": "repeat"}})
+    FakeBridge.responses = [
+        {
+            "success": True,
+            "diagnostic_elapsed_ms": 28000,
+            "probabilities": {"CHECK": 0.6, "BET 120": 0.4},
+        },
+        {
+            "success": True,
+            "diagnostic_elapsed_ms": 28100,
+            "probabilities": {"CHECK": 0.62, "BET 120": 0.38},
+        },
+    ]
+
+    summary = compare_solver_requests_repeat(
+        repeat_path=request_path,
+        repeat_dir=None,
+        sample_ids=None,
+        repeat_count=2,
+        timeout=30,
+        out_dir=out_dir,
+        bridge_factory=FakeBridge,
+    )
+
+    assert summary["total_samples"] == 1
+    assert summary["unstable_sample_count"] == 0
+    assert summary["items"][0]["action_stable"] is True
+    item_path = out_dir / "items" / "hand_000006_req_000007_flop_repeat.json"
+    assert item_path.exists()
+    summary_path = out_dir / "repeatability_summary.json"
+    assert summary_path.exists()
+
+
+def test_build_repeatability_summary_lists_unstable_samples() -> None:
+    """Repeatability summary aggregates unstable sample ids."""
+    summary = build_repeatability_summary(
+        [
+            {
+                "summary": {
+                    "sample_id": "stable",
+                    "unstable": False,
+                    "elapsed_spread_ms": 100,
+                }
+            },
+            {
+                "summary": {
+                    "sample_id": "unstable",
+                    "unstable": True,
+                    "elapsed_spread_ms": 300,
+                }
+            },
+        ]
+    )
+
+    assert summary["total_samples"] == 2
+    assert summary["unstable_sample_count"] == 1
+    assert summary["unstable_samples"] == ["unstable"]
+    assert summary["avg_elapsed_spread_ms"] == 200
 
 
 def test_result_filename_falls_back_to_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
