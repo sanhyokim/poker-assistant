@@ -17,12 +17,15 @@ from scripts.compare_solver_requests import (
     build_grid_summary,
     build_repeatability_summary,
     build_resident_timing_summary,
+    build_teacher_request,
+    build_teacher_summary,
     build_summary,
     build_fast_middle_probe_request,
     build_light_probe_request,
     build_middle_probe_request,
     compare_solver_requests_repeat,
     compare_solver_requests_resident,
+    compare_solver_requests_teacher,
     compare_solver_requests_grid,
     compare_solver_requests_batch,
     compare_solver_requests,
@@ -38,6 +41,7 @@ from scripts.compare_solver_requests import (
     resident_item_summary,
     result_filename,
     sample_id,
+    teacher_request_config,
 )
 
 
@@ -545,6 +549,113 @@ def test_build_grid_probe_request_overrides_candidate_fields() -> None:
         target_exploitability_pct=0.9,
         bet_sizes="60%,a",
     ) == "iter180_target0_9_bets60_allin"
+
+
+def test_build_teacher_request_applies_standard_and_high_profiles() -> None:
+    """Teacher request profiles increase iterations and candidate sizes."""
+    primary = {
+        "max_iterations": 300,
+        "target_exploitability_pct": 0.6,
+        "timeout_ms": 20000,
+        "flop_bet_sizes_oop": "60%,a",
+        "flop_raise_sizes_oop": "3x",
+        "river_bet_sizes_ip": "60%,a",
+    }
+
+    standard = build_teacher_request(primary, "standard")
+    high = build_teacher_request(primary, "high")
+
+    assert standard["max_iterations"] == 500
+    assert standard["target_exploitability_pct"] == 0.4
+    assert standard["timeout_ms"] == 90000
+    assert standard["flop_bet_sizes_oop"] == "33%,50%,60%,75%,a"
+    assert standard["river_raise_sizes_ip"] == "2.5x"
+    assert high["max_iterations"] == 800
+    assert high["target_exploitability_pct"] == 0.3
+    assert high["timeout_ms"] == 120000
+    assert high["flop_bet_sizes_oop"] == "25%,33%,50%,60%,75%,a"
+    assert high["turn_raise_sizes_oop"] == "2.5x,3.5x"
+    assert teacher_request_config("standard")["bet_sizes"] == "33%,50%,60%,75%,a"
+    assert primary["max_iterations"] == 300
+
+
+def test_compare_solver_requests_teacher_writes_items_and_summary(
+    workspace_tmp: Path,
+) -> None:
+    """Teacher mode writes high-precision result items and summary."""
+    request_path = workspace_tmp / "hand_000004_req_000004_flop.json"
+    out_dir = workspace_tmp / "teacher_out"
+    _write_json(request_path, {"request": {"name": "teacher"}})
+    FakeBridge.responses = [
+        {
+            "success": True,
+            "diagnostic_elapsed_ms": 84000,
+            "probabilities": {"CHECK": 0.72, "BET 120": 0.28},
+        }
+    ]
+
+    summary = compare_solver_requests_teacher(
+        teacher_path=request_path,
+        teacher_dir=None,
+        sample_ids=None,
+        teacher_profile="standard",
+        timeout=120,
+        out_dir=out_dir,
+        bridge_factory=FakeBridge,
+    )
+
+    assert summary["total_samples"] == 1
+    assert summary["success_count"] == 1
+    assert summary["avg_elapsed_ms"] == 84000
+    item_path = (
+        out_dir
+        / "items"
+        / "hand_000004_req_000004_flop_teacher_standard.json"
+    )
+    assert item_path.exists()
+    item = json.loads(item_path.read_text(encoding="utf-8"))
+    assert item["teacher_profile"] == "standard"
+    assert item["request_config"]["max_iterations"] == 500
+    assert item["top_action"] == "CHECK"
+    assert item["top_margin"] == 0.44
+
+
+def test_build_teacher_summary_aggregates_teacher_results() -> None:
+    """Teacher summary includes success/error counts and elapsed aggregates."""
+    summary = build_teacher_summary(
+        [
+            {
+                "sample_id": "a",
+                "success": True,
+                "elapsed_ms": 1000,
+                "action": "CHECK",
+                "amount": 0,
+                "top_action": "CHECK",
+                "top_probability": 0.7,
+                "top_margin": 0.4,
+                "error": None,
+            },
+            {
+                "sample_id": "b",
+                "success": False,
+                "elapsed_ms": 3000,
+                "action": None,
+                "amount": None,
+                "top_action": None,
+                "top_probability": None,
+                "top_margin": None,
+                "error": "timeout",
+            },
+        ],
+        "standard",
+    )
+
+    assert summary["total_samples"] == 2
+    assert summary["success_count"] == 1
+    assert summary["error_count"] == 1
+    assert summary["avg_elapsed_ms"] == 2000
+    assert summary["max_elapsed_ms"] == 3000
+    assert summary["profile"] == "standard"
 
 
 def test_grid_score_penalizes_dangerous_flips() -> None:

@@ -838,3 +838,25 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
     - hand_000006_req_000007_flop: avg_solve_ms=28664 / action_stable=True
     - hand_000016_req_000011_flop: avg_solve_ms=22590 / action_stable=True
   - residentでも20秒超えのため、遅さの主因はprocess起動ではなくsolve本体
+- HU deep-SPR flop teacherデータ作成方針:
+  - 本番速度用ではなく、LLM整合性検証用の高精度基準データ
+  - 現状primaryより候補BETサイズを増やし、iterationsを増やし、exploitability目標を厳しくする
+  - standard:
+    - max_iterations=500
+    - target_exploitability_pct=0.4
+    - timeout_ms=90000
+    - bet_sizes=33%,50%,60%,75%,a
+    - raise_sizes=2.5x
+  - high:
+    - max_iterations=800
+    - target_exploitability_pct=0.3
+    - timeout_ms=120000
+    - bet_sizes=25%,33%,50%,60%,75%,a
+    - raise_sizes=2.5x,3.5x
+  - 本番設定は変更しない
+  - standard teacher実行結果:
+    - samples=3 / success_count=0 / error_count=3
+    - hand_000004_req_000004_flop: 120秒timeout
+    - hand_000006_req_000007_flop: Solver process closed stdout
+    - hand_000016_req_000011_flop: Solver process closed stdout
+  - 現profileではteacherデータ作成に失敗。より狭い候補や長時間実行方針の再検討が必要

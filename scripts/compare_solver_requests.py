@@ -39,6 +39,22 @@ PROFILE_NAMES = ("primary", "compare", "light", "middle", "fast_middle")
 GRID_MAX_ITERATIONS = (150, 180, 200, 230, 250, 280, 300)
 GRID_TARGET_EXPLOITABILITY = (1.2, 1.0, 0.9, 0.8, 0.7, 0.6)
 GRID_BET_SIZES = ("60%,a", "60%", "50%,60%", "33%,60%")
+TEACHER_PROFILES: dict[str, JsonDict] = {
+    "standard": {
+        "max_iterations": 500,
+        "target_exploitability_pct": 0.4,
+        "timeout_ms": 90000,
+        "bet_sizes": "33%,50%,60%,75%,a",
+        "raise_sizes": "2.5x",
+    },
+    "high": {
+        "max_iterations": 800,
+        "target_exploitability_pct": 0.3,
+        "timeout_ms": 120000,
+        "bet_sizes": "25%,33%,50%,60%,75%,a",
+        "raise_sizes": "2.5x,3.5x",
+    },
+}
 
 
 def load_solver_request(path: Path) -> JsonDict:
@@ -212,6 +228,32 @@ def build_grid_probe_request(
         grid_request[f"{street}_bet_sizes_oop"] = bet_sizes
         grid_request[f"{street}_bet_sizes_ip"] = bet_sizes
     return grid_request
+
+
+def build_teacher_request(primary_request: JsonDict, profile: str) -> JsonDict:
+    """Return a high-precision teacher request derived from a primary request."""
+    if profile not in TEACHER_PROFILES:
+        raise ValueError(f"Unknown teacher profile: {profile}")
+    config = TEACHER_PROFILES[profile]
+    teacher_request = dict(primary_request)
+    teacher_request["max_iterations"] = int(config["max_iterations"])
+    teacher_request["target_exploitability_pct"] = float(
+        config["target_exploitability_pct"]
+    )
+    teacher_request["timeout_ms"] = int(config["timeout_ms"])
+    for street in ("flop", "turn", "river"):
+        teacher_request[f"{street}_bet_sizes_oop"] = str(config["bet_sizes"])
+        teacher_request[f"{street}_bet_sizes_ip"] = str(config["bet_sizes"])
+        teacher_request[f"{street}_raise_sizes_oop"] = str(config["raise_sizes"])
+        teacher_request[f"{street}_raise_sizes_ip"] = str(config["raise_sizes"])
+    return teacher_request
+
+
+def teacher_request_config(profile: str) -> JsonDict:
+    """Return public teacher request config for output JSON."""
+    if profile not in TEACHER_PROFILES:
+        raise ValueError(f"Unknown teacher profile: {profile}")
+    return dict(TEACHER_PROFILES[profile])
 
 
 def grid_profile_id(
@@ -648,6 +690,126 @@ def compare_solver_requests_resident(
     with summary_path.open("w", encoding="utf-8") as file:
         json.dump(summary, file, ensure_ascii=False, indent=2)
     return summary
+
+
+def compare_solver_requests_teacher(
+    *,
+    teacher_path: Path | None,
+    teacher_dir: Path | None,
+    sample_ids: list[str] | None,
+    teacher_profile: str,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+) -> JsonDict:
+    """Create high-precision teacher Solver results for selected requests."""
+    request_paths = discover_repeat_request_files(
+        teacher_path,
+        teacher_dir,
+        sample_ids,
+    )
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+    print(
+        "TEACHER DISCOVERY: "
+        f"samples={len(request_paths)} profile={teacher_profile}"
+    )
+    for request_path in request_paths:
+        item = _run_teacher_for_sample(
+            request_path,
+            teacher_profile=teacher_profile,
+            timeout=timeout,
+            bridge_factory=bridge_factory,
+        )
+        items.append(item)
+        output_path = items_dir / f"{sample_id(request_path)}_teacher_{teacher_profile}.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_teacher_summary(items, teacher_profile)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "teacher_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def _run_teacher_for_sample(
+    request_path: Path,
+    *,
+    teacher_profile: str,
+    timeout: float,
+    bridge_factory: BridgeFactory,
+) -> JsonDict:
+    """Run one teacher request and return a saved item dictionary."""
+    primary_request = load_solver_request(request_path)
+    teacher_request = build_teacher_request(primary_request, teacher_profile)
+    result = run_solver_request_payload(
+        teacher_request,
+        path_label=f"generated_teacher_{teacher_profile}_from:{request_path}",
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
+    probabilities = result.get("probabilities")
+    if not isinstance(probabilities, dict):
+        probabilities = {}
+    probability_info = probability_summary(probabilities)
+    action = result.get("action")
+    amount = result.get("amount")
+    return {
+        "sample_id": sample_id(request_path),
+        "teacher_profile": teacher_profile,
+        "source_request": str(request_path),
+        "request_config": teacher_request_config(teacher_profile),
+        "success": result["success"],
+        "elapsed_ms": result["elapsed_ms"],
+        "action": action,
+        "amount": amount,
+        "probabilities": probabilities,
+        "top_action": probability_info["top_action"],
+        "top_probability": probability_info["top_probability"],
+        "second_action": probability_info["second_action"],
+        "second_probability": probability_info["second_probability"],
+        "top_margin": probability_info["top_margin"],
+        "error": result["error"],
+        "teacher_action": action,
+        "teacher_amount": amount,
+    }
+
+
+def build_teacher_summary(items: list[JsonDict], profile: str) -> JsonDict:
+    """Aggregate teacher Solver item results."""
+    elapsed_values = [
+        int(item["elapsed_ms"])
+        for item in items
+        if item.get("elapsed_ms") is not None
+    ]
+    success_count = sum(1 for item in items if item.get("success") is True)
+    error_count = sum(1 for item in items if item.get("success") is False)
+    return {
+        "total_samples": len(items),
+        "success_count": success_count,
+        "error_count": error_count,
+        "avg_elapsed_ms": _average(elapsed_values),
+        "max_elapsed_ms": max(elapsed_values) if elapsed_values else None,
+        "profile": profile,
+        "items": [
+            {
+                "sample_id": item["sample_id"],
+                "success": item["success"],
+                "elapsed_ms": item["elapsed_ms"],
+                "action": item["action"],
+                "amount": item["amount"],
+                "top_action": item["top_action"],
+                "top_probability": item["top_probability"],
+                "top_margin": item["top_margin"],
+                "error": item["error"],
+            }
+            for item in items
+        ],
+    }
 
 
 def _run_resident_for_sample(
@@ -1671,6 +1833,25 @@ def print_resident_timing_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_teacher_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for teacher runs."""
+    print("TEACHER SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"profile={summary['profile']}")
+    print(f"success_count={summary['success_count']}")
+    print(f"error_count={summary['error_count']}")
+    print(f"avg_elapsed_ms={summary['avg_elapsed_ms']}")
+    print(f"max_elapsed_ms={summary['max_elapsed_ms']}")
+    for item in summary["items"]:
+        print(
+            f"{item['sample_id']}: "
+            f"success={item['success']} elapsed_ms={item['elapsed_ms']} "
+            f"action={item['action']} amount={item['amount']} "
+            f"top_margin={item['top_margin']}"
+        )
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the comparison CLI.
 
@@ -1694,6 +1875,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repeat-dir", default=None, type=Path)
     parser.add_argument("--resident-path", default=None, type=Path)
     parser.add_argument("--resident-dir", default=None, type=Path)
+    parser.add_argument("--teacher-path", default=None, type=Path)
+    parser.add_argument("--teacher-dir", default=None, type=Path)
+    parser.add_argument("--teacher-profile", default="standard")
     parser.add_argument("--repeat-count", default=5, type=int)
     parser.add_argument("--phase", default="flop")
     parser.add_argument("--sample-ids", default=None)
@@ -1719,6 +1903,18 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_repeatability_summary(result)
+        return 0
+
+    if args.teacher_path is not None or args.teacher_dir is not None:
+        result = compare_solver_requests_teacher(
+            teacher_path=args.teacher_path,
+            teacher_dir=args.teacher_dir,
+            sample_ids=sample_ids,
+            teacher_profile=args.teacher_profile,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_teacher_summary(result)
         return 0
 
     if args.resident_path is not None or args.resident_dir is not None:
