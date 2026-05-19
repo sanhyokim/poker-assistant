@@ -827,3 +827,14 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
     - hand_000006_req_000007_flop: action_stable=True / action_set=[CHECK] / elapsed_spread_ms=2041
     - hand_000016_req_000011_flop: action_stable=False / action_set=[FOLD, RAISE] / elapsed_spread_ms=601
     - hand_000016_req_000011_flop は top_margin_range=[0.010, 0.012] の極端な僅差でactionが揺れている
+- Solver process再利用調査:
+  - PostflopSolverBridgeは常駐CLI設計
+  - ただし診断スクリプトでは毎回bridge生成/stopしていたため、起動コスト込みの可能性あり
+  - resident modeで start_ms / solve_ms を分離して確認する
+  - resident timing実行結果:
+    - samples=3 / repeat_count=5 / start_ms=6
+    - avg_resident_solve_ms=24328 / process_reuse_effective_count=0
+    - hand_000004_req_000004_flop: avg_solve_ms=21730 / action_stable=True
+    - hand_000006_req_000007_flop: avg_solve_ms=28664 / action_stable=True
+    - hand_000016_req_000011_flop: avg_solve_ms=22590 / action_stable=True
+  - residentでも20秒超えのため、遅さの主因はprocess起動ではなくsolve本体

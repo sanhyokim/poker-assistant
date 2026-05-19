@@ -16,11 +16,13 @@ from scripts.compare_solver_requests import (
     build_grid_probe_request,
     build_grid_summary,
     build_repeatability_summary,
+    build_resident_timing_summary,
     build_summary,
     build_fast_middle_probe_request,
     build_light_probe_request,
     build_middle_probe_request,
     compare_solver_requests_repeat,
+    compare_solver_requests_resident,
     compare_solver_requests_grid,
     compare_solver_requests_batch,
     compare_solver_requests,
@@ -33,6 +35,7 @@ from scripts.compare_solver_requests import (
     parse_solver_action,
     probability_summary,
     repeatability_item_summary,
+    resident_item_summary,
     result_filename,
     sample_id,
 )
@@ -55,18 +58,27 @@ class FakeBridge:
     responses: list[dict[str, Any]] = []
     events: list[str] = []
     created_count: int = 0
+    started_count: int = 0
 
     def __init__(self) -> None:
         self.index = FakeBridge.created_count
+        self.solve_count = 0
         FakeBridge.created_count += 1
         FakeBridge.events.append(f"create:{self.index}")
+
+    def start(self) -> None:
+        """Record resident process start."""
+        FakeBridge.started_count += 1
+        FakeBridge.events.append(f"start:{self.index}")
 
     def solve(self, request: dict[str, Any], timeout: float = 12.0) -> dict[str, Any]:
         """Return the next configured solver response."""
         FakeBridge.events.append(
             f"solve:{self.index}:{request['name']}:{int(timeout)}"
         )
-        return FakeBridge.responses[self.index]
+        response = FakeBridge.responses[self.index + self.solve_count]
+        self.solve_count += 1
+        return response
 
     def stop(self) -> None:
         """Record solver process stop."""
@@ -79,6 +91,7 @@ def reset_fake_bridge() -> None:
     FakeBridge.responses = []
     FakeBridge.events = []
     FakeBridge.created_count = 0
+    FakeBridge.started_count = 0
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
@@ -698,6 +711,115 @@ def test_build_repeatability_summary_lists_unstable_samples() -> None:
     assert summary["unstable_sample_count"] == 1
     assert summary["unstable_samples"] == ["unstable"]
     assert summary["avg_elapsed_spread_ms"] == 200
+
+
+def test_resident_item_summary_separates_start_and_solve_time() -> None:
+    """Resident timing summary separates process start from solve time."""
+    summary = resident_item_summary(
+        "hand_000004_req_000004_flop",
+        [
+            {
+                "start_ms": 1200,
+                "solve_ms": 21000,
+                "total_ms": 22200,
+                "action": "CHECK",
+                "amount": 0,
+                "probabilities": {"CHECK": 0.7, "BET 120": 0.3},
+            },
+            {
+                "start_ms": None,
+                "solve_ms": 20800,
+                "total_ms": 20800,
+                "action": "CHECK",
+                "amount": 0,
+                "probabilities": {"CHECK": 0.72, "BET 120": 0.28},
+            },
+        ],
+    )
+
+    assert summary["start_ms"] == 1200
+    assert summary["avg_resident_solve_ms"] == 20900
+    assert summary["estimated_start_overhead_ms"] == 600
+    assert summary["process_reuse_effective"] is False
+    assert summary["action_stable"] is True
+
+
+def test_compare_solver_requests_resident_reuses_one_bridge(
+    workspace_tmp: Path,
+) -> None:
+    """Resident mode starts one bridge and reuses it for repeated solves."""
+    request_path = workspace_tmp / "hand_000004_req_000004_flop.json"
+    out_dir = workspace_tmp / "resident_out"
+    _write_json(request_path, {"request": {"name": "resident"}})
+    FakeBridge.responses = [
+        {
+            "success": True,
+            "diagnostic_elapsed_ms": 21000,
+            "probabilities": {"CHECK": 0.7, "BET 120": 0.3},
+        },
+        {
+            "success": True,
+            "diagnostic_elapsed_ms": 21100,
+            "probabilities": {"CHECK": 0.72, "BET 120": 0.28},
+        },
+    ]
+
+    summary = compare_solver_requests_resident(
+        resident_path=request_path,
+        resident_dir=None,
+        sample_ids=None,
+        repeat_count=2,
+        timeout=30,
+        out_dir=out_dir,
+        bridge_factory=FakeBridge,
+    )
+
+    assert FakeBridge.created_count == 1
+    assert FakeBridge.started_count == 1
+    assert FakeBridge.events.count("stop:0") == 1
+    assert FakeBridge.events == [
+        "create:0",
+        "start:0",
+        "solve:0:resident:30",
+        "solve:0:resident:30",
+        "stop:0",
+    ]
+    assert summary["total_samples"] == 1
+    assert summary["items"][0]["avg_resident_solve_ms"] == 21050
+    item_path = out_dir / "items" / "hand_000004_req_000004_flop_resident.json"
+    assert item_path.exists()
+    summary_path = out_dir / "resident_timing_summary.json"
+    assert summary_path.exists()
+
+
+def test_build_resident_timing_summary_aggregates_items() -> None:
+    """Resident timing summary aggregates solve timings and reuse effectiveness."""
+    summary = build_resident_timing_summary(
+        [
+            {
+                "summary": {
+                    "sample_id": "a",
+                    "avg_resident_solve_ms": 20000,
+                    "process_reuse_effective": True,
+                }
+            },
+            {
+                "summary": {
+                    "sample_id": "b",
+                    "avg_resident_solve_ms": 22000,
+                    "process_reuse_effective": False,
+                }
+            },
+        ],
+        start_ms=1200,
+    )
+
+    assert summary["total_samples"] == 2
+    assert summary["start_ms"] == 1200
+    assert summary["avg_resident_solve_ms"] == 21000
+    assert summary["min_resident_solve_ms"] == 20000
+    assert summary["max_resident_solve_ms"] == 22000
+    assert summary["process_reuse_effective_count"] == 1
 
 
 def test_result_filename_falls_back_to_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:

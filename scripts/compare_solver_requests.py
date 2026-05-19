@@ -592,6 +592,183 @@ def compare_solver_requests_repeat(
     return summary
 
 
+def compare_solver_requests_resident(
+    *,
+    resident_path: Path | None,
+    resident_dir: Path | None,
+    sample_ids: list[str] | None,
+    repeat_count: int,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+) -> JsonDict:
+    """Run Solver requests through one resident bridge process."""
+    request_paths = discover_repeat_request_files(
+        resident_path,
+        resident_dir,
+        sample_ids,
+    )
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    bridge = bridge_factory()
+    start_started = time.perf_counter()
+    try:
+        bridge.start()
+    except Exception:
+        bridge.stop()
+        raise
+    start_ms = int((time.perf_counter() - start_started) * 1000)
+    items: list[JsonDict] = []
+    try:
+        print(
+            "RESIDENT DISCOVERY: "
+            f"samples={len(request_paths)} repeat_count={repeat_count}"
+        )
+        first_run = True
+        for request_path in request_paths:
+            item = _run_resident_for_sample(
+                request_path,
+                repeat_count=repeat_count,
+                timeout=timeout,
+                bridge=bridge,
+                initial_start_ms=start_ms if first_run else None,
+            )
+            first_run = False
+            items.append(item)
+            output_path = items_dir / f"{sample_id(request_path)}_resident.json"
+            with output_path.open("w", encoding="utf-8") as file:
+                json.dump(item, file, ensure_ascii=False, indent=2)
+    finally:
+        bridge.stop()
+
+    summary = build_resident_timing_summary(items, start_ms)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "resident_timing_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def _run_resident_for_sample(
+    request_path: Path,
+    *,
+    repeat_count: int,
+    timeout: float,
+    bridge: PostflopSolverBridge,
+    initial_start_ms: int | None,
+) -> JsonDict:
+    """Run one request repeatedly through an already-started bridge."""
+    request = load_solver_request(request_path)
+    runs: list[JsonDict] = []
+    for run_index in range(1, repeat_count + 1):
+        solve_started = time.perf_counter()
+        raw_result: JsonDict
+        try:
+            raw_result = bridge.solve(request, timeout=timeout)
+        except Exception as exc:
+            raw_result = {"success": False, "error": str(exc)}
+        solve_ms = int((time.perf_counter() - solve_started) * 1000)
+        diagnostic_elapsed = _optional_int(raw_result.get("diagnostic_elapsed_ms"))
+        if diagnostic_elapsed is not None:
+            solve_ms = diagnostic_elapsed
+        action, amount, probabilities = extract_action_summary(raw_result)
+        start_ms = initial_start_ms if run_index == 1 else None
+        runs.append(
+            {
+                "run": run_index,
+                "start_ms": start_ms,
+                "solve_ms": solve_ms,
+                "total_ms": solve_ms + (start_ms or 0),
+                "success": bool(raw_result.get("success")),
+                "action": action,
+                "amount": amount,
+                "probabilities": probabilities,
+                "error": raw_result.get("error"),
+            }
+        )
+
+    summary = resident_item_summary(sample_id(request_path), runs)
+    return {
+        "sample_id": sample_id(request_path),
+        "path": str(request_path),
+        "repeat_count": repeat_count,
+        "runs": runs,
+        "summary": summary,
+    }
+
+
+def resident_item_summary(sample_id_value: str, runs: list[JsonDict]) -> JsonDict:
+    """Aggregate resident timing runs for one request."""
+    repeat_runs = [
+        {
+            "action": run.get("action"),
+            "amount": run.get("amount"),
+            "elapsed_ms": run.get("solve_ms"),
+            "probabilities": run.get("probabilities"),
+        }
+        for run in runs
+    ]
+    repeat_summary = repeatability_item_summary(sample_id_value, repeat_runs)
+    solve_values = [
+        int(run["solve_ms"])
+        for run in runs
+        if run.get("solve_ms") is not None
+    ]
+    total_values = [
+        int(run["total_ms"])
+        for run in runs
+        if run.get("total_ms") is not None
+    ]
+    start_values = [
+        int(run["start_ms"])
+        for run in runs
+        if run.get("start_ms") is not None
+    ]
+    avg_total = _average(total_values)
+    avg_solve = _average(solve_values)
+    estimated_start_overhead = None
+    if avg_total is not None and avg_solve is not None:
+        estimated_start_overhead = avg_total - avg_solve
+    repeat_summary.update(
+        {
+            "start_ms": start_values[0] if start_values else None,
+            "avg_resident_solve_ms": avg_solve,
+            "min_resident_solve_ms": min(solve_values) if solve_values else None,
+            "max_resident_solve_ms": max(solve_values) if solve_values else None,
+            "avg_total_ms": avg_total,
+            "estimated_start_overhead_ms": estimated_start_overhead,
+            "process_reuse_effective": (
+                estimated_start_overhead is not None
+                and estimated_start_overhead >= 2000
+            ),
+        }
+    )
+    return repeat_summary
+
+
+def build_resident_timing_summary(items: list[JsonDict], start_ms: int) -> JsonDict:
+    """Aggregate resident timing summaries."""
+    summaries = [item["summary"] for item in items]
+    solve_values = [
+        int(summary["avg_resident_solve_ms"])
+        for summary in summaries
+        if summary.get("avg_resident_solve_ms") is not None
+    ]
+    effective_count = sum(
+        1 for summary in summaries if summary.get("process_reuse_effective") is True
+    )
+    return {
+        "total_samples": len(items),
+        "start_ms": start_ms,
+        "avg_resident_solve_ms": _average(solve_values),
+        "min_resident_solve_ms": min(solve_values) if solve_values else None,
+        "max_resident_solve_ms": max(solve_values) if solve_values else None,
+        "process_reuse_effective_count": effective_count,
+        "items": summaries,
+    }
+
+
 def discover_repeat_request_files(
     repeat_path: Path | None,
     repeat_dir: Path | None,
@@ -1475,6 +1652,25 @@ def print_repeatability_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_resident_timing_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for resident timing runs."""
+    print("RESIDENT TIMING SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"start_ms={summary['start_ms']}")
+    print(f"avg_resident_solve_ms={summary['avg_resident_solve_ms']}")
+    print(f"process_reuse_effective_count={summary['process_reuse_effective_count']}")
+    for item in summary["items"]:
+        print(
+            f"{item['sample_id']}: "
+            f"avg_solve_ms={item['avg_resident_solve_ms']} "
+            f"start_ms={item['start_ms']} "
+            f"action_stable={item['action_stable']} "
+            f"amount_stable={item['amount_stable']} "
+            f"process_reuse_effective={item['process_reuse_effective']}"
+        )
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the comparison CLI.
 
@@ -1496,6 +1692,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--grid-dir", default=None, type=Path)
     parser.add_argument("--repeat-path", default=None, type=Path)
     parser.add_argument("--repeat-dir", default=None, type=Path)
+    parser.add_argument("--resident-path", default=None, type=Path)
+    parser.add_argument("--resident-dir", default=None, type=Path)
     parser.add_argument("--repeat-count", default=5, type=int)
     parser.add_argument("--phase", default="flop")
     parser.add_argument("--sample-ids", default=None)
@@ -1521,6 +1719,18 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_repeatability_summary(result)
+        return 0
+
+    if args.resident_path is not None or args.resident_dir is not None:
+        result = compare_solver_requests_resident(
+            resident_path=args.resident_path,
+            resident_dir=args.resident_dir,
+            sample_ids=sample_ids,
+            repeat_count=args.repeat_count,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_resident_timing_summary(result)
         return 0
 
     if args.grid_dir is not None:
