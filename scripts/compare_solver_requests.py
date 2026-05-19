@@ -160,6 +160,29 @@ def build_middle_probe_request(primary_request: JsonDict) -> JsonDict:
     return middle_request
 
 
+def build_fast_middle_probe_request(primary_request: JsonDict) -> JsonDict:
+    """Return a fast-middle probe request derived from a primary request.
+
+    Args:
+        primary_request: Original production Solver request dictionary.
+
+    Returns:
+        New request dictionary targeting a 15-second diagnostic profile.
+    """
+    fast_middle_request = dict(primary_request)
+    fast_middle_request["timeout_ms"] = 15000
+    fast_middle_request["max_iterations"] = 120
+    fast_middle_request["target_exploitability_pct"] = 1.2
+
+    for street in ("flop", "turn"):
+        fast_middle_request[f"{street}_bet_sizes_oop"] = "60%"
+        fast_middle_request[f"{street}_bet_sizes_ip"] = "60%"
+        fast_middle_request[f"{street}_raise_sizes_oop"] = "2.5x"
+        fast_middle_request[f"{street}_raise_sizes_ip"] = "2.5x"
+
+    return fast_middle_request
+
+
 def extract_action_summary(result: JsonDict) -> tuple[str | None, int | None, JsonDict]:
     """Extract action, amount, and probabilities from a solver response.
 
@@ -207,6 +230,7 @@ def build_summary(
     compare: JsonDict,
     light: JsonDict | None = None,
     middle: JsonDict | None = None,
+    fast_middle: JsonDict | None = None,
 ) -> JsonDict:
     """Build comparison summary fields for normalized solver results."""
     compare_summary = _variant_summary(primary, compare)
@@ -220,6 +244,11 @@ def build_summary(
         "amount_match": None,
         "speedup_ratio": None,
     }
+    fast_middle_summary = (
+        _variant_summary(primary, fast_middle)
+        if fast_middle is not None
+        else {"action_match": None, "amount_match": None, "speedup_ratio": None}
+    )
     return {
         "compare_action_match": compare_summary["action_match"],
         "compare_amount_match": compare_summary["amount_match"],
@@ -230,6 +259,10 @@ def build_summary(
         "middle_action_match": middle_summary["action_match"],
         "middle_amount_match": middle_summary["amount_match"],
         "middle_speedup_ratio": middle_summary["speedup_ratio"],
+        "fast_middle_action_match": fast_middle_summary["action_match"],
+        "fast_middle_amount_match": fast_middle_summary["amount_match"],
+        "fast_middle_speedup_ratio": fast_middle_summary["speedup_ratio"],
+        "fast_middle_under_15s": _under_15s(fast_middle),
     }
 
 
@@ -250,23 +283,35 @@ def _variant_summary(primary: JsonDict, variant: JsonDict | None) -> JsonDict:
     }
 
 
+def _under_15s(result: JsonDict | None) -> bool | None:
+    """Return whether a result completed within the 15-second target."""
+    if result is None:
+        return None
+    elapsed_ms = _optional_float(result.get("elapsed_ms"))
+    if elapsed_ms is None:
+        return None
+    return elapsed_ms <= 15000
+
+
 def compare_solver_requests(
     primary_path: Path,
     compare_path: Path,
     *,
     light_path: Path | None = None,
     middle_path: Path | None = None,
+    fast_middle_path: Path | None = None,
     timeout: float,
     out_dir: Path,
     bridge_factory: BridgeFactory = PostflopSolverBridge,
 ) -> JsonDict:
-    """Run primary, compare, light, and middle requests in separate processes.
+    """Run all diagnostic request variants in separate Solver processes.
 
     Args:
         primary_path: Primary request JSON path.
         compare_path: compare_no_allin request JSON path.
         light_path: Optional prebuilt light_probe request JSON path.
         middle_path: Optional prebuilt middle_probe request JSON path.
+        fast_middle_path: Optional prebuilt fast_middle_probe request JSON path.
         timeout: Timeout seconds per request.
         out_dir: Directory where the comparison result JSON is saved.
         bridge_factory: Factory used by tests to inject a fake bridge.
@@ -286,11 +331,19 @@ def compare_solver_requests(
         if middle_path is not None
         else build_middle_probe_request(primary_request)
     )
+    fast_middle_request = (
+        load_solver_request(fast_middle_path)
+        if fast_middle_path is not None
+        else build_fast_middle_probe_request(primary_request)
+    )
     light_label = str(light_path) if light_path is not None else (
         f"generated_light_probe_from:{primary_path}"
     )
     middle_label = str(middle_path) if middle_path is not None else (
         f"generated_middle_probe_from:{primary_path}"
+    )
+    fast_middle_label = str(fast_middle_path) if fast_middle_path is not None else (
+        f"generated_fast_middle_probe_from:{primary_path}"
     )
 
     primary = run_solver_request_payload(
@@ -317,12 +370,19 @@ def compare_solver_requests(
         timeout=timeout,
         bridge_factory=bridge_factory,
     )
+    fast_middle = run_solver_request_payload(
+        fast_middle_request,
+        path_label=fast_middle_label,
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
     result = {
         "primary": primary,
         "compare": compare,
         "light": light,
         "middle": middle,
-        "summary": build_summary(primary, compare, light, middle),
+        "fast_middle": fast_middle,
+        "summary": build_summary(primary, compare, light, middle, fast_middle),
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -348,6 +408,7 @@ def print_summary(result: JsonDict) -> None:
     compare = result["compare"]
     light = result["light"]
     middle = result["middle"]
+    fast_middle = result["fast_middle"]
     summary = result["summary"]
     print(
         "PRIMARY: "
@@ -370,10 +431,17 @@ def print_summary(result: JsonDict) -> None:
         f"action={middle['action']} amount={middle['amount']}"
     )
     print(
+        "FAST_MIDDLE: "
+        f"success={fast_middle['success']} "
+        f"elapsed_ms={fast_middle['elapsed_ms']} "
+        f"action={fast_middle['action']} amount={fast_middle['amount']}"
+    )
+    print(
         "SUMMARY: "
         f"compare_speedup_ratio={summary['compare_speedup_ratio']} "
         f"light_speedup_ratio={summary['light_speedup_ratio']} "
-        f"middle_speedup_ratio={summary['middle_speedup_ratio']}"
+        f"middle_speedup_ratio={summary['middle_speedup_ratio']} "
+        f"fast_middle_speedup_ratio={summary['fast_middle_speedup_ratio']}"
     )
     print(f"RESULT_JSON: {result['output_path']}")
 
@@ -394,6 +462,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--compare", required=True, type=Path)
     parser.add_argument("--light", default=None, type=Path)
     parser.add_argument("--middle", default=None, type=Path)
+    parser.add_argument("--fast-middle", default=None, type=Path)
     parser.add_argument("--timeout", default=30.0, type=float)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
@@ -403,6 +472,7 @@ def main(argv: list[str] | None = None) -> int:
         args.compare,
         light_path=args.light,
         middle_path=args.middle,
+        fast_middle_path=args.fast_middle,
         timeout=args.timeout,
         out_dir=args.out,
     )

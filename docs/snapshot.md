@@ -756,3 +756,13 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
   - target_exploitability_pct=1.0
   - flop/turn bet_sizes=60%
   - 目的: primaryに近い判断を保ちながら速度改善できるか確認
+- middle_probe検証結果:
+  - hand5: primary 21686ms CHECK、middle 13328ms CHECK、speedup 1.627
+  - hand6: primary 29616ms CHECK、middle 18372ms BET 139、speedup 1.612
+  - middleはhand5では良好だが、hand6では15秒を超え、かつBETへ反転
+- 次の検証対象: fast_middle_probe
+  - timeout_ms=15000
+  - max_iterations=120
+  - target_exploitability_pct=1.2
+  - flop/turn bet_sizes=60%
+  - 目的: 15秒以内でprimaryに近い判断を維持できるか確認

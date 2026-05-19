@@ -12,6 +12,7 @@ import pytest
 
 from scripts.compare_solver_requests import (
     build_summary,
+    build_fast_middle_probe_request,
     build_light_probe_request,
     build_middle_probe_request,
     compare_solver_requests,
@@ -109,7 +110,7 @@ def test_parse_solver_action_handles_all_in_label() -> None:
 def test_compare_solver_requests_stops_primary_before_compare(
     workspace_tmp: Path,
 ) -> None:
-    """Primary, compare, light, and middle requests run in clean processes."""
+    """All request variants run in clean separate processes."""
     primary_path = workspace_tmp / "hand_000005_req_000004_flop.json"
     compare_path = workspace_tmp / "hand_000005_req_000005_flop_compare_no_allin.json"
     out_dir = workspace_tmp / "out"
@@ -131,6 +132,10 @@ def test_compare_solver_requests_stops_primary_before_compare(
         {
             "success": True,
             "node_strategy": {"average_strategy": {"CALL": 0.6, "FOLD": 0.4}},
+        },
+        {
+            "success": True,
+            "node_strategy": {"average_strategy": {"CALL": 0.55, "FOLD": 0.45}},
         },
     ]
 
@@ -155,19 +160,29 @@ def test_compare_solver_requests_stops_primary_before_compare(
         "create:3",
         "solve:3:primary:30",
         "stop:3",
+        "create:4",
+        "solve:4:primary:30",
+        "stop:4",
     ]
     assert result["primary"]["action"] == "CALL"
     assert result["compare"]["action"] == "CALL"
     assert result["light"]["action"] == "CALL"
     assert result["middle"]["action"] == "CALL"
+    assert result["fast_middle"]["action"] == "CALL"
     assert result["light"]["path"] == f"generated_light_probe_from:{primary_path}"
     assert result["middle"]["path"] == f"generated_middle_probe_from:{primary_path}"
+    assert result["fast_middle"]["path"] == (
+        f"generated_fast_middle_probe_from:{primary_path}"
+    )
     assert result["summary"]["compare_action_match"] is True
     assert result["summary"]["compare_amount_match"] is True
     assert result["summary"]["light_action_match"] is True
     assert result["summary"]["light_amount_match"] is True
     assert result["summary"]["middle_action_match"] is True
     assert result["summary"]["middle_amount_match"] is True
+    assert result["summary"]["fast_middle_action_match"] is True
+    assert result["summary"]["fast_middle_amount_match"] is True
+    assert result["summary"]["fast_middle_under_15s"] is True
 
     output_path = Path(result["output_path"])
     assert output_path == out_dir / "hand_000005_flop_compare_result.json"
@@ -177,6 +192,9 @@ def test_compare_solver_requests_stops_primary_before_compare(
     assert saved["compare"]["path"] == str(compare_path)
     assert saved["light"]["path"] == f"generated_light_probe_from:{primary_path}"
     assert saved["middle"]["path"] == f"generated_middle_probe_from:{primary_path}"
+    assert saved["fast_middle"]["path"] == (
+        f"generated_fast_middle_probe_from:{primary_path}"
+    )
 
 
 def test_compare_solver_requests_uses_light_file_when_provided(
@@ -193,6 +211,7 @@ def test_compare_solver_requests_uses_light_file_when_provided(
         {"success": True, "probabilities": {"CHECK": 1.0}},
         {"success": True, "probabilities": {"CHECK": 1.0}},
         {"success": True, "probabilities": {"BET 120": 1.0}},
+        {"success": True, "probabilities": {"CHECK": 1.0}},
         {"success": True, "probabilities": {"CHECK": 1.0}},
     ]
 
@@ -225,6 +244,7 @@ def test_compare_solver_requests_uses_middle_file_when_provided(
         {"success": True, "probabilities": {"CHECK": 1.0}},
         {"success": True, "probabilities": {"CHECK": 1.0}},
         {"success": True, "probabilities": {"BET 120": 1.0}},
+        {"success": True, "probabilities": {"CHECK": 1.0}},
     ]
 
     result = compare_solver_requests(
@@ -239,6 +259,40 @@ def test_compare_solver_requests_uses_middle_file_when_provided(
     assert FakeBridge.events[10] == "solve:3:middle_file:30"
     assert result["middle"]["path"] == str(middle_path)
     assert result["summary"]["middle_action_match"] is False
+
+
+def test_compare_solver_requests_uses_fast_middle_file_when_provided(
+    workspace_tmp: Path,
+) -> None:
+    """Explicit --fast-middle path is used instead of generating a request."""
+    primary_path = workspace_tmp / "hand_000006_req_000007_flop.json"
+    compare_path = workspace_tmp / "hand_000006_req_000008_flop_compare_no_allin.json"
+    fast_middle_path = (
+        workspace_tmp / "hand_000006_req_000007_flop_fast_middle_probe.json"
+    )
+    _write_json(primary_path, {"request": {"name": "primary"}})
+    _write_json(compare_path, {"request": {"name": "compare"}})
+    _write_json(fast_middle_path, {"request": {"name": "fast_middle_file"}})
+    FakeBridge.responses = [
+        {"success": True, "probabilities": {"CHECK": 1.0}},
+        {"success": True, "probabilities": {"CHECK": 1.0}},
+        {"success": True, "probabilities": {"CHECK": 1.0}},
+        {"success": True, "probabilities": {"CHECK": 1.0}},
+        {"success": True, "probabilities": {"BET 120": 1.0}},
+    ]
+
+    result = compare_solver_requests(
+        primary_path,
+        compare_path,
+        fast_middle_path=fast_middle_path,
+        timeout=30,
+        out_dir=workspace_tmp / "out",
+        bridge_factory=FakeBridge,
+    )
+
+    assert FakeBridge.events[13] == "solve:4:fast_middle_file:30"
+    assert result["fast_middle"]["path"] == str(fast_middle_path)
+    assert result["summary"]["fast_middle_action_match"] is False
 
 
 def test_build_light_probe_request_overrides_solver_light_fields() -> None:
@@ -309,6 +363,40 @@ def test_build_middle_probe_request_overrides_solver_middle_fields() -> None:
     assert primary["max_iterations"] == 300
 
 
+def test_build_fast_middle_probe_request_overrides_solver_fields() -> None:
+    """Generated fast-middle request applies the 15-second diagnostic profile."""
+    primary = {
+        "timeout_ms": 20000,
+        "max_iterations": 300,
+        "target_exploitability_pct": 0.6,
+        "flop_bet_sizes_oop": "60%,a",
+        "flop_bet_sizes_ip": "60%,a",
+        "flop_raise_sizes_oop": "3x",
+        "flop_raise_sizes_ip": "3x",
+        "turn_bet_sizes_oop": "60%,a",
+        "turn_bet_sizes_ip": "60%,a",
+        "turn_raise_sizes_oop": "3x",
+        "turn_raise_sizes_ip": "3x",
+        "river_bet_sizes_oop": "60%,a",
+    }
+
+    fast_middle = build_fast_middle_probe_request(primary)
+
+    assert fast_middle["timeout_ms"] == 15000
+    assert fast_middle["max_iterations"] == 120
+    assert fast_middle["target_exploitability_pct"] == 1.2
+    assert fast_middle["flop_bet_sizes_oop"] == "60%"
+    assert fast_middle["flop_bet_sizes_ip"] == "60%"
+    assert fast_middle["flop_raise_sizes_oop"] == "2.5x"
+    assert fast_middle["flop_raise_sizes_ip"] == "2.5x"
+    assert fast_middle["turn_bet_sizes_oop"] == "60%"
+    assert fast_middle["turn_bet_sizes_ip"] == "60%"
+    assert fast_middle["turn_raise_sizes_oop"] == "2.5x"
+    assert fast_middle["turn_raise_sizes_ip"] == "2.5x"
+    assert fast_middle["river_bet_sizes_oop"] == "60%,a"
+    assert primary["max_iterations"] == 300
+
+
 def test_result_filename_falls_back_to_timestamp(monkeypatch: pytest.MonkeyPatch) -> None:
     """Unknown request filename still produces a result JSON filename."""
 
@@ -340,6 +428,7 @@ def test_build_summary_calculates_speedup() -> None:
         {"action": "CALL", "amount": 324, "elapsed_ms": 4000},
         {"action": "BET", "amount": 324, "elapsed_ms": 5000},
         {"action": "CALL", "amount": 120, "elapsed_ms": 10000},
+        {"action": "CALL", "amount": 324, "elapsed_ms": 15000},
     )
 
     assert summary == {
@@ -352,4 +441,8 @@ def test_build_summary_calculates_speedup() -> None:
         "middle_action_match": True,
         "middle_amount_match": False,
         "middle_speedup_ratio": 2.0,
+        "fast_middle_action_match": True,
+        "fast_middle_amount_match": True,
+        "fast_middle_speedup_ratio": 1.333,
+        "fast_middle_under_15s": True,
     }
