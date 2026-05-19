@@ -2177,8 +2177,6 @@ class GameLoop:
 
                 if game_state.active_player_count == 2:
                     # --- Heads-up: async solver via worker thread ---
-                    self._notify_hud_computing(HUD_STATUS_SOLVER_THINKING)
-
                     # Poll for a completed async result
                     recommendation = self._poll_async_recommendation_result(
                         game_state,
@@ -2224,8 +2222,11 @@ class GameLoop:
                             if self._is_solver_retry_suppressed(game_state):
                                 self._previous_recommendation = None
                                 self._previous_recommendation_context = None
-                                self._notify_hud_computing(HUD_STATUS_SOLVER_THINKING)
+                                self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
                             else:
+                                self._notify_hud_computing(
+                                    HUD_STATUS_SOLVER_THINKING
+                                )
                                 self._start_async_postflop_recommendation(
                                     game_state, snapshot,
                                 )
@@ -3249,13 +3250,19 @@ class GameLoop:
             return
         if not hasattr(self, "_solver_suppressed_contexts"):
             self._solver_suppressed_contexts = {}
+        ttl = max(
+            0.1,
+            float(getattr(self, "_solver_context_suppression_ttl_sec", 12.0)),
+        )
+        created_at = time.monotonic()
         self._solver_suppressed_contexts[coarse_key] = {
             "reason": reason,
             "request_id": request_id,
             "hand_id": hand_id,
             "phase": phase,
             "exact_key": exact_key,
-            "created_at": time.monotonic(),
+            "created_at": created_at,
+            "until": created_at + ttl,
         }
         logger.info(
             "SOLVER_CONTEXT_SUPPRESSED: reason=%s request_id=%s hand_id=%s "
@@ -3264,6 +3271,37 @@ class GameLoop:
             request_id,
             hand_id,
             phase,
+            coarse_key,
+        )
+
+    def _record_solver_input_unstable_context(
+        self,
+        game_state: GameState,
+        request_id: int | None,
+        exact_key: str | None,
+        coarse_key: str | None,
+    ) -> None:
+        """Suppress immediate retries after a solver_input_unstable result."""
+        if exact_key is None or coarse_key is None:
+            exact_key, coarse_key = self._solver_context_keys(game_state)
+        self._record_solver_suppressed_context(
+            reason="solver_input_unstable",
+            request_id=request_id,
+            hand_id=game_state.hand_id,
+            phase=game_state.phase,
+            exact_key=exact_key,
+            coarse_key=coarse_key,
+        )
+        ttl = max(
+            0.1,
+            float(getattr(self, "_solver_context_suppression_ttl_sec", 12.0)),
+        )
+        logger.info(
+            "SOLVER_UNSTABLE_CONTEXT_SUPPRESSED: hand_id=%s phase=%s "
+            "reason=solver_input_unstable ttl=%.1f key=%s",
+            game_state.hand_id,
+            game_state.phase,
+            ttl,
             coarse_key,
         )
 
@@ -3313,6 +3351,16 @@ class GameLoop:
                 self._solver_suppressed_contexts.pop(key, None)
         suppressed = self._solver_suppressed_contexts.get(coarse_key)
         if suppressed is not None:
+            if suppressed.get("reason") == "solver_input_unstable":
+                logger.info(
+                    "SOLVER_START_SUPPRESSED: "
+                    "reason=solver_input_unstable_recent "
+                    "hand_id=%s phase=%s key=%s",
+                    game_state.hand_id,
+                    game_state.phase,
+                    coarse_key,
+                )
+                return True
             logger.info(
                 "SOLVER_RETRY_SUPPRESSED: "
                 "reason=previous_stale_or_timeout_similar_context "
@@ -3808,9 +3856,26 @@ class GameLoop:
             )
         if result.strategy_source == "solver_timeout":
             self._record_solver_timeout_context(current_state)
+        if self._is_solver_input_unstable_recommendation(result):
+            self._record_solver_input_unstable_context(
+                current_state,
+                active_id,
+                completed.exact_key or pending_exact_key,
+                completed.coarse_key or pending_coarse_key,
+            )
         with self._pending_recommendation_lock:
             self._finish_async_request_locked(active_id)
         return result
+
+    @staticmethod
+    def _is_solver_input_unstable_recommendation(
+        recommendation: Recommendation,
+    ) -> bool:
+        """Return True for non-strategic solver input instability results."""
+        return (
+            recommendation.strategy_source == "solver_input_unstable"
+            or recommendation.action == "SOLVER_INPUT_UNSTABLE"
+        )
 
     def _finish_async_request(self, request_id: int) -> None:
         """Clear a completed async request after poll has handled it."""
