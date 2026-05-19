@@ -18,6 +18,22 @@
   - hand_000006_req_000007_flop: 180秒timeout
   - hand_000016_req_000011_flop: 180秒timeout
   - BET候補をprimary同等に戻してもteacher作成は成功せず
+- teacher standard / narrow は失敗
+- 次は teacher_300_plus を検証
+- teacher_300_plus:
+  - max_iterations=300
+  - target_exploitability_pct=0.6
+  - timeout_ms=180000
+  - bet_sizes=50%,60%,75%,a
+  - raise_sizes=2.5x
+- 目的:
+  - 現状deep-SPR primaryの精度水準を維持したまま、BET候補だけ増やして完走するか確認
+- teacher_300_plus 実行結果:
+  - samples=3 / success_count=0 / error_count=3
+  - hand_000004_req_000004_flop: 180秒timeout
+  - hand_000006_req_000007_flop: Solver process closed stdout
+  - hand_000016_req_000011_flop: 180秒timeout
+  - 現状primary精度水準でもBET候補追加だけでteacher作成は成功せず
 
 ## Updated: 2026-05-18 JST
 ## Status: Post-Fix85 architecture reset point

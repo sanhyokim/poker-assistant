@@ -613,6 +613,42 @@ def test_build_teacher_request_applies_narrow_profile() -> None:
     assert primary["timeout_ms"] == 20000
 
 
+def test_build_teacher_request_applies_teacher_300_plus_profile() -> None:
+    """Teacher 300 plus keeps primary precision while expanding bet sizes."""
+    primary = {
+        "max_iterations": 300,
+        "target_exploitability_pct": 0.6,
+        "timeout_ms": 20000,
+        "flop_bet_sizes_oop": "60%,a",
+        "flop_bet_sizes_ip": "60%,a",
+        "flop_raise_sizes_oop": "3x",
+        "flop_raise_sizes_ip": "3x",
+        "turn_bet_sizes_oop": "60%,a",
+        "turn_bet_sizes_ip": "60%,a",
+        "turn_raise_sizes_oop": "3x",
+        "turn_raise_sizes_ip": "3x",
+    }
+
+    teacher = build_teacher_request(primary, "teacher_300_plus")
+
+    assert teacher["max_iterations"] == 300
+    assert teacher["target_exploitability_pct"] == 0.6
+    assert teacher["timeout_ms"] == 180000
+    assert teacher["flop_bet_sizes_oop"] == "50%,60%,75%,a"
+    assert teacher["flop_bet_sizes_ip"] == "50%,60%,75%,a"
+    assert teacher["flop_raise_sizes_oop"] == "2.5x"
+    assert teacher["flop_raise_sizes_ip"] == "2.5x"
+    assert teacher["turn_bet_sizes_oop"] == "50%,60%,75%,a"
+    assert teacher["turn_bet_sizes_ip"] == "50%,60%,75%,a"
+    assert teacher["turn_raise_sizes_oop"] == "2.5x"
+    assert teacher["turn_raise_sizes_ip"] == "2.5x"
+    assert teacher_request_config("teacher_300_plus")["bet_sizes"] == (
+        "50%,60%,75%,a"
+    )
+    assert primary["flop_bet_sizes_oop"] == "60%,a"
+    assert primary["timeout_ms"] == 20000
+
+
 def test_compare_solver_requests_teacher_writes_items_and_summary(
     workspace_tmp: Path,
 ) -> None:
