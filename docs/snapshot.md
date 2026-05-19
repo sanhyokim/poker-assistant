@@ -766,3 +766,21 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
   - target_exploitability_pct=1.2
   - flop/turn bet_sizes=60%
   - 目的: 15秒以内でprimaryに近い判断を維持できるか確認
+- Solver性能検証:
+  - 個別2件の比較では判断できないため、HU flop request一括比較へ移行
+  - `scripts/compare_solver_requests.py` に batch mode を追加
+  - 対象: `debug/solver_io/20260519/hand_*_flop.json`
+  - 除外: compare_no_allin / light / middle / fast_middle 派生request
+  - 集計項目:
+    - 15秒以内率
+    - primaryとのaction一致率
+    - primaryとのamount一致率
+    - CHECK→BET反転率
+    - timeout/error件数
+  - 2026-05-19 batch実行結果:
+    - total_primary_files=12 / compared=10 / skipped_missing_compare=2
+    - PRIMARY: avg=23076ms / median=22278ms / under_15s=0.0% / errors=0
+    - COMPARE: avg=23270ms / median=21906ms / under_15s=0.0% / action_match=50.0% / errors=1
+    - LIGHT: avg=8690ms / median=7494ms / under_15s=90.0% / action_match=20.0% / CHECK→BET=7
+    - MIDDLE: avg=15275ms / median=14293ms / under_15s=70.0% / action_match=60.0% / CHECK→BET=3
+    - FAST_MIDDLE: avg=17939ms / median=17016ms / under_15s=0.0% / action_match=70.0% / CHECK→BET=2

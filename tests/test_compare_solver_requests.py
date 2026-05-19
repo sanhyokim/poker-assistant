@@ -11,15 +11,21 @@ from typing import Any
 import pytest
 
 from scripts.compare_solver_requests import (
+    batch_result_filename,
+    build_batch_summary,
     build_summary,
     build_fast_middle_probe_request,
     build_light_probe_request,
     build_middle_probe_request,
+    compare_solver_requests_batch,
     compare_solver_requests,
+    discover_primary_request_files,
     extract_action_summary,
+    find_compare_request_for_primary,
     load_solver_request,
     parse_solver_action,
     result_filename,
+    sample_id,
 )
 
 
@@ -195,6 +201,76 @@ def test_compare_solver_requests_stops_primary_before_compare(
     assert saved["fast_middle"]["path"] == (
         f"generated_fast_middle_probe_from:{primary_path}"
     )
+
+
+def test_batch_mode_discovers_primary_files_and_skips_variants(
+    workspace_tmp: Path,
+) -> None:
+    """Batch discovery includes primary requests but excludes variants."""
+    primary = workspace_tmp / "hand_000016_req_000009_flop.json"
+    second_primary = workspace_tmp / "hand_000016_req_000011_flop.json"
+    compare = workspace_tmp / "hand_000016_req_000010_flop_compare_no_allin.json"
+    light = workspace_tmp / "hand_000016_req_000009_flop_light_probe.json"
+    turn = workspace_tmp / "hand_000016_req_000012_turn.json"
+    for path in (primary, second_primary, compare, light, turn):
+        _write_json(path, {"request": {"name": path.stem}})
+
+    discovered = discover_primary_request_files(workspace_tmp, "flop")
+
+    assert discovered == [primary, second_primary]
+    assert find_compare_request_for_primary(primary, workspace_tmp) == compare
+    assert sample_id(primary) == "hand_000016_req_000009_flop"
+    assert batch_result_filename(primary) == (
+        "hand_000016_req_000009_flop_compare_result.json"
+    )
+
+
+def test_compare_solver_requests_batch_writes_items_and_summary(
+    workspace_tmp: Path,
+) -> None:
+    """Batch mode runs each primary/compare pair and aggregates profiles."""
+    batch_dir = workspace_tmp / "requests"
+    out_dir = workspace_tmp / "batch_out"
+    batch_dir.mkdir()
+    primary = batch_dir / "hand_000016_req_000009_flop.json"
+    compare = batch_dir / "hand_000016_req_000010_flop_compare_no_allin.json"
+    skipped = batch_dir / "hand_000017_req_000001_flop.json"
+    _write_json(primary, {"request": {"name": "primary"}})
+    _write_json(compare, {"request": {"name": "compare"}})
+    _write_json(skipped, {"request": {"name": "skipped"}})
+    FakeBridge.responses = [
+        {"success": True, "probabilities": {"CHECK": 1.0}},
+        {"success": True, "probabilities": {"CHECK": 1.0}},
+        {"success": True, "probabilities": {"BET 120": 1.0}},
+        {"success": True, "probabilities": {"CHECK": 1.0}},
+        {"success": False, "error": "timeout"},
+    ]
+
+    summary = compare_solver_requests_batch(
+        batch_dir,
+        phase="flop",
+        timeout=30,
+        out_dir=out_dir,
+        bridge_factory=FakeBridge,
+    )
+
+    assert summary["total_primary_files"] == 2
+    assert summary["compared"] == 1
+    assert summary["skipped_missing_compare"] == 1
+    assert summary["profiles"]["primary"]["success_count"] == 1
+    assert summary["profiles"]["light"]["action_match_count"] == 0
+    assert summary["profiles"]["light"]["check_to_bet_count"] == 1
+    assert summary["profiles"]["fast_middle"]["error_count"] == 1
+    item_path = (
+        out_dir
+        / "items"
+        / "hand_000016_req_000009_flop_compare_result.json"
+    )
+    assert item_path.exists()
+    summary_path = out_dir / "batch_summary.json"
+    assert summary_path.exists()
+    saved_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    assert saved_summary["items"][0]["sample_id"] == "hand_000016_req_000009_flop"
 
 
 def test_compare_solver_requests_uses_light_file_when_provided(
@@ -446,3 +522,51 @@ def test_build_summary_calculates_speedup() -> None:
         "fast_middle_speedup_ratio": 1.333,
         "fast_middle_under_15s": True,
     }
+
+
+def test_build_batch_summary_aggregates_profile_metrics() -> None:
+    """Batch summary reports under-15s rates and action flips."""
+    summary = build_batch_summary(
+        total_primary_files=2,
+        skipped_missing_compare=["missing.json"],
+        items=[
+            {
+                "primary_success": True,
+                "primary_elapsed_ms": 20000,
+                "primary_action": "CHECK",
+                "primary_amount": 0,
+                "light_success": True,
+                "light_elapsed_ms": 10000,
+                "light_action": "BET",
+                "light_amount": 120,
+                "light_action_match": False,
+                "light_amount_match": False,
+                "compare_success": True,
+                "compare_elapsed_ms": 19000,
+                "compare_action": "CHECK",
+                "compare_amount": 0,
+                "compare_action_match": True,
+                "compare_amount_match": True,
+                "middle_success": True,
+                "middle_elapsed_ms": 14000,
+                "middle_action": "CHECK",
+                "middle_amount": 0,
+                "middle_action_match": True,
+                "middle_amount_match": True,
+                "fast_middle_success": False,
+                "fast_middle_elapsed_ms": 30000,
+                "fast_middle_action": None,
+                "fast_middle_amount": None,
+                "fast_middle_action_match": False,
+                "fast_middle_amount_match": False,
+            }
+        ],
+    )
+
+    assert summary["total_primary_files"] == 2
+    assert summary["compared"] == 1
+    assert summary["profiles"]["primary"]["under_15s_rate"] == 0.0
+    assert summary["profiles"]["light"]["under_15s_rate"] == 1.0
+    assert summary["profiles"]["light"]["action_match_rate"] == 0.0
+    assert summary["profiles"]["light"]["check_to_bet_count"] == 1
+    assert summary["profiles"]["fast_middle"]["error_count"] == 1

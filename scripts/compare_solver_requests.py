@@ -18,6 +18,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from statistics import median
 from typing import Any, Callable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +29,13 @@ from solver.solver_bridge import PostflopSolverBridge
 
 JsonDict = dict[str, Any]
 BridgeFactory = Callable[[], PostflopSolverBridge]
+VARIANT_SUFFIXES = (
+    "_compare_no_allin",
+    "_light_probe",
+    "_middle_probe",
+    "_fast_middle_probe",
+)
+PROFILE_NAMES = ("primary", "compare", "light", "middle", "fast_middle")
 
 
 def load_solver_request(path: Path) -> JsonDict:
@@ -303,6 +311,7 @@ def compare_solver_requests(
     timeout: float,
     out_dir: Path,
     bridge_factory: BridgeFactory = PostflopSolverBridge,
+    result_name: str | None = None,
 ) -> JsonDict:
     """Run all diagnostic request variants in separate Solver processes.
 
@@ -315,6 +324,7 @@ def compare_solver_requests(
         timeout: Timeout seconds per request.
         out_dir: Directory where the comparison result JSON is saved.
         bridge_factory: Factory used by tests to inject a fake bridge.
+        result_name: Optional output filename override for batch mode.
 
     Returns:
         Full comparison result dictionary.
@@ -386,11 +396,223 @@ def compare_solver_requests(
     }
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    output_path = out_dir / result_filename(primary_path)
+    output_path = out_dir / (result_name or result_filename(primary_path))
     with output_path.open("w", encoding="utf-8") as file:
         json.dump(result, file, ensure_ascii=False, indent=2)
     result["output_path"] = str(output_path)
     return result
+
+
+def compare_solver_requests_batch(
+    batch_dir: Path,
+    *,
+    phase: str,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+) -> JsonDict:
+    """Compare all primary Solver requests in a directory.
+
+    Args:
+        batch_dir: Directory containing saved Solver request JSON files.
+        phase: Street phase to match, usually ``flop``.
+        timeout: Timeout seconds per request.
+        out_dir: Directory where item and summary result JSON files are saved.
+        bridge_factory: Factory used by tests to inject a fake bridge.
+
+    Returns:
+        Batch summary dictionary.
+    """
+    primary_paths = discover_primary_request_files(batch_dir, phase)
+    items_dir = out_dir / "items"
+    items: list[JsonDict] = []
+    skipped_missing_compare: list[str] = []
+
+    print(
+        "BATCH DISCOVERY: "
+        f"batch_dir={batch_dir} phase={phase} primary_files={len(primary_paths)}"
+    )
+    for primary_path in primary_paths:
+        compare_path = find_compare_request_for_primary(primary_path, batch_dir)
+        if compare_path is None:
+            skipped_missing_compare.append(str(primary_path))
+            continue
+
+        result = compare_solver_requests(
+            primary_path,
+            compare_path,
+            timeout=timeout,
+            out_dir=items_dir,
+            bridge_factory=bridge_factory,
+            result_name=batch_result_filename(primary_path),
+        )
+        items.append(_batch_item_summary(primary_path, result))
+
+    summary = build_batch_summary(
+        total_primary_files=len(primary_paths),
+        skipped_missing_compare=skipped_missing_compare,
+        items=items,
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "batch_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def discover_primary_request_files(batch_dir: Path, phase: str) -> list[Path]:
+    """Return primary request files for a phase, excluding diagnostic variants."""
+    pattern = f"hand_*_req_*_{phase}.json"
+    return sorted(
+        path
+        for path in batch_dir.glob(pattern)
+        if not any(path.stem.endswith(suffix) for suffix in VARIANT_SUFFIXES)
+    )
+
+
+def find_compare_request_for_primary(primary_path: Path, batch_dir: Path) -> Path | None:
+    """Find the nearest compare_no_allin request for a primary request."""
+    parsed = parse_request_filename(primary_path)
+    if parsed is None:
+        return None
+    hand_id, request_id, phase = parsed
+    candidates = sorted(
+        path
+        for path in batch_dir.glob(f"hand_{hand_id}_req_*_{phase}_compare_no_allin.json")
+        if parse_request_filename(path) is not None
+    )
+    if not candidates:
+        return None
+
+    later_candidates = [
+        path
+        for path in candidates
+        if (parse_request_filename(path) or ("", -1, ""))[1] > request_id
+    ]
+    if later_candidates:
+        return min(
+            later_candidates,
+            key=lambda path: (parse_request_filename(path) or ("", 0, ""))[1],
+        )
+    return candidates[0]
+
+
+def parse_request_filename(path: Path) -> tuple[str, int, str] | None:
+    """Parse hand id, request id, and phase from a solver request filename."""
+    match = re.search(r"hand_(\d+)_req_(\d+)_(flop|turn|river)", path.stem)
+    if match is None:
+        return None
+    return match.group(1), int(match.group(2)), match.group(3)
+
+
+def build_batch_summary(
+    *,
+    total_primary_files: int,
+    skipped_missing_compare: list[str],
+    items: list[JsonDict],
+) -> JsonDict:
+    """Aggregate item-level comparison results into profile statistics."""
+    compared = len(items)
+    return {
+        "total_primary_files": total_primary_files,
+        "compared": compared,
+        "skipped_missing_compare": len(skipped_missing_compare),
+        "skipped_missing_compare_files": skipped_missing_compare,
+        "profiles": {
+            profile: _batch_profile_summary(items, profile)
+            for profile in PROFILE_NAMES
+        },
+        "items": items,
+    }
+
+
+def _batch_profile_summary(items: list[JsonDict], profile: str) -> JsonDict:
+    """Aggregate one profile's elapsed, success, and primary-match statistics."""
+    elapsed_values = [
+        int(item[f"{profile}_elapsed_ms"])
+        for item in items
+        if item.get(f"{profile}_elapsed_ms") is not None
+    ]
+    success_count = sum(1 for item in items if item.get(f"{profile}_success") is True)
+    error_count = sum(1 for item in items if item.get(f"{profile}_success") is False)
+    under_15s_count = sum(1 for value in elapsed_values if value <= 15000)
+    summary: JsonDict = {
+        "success_count": success_count,
+        "error_count": error_count,
+        "avg_elapsed_ms": _average(elapsed_values),
+        "median_elapsed_ms": int(median(elapsed_values)) if elapsed_values else None,
+        "under_15s_count": under_15s_count,
+        "under_15s_rate": _rate(under_15s_count, len(elapsed_values)),
+    }
+    if profile != "primary":
+        action_match_count = sum(
+            1 for item in items if item.get(f"{profile}_action_match") is True
+        )
+        amount_match_count = sum(
+            1 for item in items if item.get(f"{profile}_amount_match") is True
+        )
+        check_to_bet_count = sum(
+            1
+            for item in items
+            if item.get("primary_action") == "CHECK"
+            and item.get(f"{profile}_action") == "BET"
+        )
+        bet_to_check_count = sum(
+            1
+            for item in items
+            if item.get("primary_action") == "BET"
+            and item.get(f"{profile}_action") == "CHECK"
+        )
+        action_flip_count = sum(
+            1
+            for item in items
+            if item.get("primary_action") != item.get(f"{profile}_action")
+        )
+        summary.update(
+            {
+                "action_match_count": action_match_count,
+                "action_match_rate": _rate(action_match_count, len(items)),
+                "amount_match_count": amount_match_count,
+                "amount_match_rate": _rate(amount_match_count, len(items)),
+                "action_flip_count": action_flip_count,
+                "check_to_bet_count": check_to_bet_count,
+                "bet_to_check_count": bet_to_check_count,
+            }
+        )
+    return summary
+
+
+def _batch_item_summary(primary_path: Path, result: JsonDict) -> JsonDict:
+    """Return a compact summary row for one batch item."""
+    item: JsonDict = {"sample_id": sample_id(primary_path)}
+    for profile in PROFILE_NAMES:
+        profile_result = result[profile]
+        item[f"{profile}_success"] = profile_result["success"]
+        item[f"{profile}_elapsed_ms"] = profile_result["elapsed_ms"]
+        item[f"{profile}_action"] = profile_result["action"]
+        item[f"{profile}_amount"] = profile_result["amount"]
+        item[f"{profile}_error"] = profile_result["error"]
+    for profile in PROFILE_NAMES:
+        if profile == "primary":
+            continue
+        item[f"{profile}_action_match"] = (
+            item[f"{profile}_action"] == item["primary_action"]
+        )
+        item[f"{profile}_amount_match"] = (
+            item[f"{profile}_amount"] == item["primary_amount"]
+        )
+        item[f"{profile}_under_15s"] = _under_15s(result[profile])
+    return item
+
+
+def sample_id(primary_path: Path) -> str:
+    """Return a stable sample id including hand, request id, and phase."""
+    parsed = parse_request_filename(primary_path)
+    if parsed is None:
+        return primary_path.stem
+    hand_id, request_id, phase = parsed
+    return f"hand_{hand_id}_req_{request_id:06d}_{phase}"
 
 
 def result_filename(primary_path: Path) -> str:
@@ -400,6 +622,11 @@ def result_filename(primary_path: Path) -> str:
         return f"hand_{match.group(1)}_{match.group(2)}_compare_result.json"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     return f"solver_compare_result_{timestamp}.json"
+
+
+def batch_result_filename(primary_path: Path) -> str:
+    """Return a batch item filename including request id."""
+    return f"{sample_id(primary_path)}_compare_result.json"
 
 
 def print_summary(result: JsonDict) -> None:
@@ -446,6 +673,40 @@ def print_summary(result: JsonDict) -> None:
     print(f"RESULT_JSON: {result['output_path']}")
 
 
+def print_batch_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for a batch run."""
+    print("BATCH SUMMARY")
+    print(f"total_primary_files={summary['total_primary_files']}")
+    print(f"compared={summary['compared']}")
+    print(f"skipped_missing_compare={summary['skipped_missing_compare']}")
+    print("")
+    profiles = summary["profiles"]
+    for label, profile in (
+        ("PRIMARY", "primary"),
+        ("COMPARE", "compare"),
+        ("LIGHT", "light"),
+        ("MIDDLE", "middle"),
+        ("FAST_MIDDLE", "fast_middle"),
+    ):
+        stats = profiles[profile]
+        line = (
+            f"{label}: avg={stats['avg_elapsed_ms']}ms "
+            f"median={stats['median_elapsed_ms']}ms "
+            f"under_15s={_percent(stats['under_15s_rate'])}"
+        )
+        if profile != "primary":
+            line += (
+                f" action_match={_percent(stats['action_match_rate'])}"
+                f" amount_match={_percent(stats['amount_match_rate'])}"
+                f" check_to_bet={stats['check_to_bet_count']}"
+                f" errors={stats['error_count']}"
+            )
+        else:
+            line += f" errors={stats['error_count']}"
+        print(line)
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the comparison CLI.
 
@@ -458,14 +719,29 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Compare primary and compare_no_allin solver request JSON files."
     )
-    parser.add_argument("--primary", required=True, type=Path)
-    parser.add_argument("--compare", required=True, type=Path)
+    parser.add_argument("--primary", default=None, type=Path)
+    parser.add_argument("--compare", default=None, type=Path)
     parser.add_argument("--light", default=None, type=Path)
     parser.add_argument("--middle", default=None, type=Path)
     parser.add_argument("--fast-middle", default=None, type=Path)
+    parser.add_argument("--batch-dir", default=None, type=Path)
+    parser.add_argument("--phase", default="flop")
     parser.add_argument("--timeout", default=30.0, type=float)
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args(argv)
+
+    if args.batch_dir is not None:
+        result = compare_solver_requests_batch(
+            args.batch_dir,
+            phase=args.phase,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_batch_summary(result)
+        return 0
+
+    if args.primary is None or args.compare is None:
+        parser.error("--primary and --compare are required unless --batch-dir is used")
 
     result = compare_solver_requests(
         args.primary,
@@ -478,6 +754,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     print_summary(result)
     return 0
+
+
+def _average(values: list[int]) -> int | None:
+    if not values:
+        return None
+    return int(sum(values) / len(values))
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator, 3)
+
+
+def _percent(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value * 100:.1f}%"
 
 
 def _extract_probabilities(result: JsonDict) -> JsonDict:
