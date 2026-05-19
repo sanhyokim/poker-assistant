@@ -22,10 +22,13 @@ from scripts.compare_solver_requests import (
     build_summary,
     build_fast_middle_probe_request,
     build_light_probe_request,
+    build_llm_diagnostic_summary,
+    build_llm_flop_prompt,
     build_middle_probe_request,
     compare_solver_requests_repeat,
     compare_solver_requests_resident,
     compare_solver_requests_teacher,
+    compare_solver_requests_llm,
     compare_solver_requests_grid,
     compare_solver_requests_batch,
     compare_solver_requests,
@@ -36,6 +39,7 @@ from scripts.compare_solver_requests import (
     grid_score,
     load_solver_request,
     parse_solver_action,
+    parse_llm_decision_json,
     probability_summary,
     repeatability_item_summary,
     resident_item_summary,
@@ -688,6 +692,148 @@ def test_compare_solver_requests_teacher_writes_items_and_summary(
     assert item["request_config"]["max_iterations"] == 500
     assert item["top_action"] == "CHECK"
     assert item["top_margin"] == 0.44
+
+
+def test_build_llm_flop_prompt_contains_primary_anchor() -> None:
+    """LLM diagnostic prompt anchors decisions to the primary Solver result."""
+    payload = {
+        "meta": {"spr": 38.2, "hero_position": "BTN", "hero_is_ip": True},
+        "request": {
+            "board": "5h4h9h",
+            "starting_pot": 232,
+            "effective_stack": 8883,
+            "actions_played": [],
+        },
+    }
+    baseline = {
+        "action": "CHECK",
+        "amount": 0,
+        "probabilities": {"CHECK": 0.63, "BET 139": 0.37},
+    }
+
+    prompt = build_llm_flop_prompt(payload, baseline, ["CHECK", "BET", "ALL_IN"])
+
+    assert "Primary Solver is the anchor" in prompt
+    assert "primary_solver_action" in prompt
+    assert "CHECK" in prompt
+    assert "BET_60" in prompt
+
+
+def test_parse_llm_decision_json_valid() -> None:
+    """LLM diagnostic JSON parser normalizes action and risk flags."""
+    decision = parse_llm_decision_json(
+        json.dumps(
+            {
+                "action": "all-in",
+                "amount": 1200,
+                "sizing_type": "all_in",
+                "confidence": "medium",
+                "reason": "Primary solver is close enough to support pressure.",
+                "risk_flags": ["near_tie"],
+            }
+        )
+    )
+
+    assert decision["action"] == "ALL_IN"
+    assert decision["amount"] == 1200
+    assert decision["risk_flags"] == ["near_tie"]
+
+
+def test_llm_diagnostic_summary_counts_dangerous_flip() -> None:
+    """LLM diagnostic summary counts dangerous action flips."""
+    summary = build_llm_diagnostic_summary(
+        [
+            {
+                "sample_id": "hand_000001_req_000001_flop",
+                "baseline_action": "CHECK",
+                "llm_action": "BET",
+                "llm_success": True,
+                "llm_elapsed_ms": 2000,
+                "action_match": False,
+                "direction_match": False,
+                "dangerous_flip": True,
+                "clear_check_to_bet": True,
+                "legal_action_valid": True,
+                "llm_error": None,
+                "under_15s": True,
+            }
+        ],
+        "openai/gpt-5.4-mini",
+    )
+
+    assert summary["success_count"] == 1
+    assert summary["dangerous_flip_count"] == 1
+    assert summary["clear_check_to_bet_count"] == 1
+    assert summary["legal_action_invalid_count"] == 0
+    assert summary["under_15s_rate"] == 1.0
+
+
+def test_compare_solver_requests_llm_writes_items_and_summary(
+    workspace_tmp: Path,
+) -> None:
+    """LLM diagnostic mode writes baseline, LLM decision, and summary files."""
+    request_path = workspace_tmp / "hand_000004_req_000004_flop.json"
+    out_dir = workspace_tmp / "llm_out"
+    _write_json(
+        request_path,
+        {
+            "meta": {"spr": 38.2, "hero_position": "BTN"},
+            "request": {
+                "name": "baseline",
+                "board": "5h4h9h",
+                "starting_pot": 232,
+                "effective_stack": 8883,
+                "actions_played": [],
+            },
+        },
+    )
+    FakeBridge.responses = [
+        {
+            "success": True,
+            "diagnostic_elapsed_ms": 21000,
+            "probabilities": {"CHECK": 0.72, "BET 139": 0.28},
+        }
+    ]
+
+    def fake_llm_caller(prompt: str, model: str, timeout: float) -> dict[str, Any]:
+        assert "Primary Solver is the anchor" in prompt
+        assert model == "openai/gpt-5.4-mini"
+        assert int(timeout) == 30
+        return {
+            "success": True,
+            "diagnostic_elapsed_ms": 1200,
+            "raw_content": json.dumps(
+                {
+                    "action": "CHECK",
+                    "amount": 0,
+                    "sizing_type": "none",
+                    "confidence": "medium",
+                    "reason": "Primary solver is check-heavy.",
+                    "risk_flags": [],
+                }
+            ),
+        }
+
+    summary = compare_solver_requests_llm(
+        llm_path=request_path,
+        llm_dir=None,
+        sample_ids=None,
+        llm_model="openai/gpt-5.4-mini",
+        timeout=30,
+        out_dir=out_dir,
+        bridge_factory=FakeBridge,
+        llm_caller=fake_llm_caller,
+    )
+
+    assert summary["total_samples"] == 1
+    assert summary["success_count"] == 1
+    assert summary["action_match_rate"] == 1.0
+    item_path = out_dir / "items" / "hand_000004_req_000004_flop_llm.json"
+    assert item_path.exists()
+    item = json.loads(item_path.read_text(encoding="utf-8"))
+    assert item["baseline_action"] == "CHECK"
+    assert item["llm_action"] == "CHECK"
+    assert item["legal_action_valid"] is True
 
 
 def test_build_teacher_summary_aggregates_teacher_results() -> None:

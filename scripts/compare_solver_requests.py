@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -20,6 +21,8 @@ from datetime import datetime
 from pathlib import Path
 from statistics import median
 from typing import Any, Callable
+from urllib import error as urllib_error
+from urllib import request as urllib_request
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -29,6 +32,7 @@ from solver.solver_bridge import PostflopSolverBridge
 
 JsonDict = dict[str, Any]
 BridgeFactory = Callable[[], PostflopSolverBridge]
+LLMCaller = Callable[[str, str, float], JsonDict]
 VARIANT_SUFFIXES = (
     "_compare_no_allin",
     "_light_probe",
@@ -39,6 +43,8 @@ PROFILE_NAMES = ("primary", "compare", "light", "middle", "fast_middle")
 GRID_MAX_ITERATIONS = (150, 180, 200, 230, 250, 280, 300)
 GRID_TARGET_EXPLOITABILITY = (1.2, 1.0, 0.9, 0.8, 0.7, 0.6)
 GRID_BET_SIZES = ("60%,a", "60%", "50%,60%", "33%,60%")
+DEFAULT_LLM_MODEL = "openai/gpt-5.4-mini"
+LLM_ALLOWED_ACTIONS = {"CHECK", "BET", "RAISE", "CALL", "FOLD", "ALL_IN"}
 TEACHER_PROFILES: dict[str, JsonDict] = {
     "standard": {
         "max_iterations": 500,
@@ -87,6 +93,17 @@ def load_solver_request(path: Path) -> JsonDict:
     if not isinstance(payload, dict):
         raise ValueError(f"Solver request JSON must be an object: {path}")
     return dict(payload)
+
+
+def load_solver_payload(path: Path) -> JsonDict:
+    """Load a solver JSON file while preserving optional metadata."""
+    with path.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Solver request JSON must be an object: {path}")
+    if isinstance(payload.get("request"), dict):
+        return {"meta": dict(payload.get("meta") or {}), "request": dict(payload["request"])}
+    return {"meta": {}, "request": dict(payload)}
 
 
 def run_solver_request(
@@ -820,6 +837,394 @@ def build_teacher_summary(items: list[JsonDict], profile: str) -> JsonDict:
                 "top_probability": item["top_probability"],
                 "top_margin": item["top_margin"],
                 "error": item["error"],
+            }
+            for item in items
+        ],
+    }
+
+
+def compare_solver_requests_llm(
+    *,
+    llm_path: Path | None,
+    llm_dir: Path | None,
+    sample_ids: list[str] | None,
+    llm_model: str | None,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+    llm_caller: LLMCaller | None = None,
+) -> JsonDict:
+    """Run LLM diagnostic decisions against primary Solver baselines."""
+    request_paths = discover_repeat_request_files(llm_path, llm_dir, sample_ids)
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+    model = llm_model or os.getenv("LLM_MODEL_DEFAULT") or DEFAULT_LLM_MODEL
+    caller = llm_caller or call_openrouter_llm
+    print(f"LLM DISCOVERY: samples={len(request_paths)} model={model}")
+    for request_path in request_paths:
+        item = _run_llm_for_sample(
+            request_path,
+            llm_model=model,
+            timeout=timeout,
+            bridge_factory=bridge_factory,
+            llm_caller=caller,
+        )
+        items.append(item)
+        output_path = items_dir / f"{sample_id(request_path)}_llm.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_llm_diagnostic_summary(items, model)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "llm_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def _run_llm_for_sample(
+    request_path: Path,
+    *,
+    llm_model: str,
+    timeout: float,
+    bridge_factory: BridgeFactory,
+    llm_caller: LLMCaller,
+) -> JsonDict:
+    """Run one primary baseline and one LLM diagnostic decision."""
+    payload = load_solver_payload(request_path)
+    primary_request = dict(payload["request"])
+    baseline = run_solver_request_payload(
+        primary_request,
+        path_label=str(request_path),
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
+    legal_actions = legal_actions_for_solver_request(primary_request)
+    prompt = build_llm_flop_prompt(payload, baseline, legal_actions)
+    llm_result = run_llm_diagnostic_request(
+        prompt,
+        model=llm_model,
+        timeout=timeout,
+        llm_caller=llm_caller,
+    )
+    probabilities = baseline.get("probabilities")
+    if not isinstance(probabilities, dict):
+        probabilities = {}
+    probability_info = probability_summary(probabilities)
+    decision = llm_result.get("decision")
+    if not isinstance(decision, dict):
+        decision = {}
+    evaluation = evaluate_llm_decision(
+        baseline,
+        probability_info,
+        decision,
+        legal_actions,
+        llm_result,
+    )
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "llm_model": llm_model,
+        "baseline_success": baseline["success"],
+        "baseline_elapsed_ms": baseline["elapsed_ms"],
+        "baseline_action": baseline["action"],
+        "baseline_amount": baseline["amount"],
+        "baseline_probabilities": probabilities,
+        "baseline_top_action": probability_info["top_action"],
+        "baseline_top_probability": probability_info["top_probability"],
+        "baseline_second_action": probability_info["second_action"],
+        "baseline_second_probability": probability_info["second_probability"],
+        "baseline_top_margin": probability_info["top_margin"],
+        "legal_actions": legal_actions,
+        "llm_success": llm_result["success"],
+        "llm_elapsed_ms": llm_result["elapsed_ms"],
+        "llm_action": decision.get("action"),
+        "llm_amount": decision.get("amount"),
+        "llm_sizing_type": decision.get("sizing_type"),
+        "llm_confidence": decision.get("confidence"),
+        "llm_reason": decision.get("reason"),
+        "llm_risk_flags": decision.get("risk_flags", []),
+        "llm_error": llm_result.get("error"),
+        "prompt": prompt,
+        **evaluation,
+    }
+
+
+def build_llm_flop_prompt(
+    payload: JsonDict,
+    baseline: JsonDict,
+    legal_actions: list[str],
+) -> str:
+    """Build a diagnostics-only HU deep-SPR flop LLM prompt."""
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    context = {
+        "task": "HU deep-SPR flop decision diagnostic",
+        "board": request.get("board"),
+        "hero_cards": meta.get("hero_cards"),
+        "pot": request.get("starting_pot"),
+        "starting_pot": request.get("starting_pot"),
+        "effective_stack": request.get("effective_stack"),
+        "spr": meta.get("spr"),
+        "hero_position": meta.get("hero_position"),
+        "hero_is_ip": meta.get("hero_is_ip"),
+        "actions_played": request.get("actions_played", []),
+        "legal_actions": legal_actions,
+        "candidate_actions": [
+            "CHECK",
+            "BET_33",
+            "BET_50",
+            "BET_60",
+            "BET_75",
+            "ALL_IN",
+        ],
+        "primary_solver_action": baseline.get("action"),
+        "primary_solver_amount": baseline.get("amount"),
+        "primary_solver_probabilities": baseline.get("probabilities", {}),
+    }
+    return (
+        "You are evaluating a heads-up no-limit hold'em flop decision.\n"
+        "Primary Solver is the anchor. Do not make a large deviation from "
+        "primary Solver unless the board texture strongly justifies it.\n"
+        "If primary top_margin >= 0.20, match primary action direction.\n"
+        "If primary top_margin <= 0.10, small sizing variation is allowed.\n"
+        "Do not output illegal actions. Output JSON only.\n"
+        "Allowed JSON keys: action, amount, sizing_type, confidence, reason, "
+        "risk_flags.\n"
+        f"Context JSON:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+    )
+
+
+def run_llm_diagnostic_request(
+    prompt: str,
+    *,
+    model: str,
+    timeout: float,
+    llm_caller: LLMCaller,
+) -> JsonDict:
+    """Call an LLM diagnostic function and normalize the result."""
+    started_at = time.perf_counter()
+    try:
+        raw_result = llm_caller(prompt, model, timeout)
+    except Exception as exc:
+        raw_result = {"success": False, "error": str(exc)}
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    diagnostic_elapsed = _optional_int(raw_result.get("diagnostic_elapsed_ms"))
+    if diagnostic_elapsed is not None:
+        elapsed_ms = diagnostic_elapsed
+    if raw_result.get("success") is not True:
+        return {
+            "success": False,
+            "elapsed_ms": elapsed_ms,
+            "decision": None,
+            "error": raw_result.get("error") or "LLM request failed",
+        }
+    try:
+        decision = raw_result.get("decision")
+        if not isinstance(decision, dict):
+            decision = parse_llm_decision_json(str(raw_result.get("raw_content", "")))
+    except ValueError as exc:
+        return {
+            "success": False,
+            "elapsed_ms": elapsed_ms,
+            "decision": None,
+            "error": str(exc),
+        }
+    return {
+        "success": True,
+        "elapsed_ms": elapsed_ms,
+        "decision": decision,
+        "error": None,
+    }
+
+
+def call_openrouter_llm(prompt: str, model: str, timeout: float) -> JsonDict:
+    """Call OpenRouter chat completions for diagnostics only."""
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        return {"success": False, "error": "OPENROUTER_API_KEY missing"}
+    request_body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 180,
+        "reasoning": {"effort": "none"},
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "hu_flop_decision",
+                "strict": True,
+                "schema": llm_decision_schema(),
+            },
+        },
+    }
+    data = json.dumps(request_body).encode("utf-8")
+    http_request = urllib_request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=data,
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib_request.urlopen(http_request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (urllib_error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+        return {"success": False, "error": str(exc)}
+    try:
+        content = payload["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as exc:
+        return {"success": False, "error": f"Invalid OpenRouter response: {exc}"}
+    return {"success": True, "raw_content": content}
+
+
+def llm_decision_schema() -> JsonDict:
+    """Return the JSON schema for LLM diagnostic decisions."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": [
+            "action",
+            "amount",
+            "sizing_type",
+            "confidence",
+            "reason",
+            "risk_flags",
+        ],
+        "properties": {
+            "action": {"type": "string", "enum": sorted(LLM_ALLOWED_ACTIONS)},
+            "amount": {"type": "integer", "minimum": 0},
+            "sizing_type": {"type": "string"},
+            "confidence": {
+                "type": "string",
+                "enum": ["low", "medium", "high"],
+            },
+            "reason": {"type": "string"},
+            "risk_flags": {"type": "array", "items": {"type": "string"}},
+        },
+    }
+
+
+def parse_llm_decision_json(content: str) -> JsonDict:
+    """Parse and validate a JSON-only LLM diagnostic response."""
+    text = content.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?", "", text, flags=re.IGNORECASE).strip()
+        text = re.sub(r"```$", "", text).strip()
+    try:
+        decision = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid LLM JSON: {exc}") from exc
+    if not isinstance(decision, dict):
+        raise ValueError("LLM decision must be a JSON object")
+    action = str(decision.get("action", "")).upper().replace("-", "_")
+    amount = _optional_int(decision.get("amount")) or 0
+    risk_flags = decision.get("risk_flags", [])
+    if not isinstance(risk_flags, list):
+        risk_flags = [str(risk_flags)]
+    return {
+        "action": action,
+        "amount": amount,
+        "sizing_type": str(decision.get("sizing_type", "unknown")),
+        "confidence": str(decision.get("confidence", "low")).lower(),
+        "reason": str(decision.get("reason", "")),
+        "risk_flags": [str(flag) for flag in risk_flags],
+    }
+
+
+def legal_actions_for_solver_request(request: JsonDict) -> list[str]:
+    """Return legal action labels for a diagnostic request."""
+    actions_played = request.get("actions_played") or []
+    if actions_played == []:
+        return ["CHECK", "BET", "ALL_IN"]
+    return ["CHECK", "BET", "RAISE", "CALL", "FOLD", "ALL_IN"]
+
+
+def evaluate_llm_decision(
+    baseline: JsonDict,
+    baseline_probability: JsonDict,
+    decision: JsonDict,
+    legal_actions: list[str],
+    llm_result: JsonDict,
+) -> JsonDict:
+    """Evaluate one LLM decision against the primary Solver baseline."""
+    if llm_result.get("success") is not True:
+        return {
+            "action_match": False,
+            "amount_match": False,
+            "direction_match": False,
+            "near_tie_mismatch": False,
+            "dangerous_flip": False,
+            "clear_check_to_bet": False,
+            "call_or_raise_to_fold": False,
+            "legal_action_valid": None,
+            "under_15s": False,
+        }
+    baseline_action = baseline.get("action")
+    llm_action = decision.get("action")
+    flags = _mismatch_flags(
+        baseline_action,
+        llm_action,
+        _optional_float(baseline_probability.get("top_margin")),
+    )
+    action_match = baseline_action == llm_action
+    amount_match = baseline.get("amount") == decision.get("amount")
+    legal_action_valid = llm_action in set(legal_actions)
+    return {
+        "action_match": action_match,
+        "amount_match": amount_match,
+        "direction_match": action_match,
+        "near_tie_mismatch": flags["action_mismatch_near_tie"],
+        "dangerous_flip": flags["dangerous_flip"],
+        "clear_check_to_bet": flags["clear_check_to_bet"],
+        "call_or_raise_to_fold": flags["call_or_raise_to_fold"],
+        "legal_action_valid": legal_action_valid,
+        "under_15s": _under_15s({"elapsed_ms": llm_result.get("elapsed_ms")}),
+    }
+
+
+def build_llm_diagnostic_summary(items: list[JsonDict], model: str) -> JsonDict:
+    """Aggregate LLM diagnostic item results."""
+    success_items = [item for item in items if item.get("llm_success") is True]
+    elapsed_values = [
+        int(item["llm_elapsed_ms"])
+        for item in items
+        if item.get("llm_elapsed_ms") is not None
+    ]
+    total = len(items)
+    return {
+        "total_samples": total,
+        "success_count": len(success_items),
+        "error_count": sum(1 for item in items if item.get("llm_success") is False),
+        "avg_llm_elapsed_ms": _average(elapsed_values),
+        "under_15s_rate": _bool_rate(items, "under_15s"),
+        "action_match_rate": _bool_rate(success_items, "action_match"),
+        "direction_match_rate": _bool_rate(success_items, "direction_match"),
+        "dangerous_flip_count": sum(
+            1 for item in items if item.get("dangerous_flip") is True
+        ),
+        "clear_check_to_bet_count": sum(
+            1 for item in items if item.get("clear_check_to_bet") is True
+        ),
+        "legal_action_invalid_count": sum(
+            1 for item in items if item.get("legal_action_valid") is False
+        ),
+        "model": model,
+        "items": [
+            {
+                "sample_id": item["sample_id"],
+                "baseline_action": item["baseline_action"],
+                "llm_action": item["llm_action"],
+                "llm_success": item["llm_success"],
+                "llm_elapsed_ms": item["llm_elapsed_ms"],
+                "action_match": item["action_match"],
+                "dangerous_flip": item["dangerous_flip"],
+                "legal_action_valid": item["legal_action_valid"],
+                "error": item["llm_error"],
             }
             for item in items
         ],
@@ -1866,6 +2271,30 @@ def print_teacher_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_llm_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for LLM diagnostics."""
+    print("LLM SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"model={summary['model']}")
+    print(f"success_count={summary['success_count']}")
+    print(f"error_count={summary['error_count']}")
+    print(f"avg_llm_elapsed_ms={summary['avg_llm_elapsed_ms']}")
+    print(f"under_15s_rate={_percent(summary['under_15s_rate'])}")
+    print(f"action_match_rate={_percent(summary['action_match_rate'])}")
+    print(f"direction_match_rate={_percent(summary['direction_match_rate'])}")
+    print(f"dangerous_flip_count={summary['dangerous_flip_count']}")
+    print(f"legal_action_invalid_count={summary['legal_action_invalid_count']}")
+    for item in summary["items"]:
+        print(
+            f"{item['sample_id']}: "
+            f"success={item['llm_success']} "
+            f"baseline_action={item['baseline_action']} "
+            f"llm_action={item['llm_action']} "
+            f"dangerous_flip={item['dangerous_flip']}"
+        )
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run the comparison CLI.
 
@@ -1892,6 +2321,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--teacher-path", default=None, type=Path)
     parser.add_argument("--teacher-dir", default=None, type=Path)
     parser.add_argument("--teacher-profile", default="standard")
+    parser.add_argument("--llm-path", default=None, type=Path)
+    parser.add_argument("--llm-dir", default=None, type=Path)
+    parser.add_argument("--llm-model", default=None)
     parser.add_argument("--repeat-count", default=5, type=int)
     parser.add_argument("--phase", default="flop")
     parser.add_argument("--sample-ids", default=None)
@@ -1929,6 +2361,18 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_teacher_summary(result)
+        return 0
+
+    if args.llm_path is not None or args.llm_dir is not None:
+        result = compare_solver_requests_llm(
+            llm_path=args.llm_path,
+            llm_dir=args.llm_dir,
+            sample_ids=sample_ids,
+            llm_model=args.llm_model,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_llm_summary(result)
         return 0
 
     if args.resident_path is not None or args.resident_dir is not None:
@@ -1984,6 +2428,12 @@ def _average(values: list[int]) -> int | None:
     if not values:
         return None
     return int(sum(values) / len(values))
+
+
+def _bool_rate(items: list[JsonDict], key: str) -> float | None:
+    if not items:
+        return None
+    return _rate(sum(1 for item in items if item.get(key) is True), len(items))
 
 
 def _rate(numerator: int, denominator: int) -> float | None:

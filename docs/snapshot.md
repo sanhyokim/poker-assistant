@@ -34,6 +34,17 @@
   - hand_000006_req_000007_flop: Solver process closed stdout
   - hand_000016_req_000011_flop: 180秒timeout
   - 現状primary精度水準でもBET候補追加だけでteacher作成は成功せず
+- HU deep-SPR flop LLM診断方針:
+  - 本番採用ではない
+  - 現状deep-SPR primaryを教師基準にする
+  - まずaction方向が近いかを確認する
+  - BETサイズ拡張は二段階目
+  - dangerous flip / legal action違反 / 15秒以内率を見る
+- LLM診断実行結果:
+  - samples=3 / success_count=0 / error_count=3
+  - error=OPENROUTER_API_KEY missing
+  - baseline primary Solver結果は保存済み
+  - APIキー設定後に同じ `--llm-dir` 診断を再実行する
 
 ## Updated: 2026-05-18 JST
 ## Status: Post-Fix85 architecture reset point
