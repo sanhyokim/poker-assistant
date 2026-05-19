@@ -34,10 +34,10 @@ HERO_NON_FOLD_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "ALL_IN"}
 HERO_FOLD_BADGE_RECENT_ACTION_GUARD_SEC = 1.0
 DISPLAYABLE_RECOMMENDATION_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "FOLD", "ALL_IN"}
 INTERNAL_HUD_STRATEGY_SOURCES = {"solver_input_unstable", "solver_timeout"}
-HUD_STATUS_STABLE_WAIT = "安定待ち..."
-HUD_STATUS_SOLVER_THINKING = "Solverで推論中..."
-HUD_STATUS_LLM_THINKING = "LLMで推論中..."
-HUD_STATUS_CHART_CHECKING = "チャート確認中..."
+HUD_STATUS_STABLE_WAIT = "WAITING FOR STABLE STATE..."
+HUD_STATUS_SOLVER_THINKING = "SOLVER THINKING..."
+HUD_STATUS_LLM_THINKING = "LLM ANALYZING..."
+HUD_STATUS_CHART_CHECKING = "CHART CHECKING..."
 
 
 @dataclass
@@ -2744,11 +2744,13 @@ class GameLoop:
             return False
         return recommendation.action.upper() in DISPLAYABLE_RECOMMENDATION_ACTIONS
 
-    @staticmethod
     def _hud_status_for_internal_recommendation(
+        self,
         recommendation: Recommendation,
     ) -> str:
         """Return a simple HUD status for non-displayable recommendation states."""
+        if self._is_pending_recommendation_alive():
+            return HUD_STATUS_SOLVER_THINKING
         if recommendation.strategy_source == "solver_timeout":
             return HUD_STATUS_SOLVER_THINKING
         return HUD_STATUS_STABLE_WAIT

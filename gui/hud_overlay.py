@@ -24,7 +24,19 @@ from strategy.recommendation_engine import Recommendation
 logger = logging.getLogger(__name__)
 
 DISPLAYABLE_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "FOLD", "ALL_IN"}
-STABLE_WAITING_MESSAGE = "安定待ち..."
+SOURCE_LABELS = {
+    "solver": "Solver",
+    "llm_multiway": "AI",
+    "llm_headsup_fallback": "AI",
+    "preflop_chart": "Chart",
+    "preflop_chart_fallback": "Chart",
+    "multiway_engine": "AI",
+}
+WAITING_MESSAGE = "WAITING..."
+STABLE_WAITING_MESSAGE = "WAITING FOR STABLE STATE..."
+SOLVER_THINKING_MESSAGE = "SOLVER THINKING..."
+LLM_ANALYZING_MESSAGE = "LLM ANALYZING..."
+CHART_CHECKING_MESSAGE = "CHART CHECKING..."
 
 
 class HudOverlay(QWidget):
@@ -115,9 +127,9 @@ class HudOverlay(QWidget):
 
     def show_waiting(self) -> None:
         """Show the waiting-for-hand status message."""
-        self._last_computing_message = "Waiting for hand..."
+        self._last_computing_message = WAITING_MESSAGE
         self._hide_recommendation_labels()
-        self._status_label.setText(STABLE_WAITING_MESSAGE)
+        self._status_label.setText(WAITING_MESSAGE)
         self._set_label_color(self._status_label, QColor(180, 180, 180))
         self._status_label.show()
 
@@ -146,9 +158,15 @@ class HudOverlay(QWidget):
         self._action_label.setText(action_text)
         self._set_label_color(self._action_label, action_color)
         self._confidence_label.hide()
-        self._source_label.hide()
         self._probabilities_label.hide()
         self._separator_1.hide()
+
+        source_label = self._format_source_label(recommendation.strategy_source)
+        if source_label is not None:
+            self._source_label.setText(source_label)
+            self._source_label.show()
+        else:
+            self._source_label.hide()
 
         if recommendation.reason:
             self._reason_label.setText(recommendation.reason)
@@ -232,6 +250,7 @@ class HudOverlay(QWidget):
             label.setFont(common_font)
             self._set_label_color(label, QColor(255, 255, 255))
 
+        self._set_label_color(self._source_label, QColor(255, 255, 255))
         self._reason_label.setWordWrap(True)
         self._set_label_color(self._separator_1, QColor(90, 90, 90))
         self._set_label_color(self._separator_2, QColor(90, 90, 90))
@@ -301,6 +320,14 @@ class HudOverlay(QWidget):
     def _format_probability_action(action: str) -> str:
         """Return a display-friendly action label for solver mix rows."""
         return action.replace("ALL_IN", "ALL-IN").replace("_", "-")
+
+    @staticmethod
+    def _format_source_label(strategy_source: str) -> str | None:
+        """Return a short user-facing source label for final recommendations."""
+        source = SOURCE_LABELS.get(strategy_source)
+        if source is None:
+            return None
+        return f"Source: {source}"
 
     @staticmethod
     def _is_displayable_recommendation(recommendation: Recommendation) -> bool:

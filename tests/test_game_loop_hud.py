@@ -186,7 +186,7 @@ def test_hud_computing_callback_called_on_postflop_hero_turn(
 
     loop._handle_strategy(_state(is_my_turn=True))
 
-    hud_computing_callback.assert_called_once_with("LLMで推論中...")
+    hud_computing_callback.assert_called_once_with("LLM ANALYZING...")
 
 
 def test_hud_notified_when_continued_turn_uses_cached_recommendation(
@@ -415,6 +415,58 @@ def test_hud_computing_callback_exception_is_logged(
     assert "HUD computing callback failed" in caplog.text
 
 
+def test_internal_solver_state_keeps_solver_hud_when_worker_alive(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Internal solver states do not overwrite an active Solver HUD with waiting."""
+    hud_callback = MagicMock()
+    hud_computing_callback = MagicMock()
+    loop = _make_loop(
+        workspace_tmp,
+        monkeypatch,
+        hud_callback=hud_callback,
+        hud_computing_callback=hud_computing_callback,
+    )
+    monkeypatch.setattr(loop, "_is_pending_recommendation_alive", lambda: True)
+    recommendation = Recommendation(
+        action="SOLVER_INPUT_UNSTABLE",
+        amount=0,
+        strategy_source="solver_input_unstable",
+    )
+
+    loop._notify_hud(recommendation)
+
+    hud_callback.assert_not_called()
+    hud_computing_callback.assert_called_once_with("SOLVER THINKING...")
+
+
+def test_internal_solver_state_shows_stable_wait_when_no_worker(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Internal unstable states show stable wait when no Solver is running."""
+    hud_callback = MagicMock()
+    hud_computing_callback = MagicMock()
+    loop = _make_loop(
+        workspace_tmp,
+        monkeypatch,
+        hud_callback=hud_callback,
+        hud_computing_callback=hud_computing_callback,
+    )
+    monkeypatch.setattr(loop, "_is_pending_recommendation_alive", lambda: False)
+    recommendation = Recommendation(
+        action="SOLVER_INPUT_UNSTABLE",
+        amount=0,
+        strategy_source="solver_input_unstable",
+    )
+
+    loop._notify_hud(recommendation)
+
+    hud_callback.assert_not_called()
+    hud_computing_callback.assert_called_once_with("WAITING FOR STABLE STATE...")
+
+
 # ---------------------------------------------------------------------------
 # Phase 30-Fix38: Route-specific computing status messages
 # ---------------------------------------------------------------------------
@@ -437,7 +489,7 @@ def test_preflop_computing_shows_chart_checking(
 
     loop._handle_strategy(_state(phase="preflop", is_my_turn=True))
 
-    hud_computing_callback.assert_called_once_with("チャート確認中...")
+    hud_computing_callback.assert_called_once_with("CHART CHECKING...")
 
 
 def test_postflop_heads_up_computing_shows_solver_thinking(
@@ -459,7 +511,7 @@ def test_postflop_heads_up_computing_shows_solver_thinking(
     state.active_player_count = 2
     loop._handle_strategy(state)
 
-    hud_computing_callback.assert_called_once_with("Solverで推論中...")
+    hud_computing_callback.assert_called_once_with("SOLVER THINKING...")
 
 
 def test_postflop_multiway_computing_shows_llm_analyzing(
@@ -481,7 +533,7 @@ def test_postflop_multiway_computing_shows_llm_analyzing(
     state.active_player_count = 3
     loop._handle_strategy(state)
 
-    hud_computing_callback.assert_called_once_with("LLMで推論中...")
+    hud_computing_callback.assert_called_once_with("LLM ANALYZING...")
 
 
 def test_continued_turn_does_not_show_computing(

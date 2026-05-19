@@ -45,10 +45,45 @@ def test_hud_overlay_updates_recommendation(qapp: QApplication) -> None:
 
     assert overlay._action_label.text() == "RAISE 300 (3.0BB) [3.0X]"
     assert overlay._confidence_label.isHidden() is True
-    assert overlay._source_label.isHidden() is True
+    assert overlay._source_label.isHidden() is False
+    assert overlay._source_label.text() == "Source: Solver"
     assert overlay._probabilities_label.isHidden() is True
     assert overlay._reason_label.text() == "Strong value spot"
     assert "#ffa500" in overlay._action_label.styleSheet()
+
+
+@pytest.mark.parametrize(
+    ("strategy_source", "expected_source"),
+    [
+        ("solver", "Source: Solver"),
+        ("preflop_chart", "Source: Chart"),
+        ("preflop_chart_fallback", "Source: Chart"),
+        ("llm_multiway", "Source: AI"),
+        ("llm_headsup_fallback", "Source: AI"),
+        ("multiway_engine", "Source: AI"),
+    ],
+)
+def test_hud_overlay_shows_short_source_label(
+    qapp: QApplication,
+    strategy_source: str,
+    expected_source: str,
+) -> None:
+    """Final recommendations show a compact user-facing source."""
+    _ = qapp
+    overlay = HudOverlay()
+    recommendation = Recommendation(
+        action="CALL",
+        amount=100,
+        strategy_source=strategy_source,
+        confidence="low",
+    )
+
+    overlay.update_recommendation(recommendation)
+    QApplication.processEvents()
+
+    assert overlay._source_label.isHidden() is False
+    assert overlay._source_label.text() == expected_source
+    assert overlay._confidence_label.isHidden() is True
 
 
 def test_hud_overlay_formats_amount_without_preset(qapp: QApplication) -> None:
@@ -137,7 +172,7 @@ def test_hud_overlay_waiting_and_computing_states(qapp: QApplication) -> None:
 
     overlay.update_recommendation(None)
     QApplication.processEvents()
-    assert overlay._status_label.text() == "安定待ち..."
+    assert overlay._status_label.text() == "WAITING..."
     assert overlay._probabilities_label.isHidden() is True
 
 
@@ -210,7 +245,7 @@ def test_hud_overlay_solver_timeout_message(qapp: QApplication) -> None:
     overlay.update_recommendation(recommendation)
     QApplication.processEvents()
 
-    assert overlay._status_label.text() == "安定待ち..."
+    assert overlay._status_label.text() == "WAITING FOR STABLE STATE..."
     assert overlay._action_label.isHidden() is True
     assert overlay._source_label.isHidden() is True
     assert overlay._confidence_label.isHidden() is True
@@ -218,7 +253,7 @@ def test_hud_overlay_solver_timeout_message(qapp: QApplication) -> None:
 
 @pytest.mark.parametrize(
     "message",
-    ["チャート確認中...", "LLMで推論中...", "Solverで推論中..."],
+    ["CHART CHECKING...", "LLM ANALYZING...", "SOLVER THINKING..."],
 )
 def test_hud_overlay_computing_uses_message(
     qapp: QApplication,
@@ -242,7 +277,7 @@ def test_hud_overlay_waiting_for_stable_hand(qapp: QApplication) -> None:
 
     overlay.show_waiting_for_stable_hand()
 
-    assert overlay._status_label.text() == "安定待ち..."
+    assert overlay._status_label.text() == "WAITING FOR STABLE STATE..."
     assert overlay._status_label.isHidden() is False
     assert overlay._action_label.isHidden() is True
 
@@ -254,12 +289,12 @@ def test_hud_overlay_duplicate_computing_message_does_not_reset_text(
     _ = qapp
     overlay = HudOverlay()
 
-    overlay.show_computing("Solverで推論中...")
+    overlay.show_computing("SOLVER THINKING...")
     first_message = overlay._last_computing_message
-    overlay.show_computing("Solverで推論中...")
+    overlay.show_computing("SOLVER THINKING...")
 
     assert overlay._last_computing_message == first_message
-    assert overlay._status_label.text() == "Solverで推論中..."
+    assert overlay._status_label.text() == "SOLVER THINKING..."
 
 
 def test_hud_overlay_color_helpers() -> None:
