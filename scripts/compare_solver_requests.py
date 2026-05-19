@@ -21,14 +21,15 @@ from datetime import datetime
 from pathlib import Path
 from statistics import median
 from typing import Any, Callable
-from urllib import error as urllib_error
-from urllib import request as urllib_request
+
+import requests
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from solver.solver_bridge import PostflopSolverBridge
+from strategy.llm_pipeline import LLMPipeline
 
 JsonDict = dict[str, Any]
 BridgeFactory = Callable[[], PostflopSolverBridge]
@@ -974,6 +975,8 @@ def _run_llm_for_sample(
         "llm_reason": decision.get("reason"),
         "llm_risk_flags": decision.get("risk_flags", []),
         "llm_error": llm_result.get("error"),
+        "llm_status_code": llm_result.get("status_code"),
+        "llm_response_body": llm_result.get("response_body"),
         "prompt": prompt,
         **evaluation,
     }
@@ -1047,6 +1050,8 @@ def run_llm_diagnostic_request(
             "elapsed_ms": elapsed_ms,
             "decision": None,
             "error": raw_result.get("error") or "LLM request failed",
+            "status_code": raw_result.get("status_code"),
+            "response_body": raw_result.get("response_body"),
         }
     try:
         decision = raw_result.get("decision")
@@ -1058,12 +1063,16 @@ def run_llm_diagnostic_request(
             "elapsed_ms": elapsed_ms,
             "decision": None,
             "error": str(exc),
+            "status_code": raw_result.get("status_code"),
+            "response_body": raw_result.get("response_body"),
         }
     return {
         "success": True,
         "elapsed_ms": elapsed_ms,
         "decision": decision,
         "error": None,
+        "status_code": raw_result.get("status_code"),
+        "response_body": raw_result.get("response_body"),
     }
 
 
@@ -1072,41 +1081,84 @@ def call_openrouter_llm(prompt: str, model: str, timeout: float) -> JsonDict:
     api_key = os.getenv("OPENROUTER_API_KEY")
     if not api_key:
         return {"success": False, "error": "OPENROUTER_API_KEY missing"}
-    request_body = {
+    provider = openrouter_provider_config()
+    payload: JsonDict = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
-        "temperature": 0.1,
         "max_tokens": 180,
+        "temperature": 0.1,
         "reasoning": {"effort": "none"},
-        "response_format": {
+    }
+    if provider is not None:
+        payload["provider"] = provider
+    if os.getenv("OPENROUTER_USE_STRICT_JSON_SCHEMA", "").lower() == "true":
+        payload["response_format"] = {
             "type": "json_schema",
             "json_schema": {
                 "name": "hu_flop_decision",
                 "strict": True,
                 "schema": llm_decision_schema(),
             },
-        },
-    }
-    data = json.dumps(request_body).encode("utf-8")
-    http_request = urllib_request.Request(
-        "https://openrouter.ai/api/v1/chat/completions",
-        data=data,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
+        }
+
+    started_at = time.perf_counter()
     try:
-        with urllib_request.urlopen(http_request, timeout=timeout) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except (urllib_error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-        return {"success": False, "error": str(exc)}
+        response = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+            timeout=(5, timeout),
+        )
+    except requests.RequestException as exc:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        return {
+            "success": False,
+            "diagnostic_elapsed_ms": elapsed_ms,
+            "error": str(exc),
+        }
+    elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+    if response.status_code >= 400:
+        return {
+            "success": False,
+            "diagnostic_elapsed_ms": elapsed_ms,
+            "status_code": response.status_code,
+            "response_body": response.text[:1000],
+            "error": f"HTTP {response.status_code}: {response.text[:500]}",
+        }
     try:
+        payload = response.json()
         content = payload["choices"][0]["message"]["content"]
-    except (KeyError, IndexError, TypeError) as exc:
-        return {"success": False, "error": f"Invalid OpenRouter response: {exc}"}
-    return {"success": True, "raw_content": content}
+    except (ValueError, KeyError, IndexError, TypeError) as exc:
+        return {
+            "success": False,
+            "diagnostic_elapsed_ms": elapsed_ms,
+            "status_code": response.status_code,
+            "response_body": response.text[:1000],
+            "error": f"Invalid OpenRouter response: {exc}",
+        }
+    if not isinstance(content, str) or not content.strip():
+        return {
+            "success": False,
+            "diagnostic_elapsed_ms": elapsed_ms,
+            "status_code": response.status_code,
+            "response_body": response.text[:1000],
+            "error": "OpenRouter response content was empty",
+        }
+    return {
+        "success": True,
+        "diagnostic_elapsed_ms": elapsed_ms,
+        "status_code": response.status_code,
+        "response_body": response.text[:1000],
+        "raw_content": content,
+    }
+
+
+def openrouter_provider_config() -> dict[str, Any] | None:
+    """Return OpenRouter provider config compatible with LLMPipeline."""
+    return LLMPipeline.openrouter_provider_config()
 
 
 def llm_decision_schema() -> JsonDict:
@@ -1252,6 +1304,7 @@ def build_llm_diagnostic_summary(items: list[JsonDict], model: str) -> JsonDict:
                 "dangerous_flip": item["dangerous_flip"],
                 "legal_action_valid": item["legal_action_valid"],
                 "error": item["llm_error"],
+                "status_code": item.get("llm_status_code"),
             }
             for item in items
         ],

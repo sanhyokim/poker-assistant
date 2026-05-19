@@ -55,6 +55,18 @@
     - OPENROUTER_API_KEY missing は解消
     - OpenRouter応答は HTTP Error 401: Unauthorized
     - 次は .env のキー値またはOpenRouter側認証状態を確認する
+- LLM診断mode修正方針:
+  - 既存本番LLMPipelineではOpenRouterをrequests.postで呼び出しており、
+    環境変数のprovider設定を読んでいる
+  - 診断スクリプトだけが独自urllib実装になっていたため、本番LLM経路と差異があった
+  - compare_solver_requests.py の LLM診断呼び出しを既存LLMPipeline互換の
+    requests.post方式へ修正
+  - OPENROUTER_REQUIRE_PARAMETERS=false を尊重する
+  - HTTPエラー時はstatus codeとresponse bodyを保存する
+  - 再実行結果:
+    - status_code=401
+    - response_body={"error":{"message":"User not found.","code":401}}
+    - `.env` 読み込みとHTTP body保存は機能しているため、次はOpenRouterキー自体を確認する
 
 ## Updated: 2026-05-18 JST
 ## Status: Post-Fix85 architecture reset point

@@ -26,6 +26,7 @@ from scripts.compare_solver_requests import (
     build_llm_diagnostic_summary,
     build_llm_flop_prompt,
     build_middle_probe_request,
+    call_openrouter_llm,
     compare_solver_requests_repeat,
     compare_solver_requests_resident,
     compare_solver_requests_teacher,
@@ -40,6 +41,7 @@ from scripts.compare_solver_requests import (
     grid_score,
     load_env_file,
     load_solver_request,
+    openrouter_provider_config,
     parse_solver_action,
     parse_llm_decision_json,
     probability_summary,
@@ -93,6 +95,19 @@ class FakeBridge:
     def stop(self) -> None:
         """Record solver process stop."""
         FakeBridge.events.append(f"stop:{self.index}")
+
+
+class FakeResponse:
+    """Minimal requests response test double."""
+
+    def __init__(self, status_code: int, text: str, payload: dict[str, Any]) -> None:
+        self.status_code = status_code
+        self.text = text
+        self._payload = payload
+
+    def json(self) -> dict[str, Any]:
+        """Return configured JSON payload."""
+        return self._payload
 
 
 @pytest.fixture(autouse=True)
@@ -161,6 +176,120 @@ def test_load_env_file_ignores_comments_and_strips_quotes(
 
     assert os.environ["OPENROUTER_PROVIDER_ORDER"] == "OpenAI"
     assert os.environ["OPENROUTER_ALLOW_FALLBACKS"] == "false"
+
+
+def test_openrouter_provider_config_respects_require_parameters_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """OpenRouter provider config preserves explicit false parameters."""
+    monkeypatch.setenv("OPENROUTER_PROVIDER_ORDER", "OpenAI")
+    monkeypatch.setenv("OPENROUTER_ALLOW_FALLBACKS", "false")
+    monkeypatch.setenv("OPENROUTER_REQUIRE_PARAMETERS", "false")
+
+    provider = openrouter_provider_config()
+
+    assert provider == {
+        "order": ["OpenAI"],
+        "allow_fallbacks": False,
+        "require_parameters": False,
+    }
+
+
+def test_call_openrouter_llm_adds_schema_only_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Strict JSON schema is attached only when the env flag is true."""
+    captured_payloads: list[dict[str, Any]] = []
+
+    def fake_post(*args: Any, **kwargs: Any) -> FakeResponse:
+        captured_payloads.append(kwargs["json"])
+        return FakeResponse(
+            200,
+            '{"choices":[]}',
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"action":"CHECK","amount":0,'
+                                '"sizing_type":"none","confidence":"medium",'
+                                '"reason":"ok","risk_flags":[]}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.delenv("OPENROUTER_USE_STRICT_JSON_SCHEMA", raising=False)
+    monkeypatch.setattr("scripts.compare_solver_requests.requests.post", fake_post)
+
+    call_openrouter_llm("prompt", "openai/gpt-5.4-mini", 30)
+
+    assert "response_format" not in captured_payloads[-1]
+
+    monkeypatch.setenv("OPENROUTER_USE_STRICT_JSON_SCHEMA", "true")
+    call_openrouter_llm("prompt", "openai/gpt-5.4-mini", 30)
+
+    assert captured_payloads[-1]["response_format"]["type"] == "json_schema"
+
+
+def test_call_openrouter_llm_preserves_http_error_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HTTP error details are retained in the diagnostic result."""
+
+    def fake_post(*args: Any, **kwargs: Any) -> FakeResponse:
+        return FakeResponse(
+            401,
+            '{"error":{"message":"No auth credentials found"}}',
+            {},
+        )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "bad-key")
+    monkeypatch.setattr("scripts.compare_solver_requests.requests.post", fake_post)
+
+    result = call_openrouter_llm("prompt", "openai/gpt-5.4-mini", 30)
+
+    assert result["success"] is False
+    assert result["status_code"] == 401
+    assert "No auth credentials found" in result["response_body"]
+    assert "HTTP 401" in result["error"]
+
+
+def test_call_openrouter_llm_requests_post_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Successful requests.post response returns raw JSON content."""
+
+    def fake_post(*args: Any, **kwargs: Any) -> FakeResponse:
+        return FakeResponse(
+            200,
+            '{"choices":[]}',
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": (
+                                '{"action":"CHECK","amount":0,'
+                                '"sizing_type":"none","confidence":"medium",'
+                                '"reason":"ok","risk_flags":[]}'
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr("scripts.compare_solver_requests.requests.post", fake_post)
+
+    result = call_openrouter_llm("prompt", "openai/gpt-5.4-mini", 30)
+
+    assert result["success"] is True
+    assert '"action":"CHECK"' in result["raw_content"]
+    assert result["diagnostic_elapsed_ms"] is not None
 
 
 def test_load_solver_request_supports_wrapped_and_raw_payloads(
