@@ -50,6 +50,8 @@ from scripts.compare_solver_requests import (
     find_compare_request_for_primary,
     grid_profile_id,
     grid_score,
+    hero_hand_class_for_cards,
+    hero_hand_class_in_range,
     load_env_file,
     load_solver_request,
     openrouter_provider_config,
@@ -1467,6 +1469,48 @@ def test_solver_parse_audit_summary_counts_strategy_sources() -> None:
     assert summary["average_strategy_fallback_count"] == 1
     assert summary["hero_cards_missing_count"] == 1
     assert summary["matched_hand_missing_count"] == 1
+
+
+def test_hero_hand_class_for_suited_combo() -> None:
+    """Hero cards are converted to canonical combo and suited class."""
+    result = hero_hand_class_for_cards(["3c", "Qc"])
+
+    assert result["hero_combo"] == "Qc3c"
+    assert result["hero_hand_class"] == "Q3s"
+
+
+def test_hero_hand_range_membership_q3s_not_in_q4s_plus() -> None:
+    """Q3s is not covered by Q4s+."""
+    assert hero_hand_class_in_range("Q3s", "Q4s+") is False
+
+
+def test_hero_hand_range_membership_q3s_in_q2s_plus() -> None:
+    """Q3s is covered by Q2s+."""
+    assert hero_hand_class_in_range("Q3s", "Q2s+") is True
+
+
+def test_solver_parse_audit_reports_range_missing() -> None:
+    """Solver parse audit summary reports Hero hand outside hero-side range."""
+    summary = build_solver_parse_audit_summary(
+        [
+            {
+                "sample_id": "sample_a",
+                "strategy_source_detail": "average_strategy_fallback",
+                "hero_cards_missing": False,
+                "matched_hand_missing": True,
+                "solver_success": True,
+                "hero_range_contains_hand": False,
+                "hero_range_missing_reason": (
+                    "hero hand class not in hero-side range"
+                ),
+            }
+        ]
+    )
+
+    assert summary["hero_range_missing_count"] == 1
+    assert summary["hero_range_contains_count"] == 0
+    assert summary["items"][0]["hero_range_contains_hand"] is False
+    assert summary["items"][0]["hero_range_missing_reason"]
 
 
 def test_build_teacher_request_applies_standard_and_high_profiles() -> None:

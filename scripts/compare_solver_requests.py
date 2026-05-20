@@ -47,6 +47,8 @@ GRID_MAX_ITERATIONS = (150, 180, 200, 230, 250, 280, 300)
 GRID_TARGET_EXPLOITABILITY = (1.2, 1.0, 0.9, 0.8, 0.7, 0.6)
 GRID_BET_SIZES = ("60%,a", "60%", "50%,60%", "33%,60%")
 DEFAULT_LLM_MODEL = "openai/gpt-5.4-mini"
+RANK_ORDER = "AKQJT98765432"
+RANK_INDEX = {rank: index for index, rank in enumerate(RANK_ORDER)}
 BLIND_INPUT_AUDIT_FIELDS = [
     "board",
     "hero_cards",
@@ -2388,6 +2390,7 @@ def build_solver_parse_audit_item(
         }
     hero_cards = diagnostics.get("hero_cards", [])
     matched_hand = diagnostics.get("matched_hand")
+    range_audit = build_hero_range_membership_audit(payload, hero_cards)
     return {
         "sample_id": sample_id(request_path),
         "source_request": str(request_path),
@@ -2405,6 +2408,7 @@ def build_solver_parse_audit_item(
         "matched_hand_missing": matched_hand is None,
         "fallback_reason": diagnostics.get("fallback_reason"),
         "meta_phase": meta.get("phase"),
+        **range_audit,
     }
 
 
@@ -2423,6 +2427,109 @@ def solver_parse_audit_game_state(payload: JsonDict) -> GameState:
         state.players["2"] = PlayerState()
     state.players["2"].bet = call_amount
     return state
+
+
+def build_hero_range_membership_audit(
+    payload: JsonDict,
+    hero_cards_value: object,
+) -> JsonDict:
+    """Return Hero hand membership diagnostics for the Solver hero-side range."""
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    hero_cards = [str(card) for card in hero_cards_value] if isinstance(
+        hero_cards_value, list
+    ) else []
+    hero_is_ip = meta.get("hero_is_ip")
+    if hero_is_ip is True:
+        hero_side = "ip"
+        range_source = "range_ip"
+    elif hero_is_ip is False:
+        hero_side = "oop"
+        range_source = "range_oop"
+    else:
+        hero_side = "unknown"
+        range_source = "unknown"
+    hero_range = request.get(range_source) if range_source != "unknown" else None
+    hand_info = hero_hand_class_for_cards(hero_cards)
+    if not hand_info.get("hero_hand_class") or not isinstance(hero_range, str):
+        contains: bool | None = None
+        reason = "hero hand class or hero-side range unavailable"
+    else:
+        contains = hero_hand_class_in_range(
+            str(hand_info["hero_hand_class"]),
+            hero_range,
+        )
+        reason = None if contains else "hero hand class not in hero-side range"
+    return {
+        "hero_is_ip": hero_is_ip,
+        "hero_side": hero_side,
+        "hero_combo": hand_info.get("hero_combo"),
+        "hero_hand_class": hand_info.get("hero_hand_class"),
+        "hero_range_source": range_source,
+        "hero_range_contains_hand": contains,
+        "hero_range_missing_reason": reason,
+        "range_oop_excerpt": _range_excerpt(request.get("range_oop")),
+        "range_ip_excerpt": _range_excerpt(request.get("range_ip")),
+    }
+
+
+def hero_hand_class_for_cards(hero_cards: list[str]) -> JsonDict:
+    """Return canonical combo and class labels for two Hero cards."""
+    if len(hero_cards) != 2:
+        return {"hero_combo": None, "hero_hand_class": None}
+    first, second = str(hero_cards[0]), str(hero_cards[1])
+    cards = sorted([first, second], key=lambda card: _rank_index(card[:1]))
+    high, low = cards[0], cards[1]
+    high_rank = high[:1].upper()
+    low_rank = low[:1].upper()
+    if high_rank == low_rank:
+        hand_class = high_rank + low_rank
+    else:
+        suitedness = "s" if high[-1:].lower() == low[-1:].lower() else "o"
+        hand_class = high_rank + low_rank + suitedness
+    return {"hero_combo": high + low, "hero_hand_class": hand_class}
+
+
+def hero_hand_class_in_range(hero_hand_class: str, hero_range: str) -> bool:
+    """Return whether a compact hand class is covered by a simple range string."""
+    tokens = [token.strip() for token in hero_range.split(",") if token.strip()]
+    return any(_range_token_contains_hand(token, hero_hand_class) for token in tokens)
+
+
+def _range_token_contains_hand(token: str, hand_class: str) -> bool:
+    token = token.strip()
+    plus = token.endswith("+")
+    base = token[:-1] if plus else token
+    if base == hand_class:
+        return True
+    if len(hand_class) == 2 and len(base) == 2:
+        if hand_class[0] != hand_class[1] or base[0] != base[1]:
+            return False
+        if plus and hand_class[0] == hand_class[1]:
+            return _rank_index(hand_class[0]) <= _rank_index(base[0])
+        return hand_class == base
+    if len(hand_class) != 3 or len(base) not in {3, 4}:
+        return False
+    hand_high, hand_low, hand_kind = hand_class[0], hand_class[1], hand_class[2]
+    base_high, base_low, base_kind = base[0], base[1], base[2]
+    if hand_high != base_high or hand_kind != base_kind:
+        return False
+    if base_low == "x":
+        return True
+    if not plus:
+        return hand_low == base_low
+    return _rank_index(hand_low) <= _rank_index(base_low)
+
+
+def _rank_index(rank: str) -> int:
+    return RANK_INDEX.get(rank.upper(), len(RANK_ORDER))
+
+
+def _range_excerpt(value: object, limit: int = 160) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if len(text) <= limit else text[:limit]
 
 
 def build_solver_parse_audit_summary(items: list[JsonDict]) -> JsonDict:
@@ -2451,6 +2558,15 @@ def build_solver_parse_audit_summary(items: list[JsonDict]) -> JsonDict:
         "solver_error_count": sum(
             1 for item in items if item.get("solver_success") is False
         ),
+        "hero_range_contains_count": sum(
+            1 for item in items if item.get("hero_range_contains_hand") is True
+        ),
+        "hero_range_missing_count": sum(
+            1 for item in items if item.get("hero_range_contains_hand") is False
+        ),
+        "hero_range_unknown_count": sum(
+            1 for item in items if item.get("hero_range_contains_hand") is None
+        ),
         "items": [
             {
                 "sample_id": item["sample_id"],
@@ -2462,6 +2578,15 @@ def build_solver_parse_audit_summary(items: list[JsonDict]) -> JsonDict:
                 "fallback_reason": item.get("fallback_reason"),
                 "hero_cards_missing": item.get("hero_cards_missing"),
                 "matched_hand_missing": item.get("matched_hand_missing"),
+                "hero_is_ip": item.get("hero_is_ip"),
+                "hero_side": item.get("hero_side"),
+                "hero_combo": item.get("hero_combo"),
+                "hero_hand_class": item.get("hero_hand_class"),
+                "hero_range_source": item.get("hero_range_source"),
+                "hero_range_contains_hand": item.get("hero_range_contains_hand"),
+                "hero_range_missing_reason": item.get(
+                    "hero_range_missing_reason"
+                ),
                 "solver_success": item.get("solver_success"),
                 "solver_error": item.get("solver_error"),
             }
@@ -4501,6 +4626,9 @@ def print_solver_parse_audit_summary(summary: JsonDict) -> None:
     )
     print(f"hero_cards_missing_count={summary['hero_cards_missing_count']}")
     print(f"matched_hand_missing_count={summary['matched_hand_missing_count']}")
+    print(f"hero_range_contains_count={summary['hero_range_contains_count']}")
+    print(f"hero_range_missing_count={summary['hero_range_missing_count']}")
+    print(f"hero_range_unknown_count={summary['hero_range_unknown_count']}")
     print(f"solver_error_count={summary['solver_error_count']}")
     print(f"RESULT_JSON: {summary['output_path']}")
 

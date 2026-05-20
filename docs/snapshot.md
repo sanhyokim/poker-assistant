@@ -1141,3 +1141,17 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - root_strategy.handsから候補一致する行を探す。
 - 診断JSONに hero_hand_candidates / matched_hand / matched_hand_index を出す。
 - Heroカードがあるのに見つからない場合はwarning logを出す。
+
+## Phase 86-Fix8 Task 18-C — Hero hand range membership監査
+
+背景:
+- Task 18-BでHero hand matching順序差は修正済み。
+- しかし新規ライブ3件中2件で、hero_cards=["3c","Qc"] が Solver hands に存在せず average_strategy_fallback。
+- 原因は、Hero側rangeにQ3sが含まれていない可能性が高い。
+- 本番Solver/教師データの信頼性には、Hero実カードがHero側rangeに含まれるかの監査が必須。
+
+対応:
+- Hero側rangeを hero_is_ip から判定。
+- hero_cards から combo / hand_class を作成。
+- hero-side range に含まれるか監査。
+- parse audit item/summary に range membership 情報を追加。
