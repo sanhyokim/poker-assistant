@@ -18,8 +18,10 @@ from scripts.compare_solver_requests import (
     build_blind_llm_prompt,
     build_grid_probe_request,
     build_grid_summary,
+    build_llm_blind_repeat_summary,
     build_repeatability_summary,
     build_resident_timing_summary,
+    blind_repeat_item_summary,
     build_single_size_request,
     build_single_size_summary,
     build_sizing_teacher_item,
@@ -1244,6 +1246,122 @@ def test_evaluate_blind_llm_detects_allin_violation() -> None:
 
     assert result["blind_allin_violation"] is True
     assert result["blind_teacher_alignment"] is False
+
+
+def test_blind_repeat_item_detects_sizing_instability() -> None:
+    """Blind repeat item summary detects changing sizing types."""
+    summary = blind_repeat_item_summary(
+        "sample_b",
+        [
+            {
+                "success": True,
+                "llm_action": "CHECK",
+                "llm_sizing_type": "none",
+                "blind_teacher_alignment": True,
+            },
+            {
+                "success": True,
+                "llm_action": "BET",
+                "llm_sizing_type": "bet_33",
+                "blind_teacher_alignment": True,
+            },
+        ],
+        repeat_count=2,
+    )
+
+    assert summary["sizing_type_stable"] is False
+
+
+def test_build_blind_repeat_summary_counts_stability() -> None:
+    """Blind repeat summary counts stable samples and lists unstable ones."""
+    sample_a_runs = [
+        {
+            "success": True,
+            "llm_action": "CHECK",
+            "llm_sizing_type": "none",
+            "blind_action_match": True,
+            "blind_direction_match": True,
+            "blind_teacher_alignment": True,
+            "under_15s": True,
+        }
+        for _ in range(5)
+    ]
+    sample_b_runs = [
+        {
+            "success": True,
+            "llm_action": "CHECK",
+            "llm_sizing_type": "none",
+            "blind_action_match": True,
+            "blind_direction_match": True,
+            "blind_teacher_alignment": True,
+            "under_15s": True,
+        },
+        {
+            "success": True,
+            "llm_action": "BET",
+            "llm_sizing_type": "bet_33",
+            "blind_action_match": False,
+            "blind_direction_match": False,
+            "blind_teacher_alignment": False,
+            "under_15s": True,
+        },
+    ]
+    item_a = {
+        "sample_id": "sample_a",
+        "runs": sample_a_runs,
+        **blind_repeat_item_summary("sample_a", sample_a_runs, repeat_count=5),
+    }
+    item_b = {
+        "sample_id": "sample_b",
+        "runs": sample_b_runs,
+        **blind_repeat_item_summary("sample_b", sample_b_runs, repeat_count=5),
+    }
+
+    summary = build_llm_blind_repeat_summary([item_a, item_b], "baseline", 5)
+
+    assert summary["action_stable_sample_count"] == 1
+    assert summary["teacher_alignment_stable_sample_count"] == 1
+    assert summary["unstable_samples"][0]["sample_id"] == "sample_b"
+
+
+def test_blind_repeat_summary_counts_violations() -> None:
+    """Blind repeat summary aggregates all-in and passive teacher violations."""
+    runs = [
+        {
+            "success": True,
+            "llm_action": "ALL_IN",
+            "llm_sizing_type": "all_in",
+            "blind_action_match": False,
+            "blind_direction_match": False,
+            "blind_teacher_alignment": False,
+            "blind_allin_violation": True,
+            "blind_passive_teacher_aggressive_violation": False,
+            "legal_action_valid": True,
+            "under_15s": True,
+        },
+        {
+            "success": True,
+            "llm_action": "BET",
+            "llm_sizing_type": "bet_33",
+            "blind_action_match": False,
+            "blind_direction_match": False,
+            "blind_teacher_alignment": False,
+            "blind_allin_violation": False,
+            "blind_passive_teacher_aggressive_violation": True,
+            "legal_action_valid": True,
+            "under_15s": True,
+        },
+    ]
+    item = {
+        "sample_id": "sample_a",
+        "runs": runs,
+        **blind_repeat_item_summary("sample_a", runs, repeat_count=2),
+    }
+
+    summary = build_llm_blind_repeat_summary([item], "baseline", 2)
+
+    assert summary["allin_violation_count"] == 1
+    assert summary["passive_teacher_aggressive_violation_count"] == 1
 
 
 def test_build_teacher_request_applies_standard_and_high_profiles() -> None:

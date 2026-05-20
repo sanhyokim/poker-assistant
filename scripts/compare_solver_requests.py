@@ -1753,6 +1753,75 @@ def compare_solver_requests_llm_blind(
     return summary
 
 
+def compare_solver_requests_llm_blind_repeat(
+    *,
+    llm_blind_repeat_path: Path | None,
+    llm_blind_repeat_dir: Path | None,
+    sizing_teacher_path: Path | None,
+    sizing_teacher_dir: Path | None,
+    phase: str,
+    sample_ids: list[str] | None,
+    llm_model: str | None,
+    timeout: float,
+    blind_profile: str,
+    repeat_count: int,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+    llm_caller: LLMCaller | None = None,
+) -> JsonDict:
+    """Run blind LLM diagnostics repeatedly for stability checks."""
+    request_paths = discover_llm_sizing_request_files(
+        llm_blind_repeat_path,
+        llm_blind_repeat_dir,
+        phase,
+        sample_ids,
+    )
+    teacher_items = load_sizing_teacher_items(sizing_teacher_path, sizing_teacher_dir)
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+    model = llm_model or os.getenv("LLM_MODEL_DEFAULT") or DEFAULT_LLM_MODEL
+    caller = llm_caller or call_openrouter_llm
+    print(
+        "BLIND LLM REPEAT DISCOVERY: "
+        f"samples={len(request_paths)} repeat_count={repeat_count} "
+        f"model={model} profile={blind_profile}"
+    )
+    for request_path in request_paths:
+        current_sample_id = sample_id(request_path)
+        teacher_item = teacher_items.get(current_sample_id)
+        if teacher_item is None:
+            item = _missing_blind_repeat_teacher_item(
+                request_path,
+                model,
+                blind_profile,
+                repeat_count,
+            )
+        else:
+            item = _run_llm_blind_repeat_for_sample(
+                request_path,
+                teacher_item=teacher_item,
+                llm_model=model,
+                timeout=timeout,
+                blind_profile=blind_profile,
+                repeat_count=repeat_count,
+                bridge_factory=bridge_factory,
+                llm_caller=caller,
+            )
+        items.append(item)
+        output_path = items_dir / f"{current_sample_id}_blind_repeat.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_llm_blind_repeat_summary(items, blind_profile, repeat_count)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "llm_blind_repeat_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
 def _missing_blind_teacher_item(
     request_path: Path, model: str, blind_profile: str
 ) -> JsonDict:
@@ -1778,6 +1847,38 @@ def _missing_blind_teacher_item(
         "blind_teacher_alignment": False,
         "legal_action_valid": None,
         "under_15s": False,
+    }
+
+
+def _missing_blind_repeat_teacher_item(
+    request_path: Path,
+    model: str,
+    blind_profile: str,
+    repeat_count: int,
+) -> JsonDict:
+    """Return an error repeat item when blind teacher data is missing."""
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "llm_model": model,
+        "blind_profile": blind_profile,
+        "repeat_count": repeat_count,
+        "baseline_action": None,
+        "teacher_label": "unknown",
+        "allowed_sizing_types": [],
+        "runs": [],
+        "action_values": [],
+        "sizing_type_values": [],
+        "teacher_alignment_count": 0,
+        "teacher_alignment_rate": 0.0,
+        "action_stable": False,
+        "sizing_type_stable": False,
+        "teacher_alignment_stable": False,
+        "allin_violation_count": 0,
+        "passive_teacher_aggressive_violation_count": 0,
+        "legal_action_invalid_count": 0,
+        "error_count": repeat_count,
+        "llm_error": "Sizing teacher item missing",
     }
 
 
@@ -1846,6 +1947,88 @@ def _run_llm_blind_for_sample(
         "allin_aggressive": teacher_item.get("allin_aggressive", False),
         "prompt": prompt,
         **evaluation,
+    }
+
+
+def _run_llm_blind_repeat_for_sample(
+    request_path: Path,
+    *,
+    teacher_item: JsonDict,
+    llm_model: str,
+    timeout: float,
+    blind_profile: str,
+    repeat_count: int,
+    bridge_factory: BridgeFactory,
+    llm_caller: LLMCaller,
+) -> JsonDict:
+    """Run one blind LLM prompt repeatedly and summarize stability."""
+    payload = load_solver_payload(request_path)
+    primary_request = dict(payload["request"])
+    baseline = run_solver_request_payload(
+        primary_request,
+        path_label=str(request_path),
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
+    legal_actions = legal_actions_for_solver_request(primary_request)
+    prompt = build_blind_llm_prompt(
+        payload,
+        legal_actions,
+        blind_profile=blind_profile,
+    )
+    runs: list[JsonDict] = []
+    for run_index in range(1, repeat_count + 1):
+        llm_result = run_llm_diagnostic_request(
+            prompt,
+            model=llm_model,
+            timeout=timeout,
+            llm_caller=llm_caller,
+        )
+        decision = llm_result.get("decision")
+        if not isinstance(decision, dict):
+            decision = {}
+        evaluation = evaluate_blind_llm_decision(
+            baseline,
+            teacher_item,
+            decision,
+            legal_actions,
+            llm_result,
+        )
+        runs.append(
+            {
+                "run_index": run_index,
+                "success": llm_result["success"],
+                "elapsed_ms": llm_result["elapsed_ms"],
+                "llm_action": decision.get("action"),
+                "llm_amount": decision.get("amount"),
+                "llm_sizing_type": decision.get("sizing_type"),
+                "llm_confidence": decision.get("confidence"),
+                "llm_reason": decision.get("reason"),
+                "llm_error": llm_result.get("error"),
+                "llm_status_code": llm_result.get("status_code"),
+                **evaluation,
+            }
+        )
+
+    summary = blind_repeat_item_summary(
+        sample_id(request_path),
+        runs,
+        repeat_count=repeat_count,
+    )
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "source_teacher": teacher_item.get("source_item"),
+        "llm_model": llm_model,
+        "blind_profile": blind_profile,
+        "repeat_count": repeat_count,
+        "baseline_action": baseline.get("action"),
+        "baseline_amount": baseline.get("amount"),
+        "teacher_label": teacher_item.get("teacher_label"),
+        "allowed_sizing_types": teacher_item.get("allowed_sizing_types", []),
+        "allin_aggressive": teacher_item.get("allin_aggressive", False),
+        "runs": runs,
+        **summary,
     }
 
 
@@ -2011,6 +2194,153 @@ def build_llm_blind_summary(
                 ),
                 "legal_action_valid": item.get("legal_action_valid"),
                 "error": item.get("llm_error"),
+            }
+            for item in items
+        ],
+    }
+
+
+def blind_repeat_item_summary(
+    sample_id_value: str,
+    runs: list[JsonDict],
+    *,
+    repeat_count: int,
+) -> JsonDict:
+    """Aggregate repeated blind LLM runs for one sample."""
+    success_runs = [run for run in runs if run.get("success") is True]
+    action_values = sorted(
+        {
+            str(run.get("llm_action"))
+            for run in success_runs
+            if run.get("llm_action") is not None
+        }
+    )
+    sizing_type_values = sorted(
+        {
+            str(run.get("llm_sizing_type"))
+            for run in success_runs
+            if run.get("llm_sizing_type") is not None
+        }
+    )
+    alignment_values = {
+        bool(run.get("blind_teacher_alignment")) for run in success_runs
+    }
+    teacher_alignment_count = sum(
+        1 for run in success_runs if run.get("blind_teacher_alignment") is True
+    )
+    allin_violation_count = sum(
+        1 for run in runs if run.get("blind_allin_violation") is True
+    )
+    passive_violation_count = sum(
+        1
+        for run in runs
+        if run.get("blind_passive_teacher_aggressive_violation") is True
+    )
+    return {
+        "sample_id": sample_id_value,
+        "repeat_count": repeat_count,
+        "success_count": len(success_runs),
+        "error_count": sum(1 for run in runs if run.get("success") is False),
+        "action_values": action_values,
+        "sizing_type_values": sizing_type_values,
+        "teacher_alignment_count": teacher_alignment_count,
+        "teacher_alignment_rate": _rate(teacher_alignment_count, len(success_runs)),
+        "action_stable": len(action_values) <= 1 and bool(success_runs),
+        "sizing_type_stable": len(sizing_type_values) <= 1 and bool(success_runs),
+        "teacher_alignment_stable": len(alignment_values) <= 1 and bool(success_runs),
+        "allin_violation_count": allin_violation_count,
+        "passive_teacher_aggressive_violation_count": passive_violation_count,
+        "legal_action_invalid_count": sum(
+            1 for run in runs if run.get("legal_action_valid") is False
+        ),
+    }
+
+
+def build_llm_blind_repeat_summary(
+    items: list[JsonDict],
+    blind_profile: str,
+    repeat_count: int,
+) -> JsonDict:
+    """Aggregate blind LLM repeatability diagnostics."""
+    runs = [run for item in items for run in item.get("runs", [])]
+    success_runs = [run for run in runs if run.get("success") is True]
+    unstable_samples = [
+        {
+            "sample_id": item["sample_id"],
+            "action_stable": item.get("action_stable"),
+            "sizing_type_stable": item.get("sizing_type_stable"),
+            "teacher_alignment_stable": item.get("teacher_alignment_stable"),
+            "allin_violation_count": item.get("allin_violation_count", 0),
+            "passive_teacher_aggressive_violation_count": item.get(
+                "passive_teacher_aggressive_violation_count", 0
+            ),
+            "action_values": item.get("action_values", []),
+            "sizing_type_values": item.get("sizing_type_values", []),
+            "teacher_alignment_rate": item.get("teacher_alignment_rate"),
+        }
+        for item in items
+        if (
+            item.get("action_stable") is False
+            or item.get("sizing_type_stable") is False
+            or item.get("teacher_alignment_stable") is False
+            or item.get("allin_violation_count", 0) > 0
+            or item.get("passive_teacher_aggressive_violation_count", 0) > 0
+        )
+    ]
+    return {
+        "blind_profile": blind_profile,
+        "total_samples": len(items),
+        "repeat_count": repeat_count,
+        "planned_runs": len(items) * repeat_count,
+        "success_count": len(success_runs),
+        "error_count": sum(1 for run in runs if run.get("success") is False)
+        + sum(int(item.get("error_count", 0)) for item in items if not item.get("runs")),
+        "under_15s_rate": _bool_rate(runs, "under_15s"),
+        "overall_blind_action_match_rate": _bool_rate(
+            success_runs,
+            "blind_action_match",
+        ),
+        "overall_blind_direction_match_rate": _bool_rate(
+            success_runs,
+            "blind_direction_match",
+        ),
+        "overall_blind_teacher_alignment_rate": _bool_rate(
+            success_runs,
+            "blind_teacher_alignment",
+        ),
+        "action_stable_sample_count": sum(
+            1 for item in items if item.get("action_stable") is True
+        ),
+        "sizing_type_stable_sample_count": sum(
+            1 for item in items if item.get("sizing_type_stable") is True
+        ),
+        "teacher_alignment_stable_sample_count": sum(
+            1 for item in items if item.get("teacher_alignment_stable") is True
+        ),
+        "allin_violation_count": sum(
+            int(item.get("allin_violation_count", 0)) for item in items
+        ),
+        "passive_teacher_aggressive_violation_count": sum(
+            int(item.get("passive_teacher_aggressive_violation_count", 0))
+            for item in items
+        ),
+        "legal_action_invalid_count": sum(
+            int(item.get("legal_action_invalid_count", 0)) for item in items
+        ),
+        "unstable_samples": unstable_samples,
+        "items": [
+            {
+                "sample_id": item["sample_id"],
+                "action_values": item.get("action_values", []),
+                "sizing_type_values": item.get("sizing_type_values", []),
+                "teacher_alignment_rate": item.get("teacher_alignment_rate"),
+                "action_stable": item.get("action_stable"),
+                "sizing_type_stable": item.get("sizing_type_stable"),
+                "teacher_alignment_stable": item.get("teacher_alignment_stable"),
+                "allin_violation_count": item.get("allin_violation_count", 0),
+                "passive_teacher_aggressive_violation_count": item.get(
+                    "passive_teacher_aggressive_violation_count", 0
+                ),
             }
             for item in items
         ],
@@ -3689,6 +4019,47 @@ def print_llm_blind_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_llm_blind_repeat_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for blind LLM repeatability."""
+    print("BLIND LLM REPEAT SUMMARY")
+    print(f"blind_profile={summary['blind_profile']}")
+    print(f"samples={summary['total_samples']}")
+    print(f"repeat_count={summary['repeat_count']}")
+    print(f"planned_runs={summary['planned_runs']}")
+    print(f"success_count={summary['success_count']}")
+    print(f"error_count={summary['error_count']}")
+    print(f"under_15s_rate={_percent(summary['under_15s_rate'])}")
+    print(
+        "overall_blind_action_match_rate="
+        f"{_percent(summary['overall_blind_action_match_rate'])}"
+    )
+    print(
+        "overall_blind_direction_match_rate="
+        f"{_percent(summary['overall_blind_direction_match_rate'])}"
+    )
+    print(
+        "overall_blind_teacher_alignment_rate="
+        f"{_percent(summary['overall_blind_teacher_alignment_rate'])}"
+    )
+    print(f"action_stable_sample_count={summary['action_stable_sample_count']}")
+    print(
+        "sizing_type_stable_sample_count="
+        f"{summary['sizing_type_stable_sample_count']}"
+    )
+    print(
+        "teacher_alignment_stable_sample_count="
+        f"{summary['teacher_alignment_stable_sample_count']}"
+    )
+    print(f"allin_violation_count={summary['allin_violation_count']}")
+    print(
+        "passive_teacher_aggressive_violation_count="
+        f"{summary['passive_teacher_aggressive_violation_count']}"
+    )
+    print(f"legal_action_invalid_count={summary['legal_action_invalid_count']}")
+    print(f"unstable_sample_count={len(summary['unstable_samples'])}")
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def print_llm_summary(summary: JsonDict) -> None:
     """Print compact aggregate statistics for LLM diagnostics."""
     print("LLM SUMMARY")
@@ -3750,6 +4121,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llm-sizing-dir", default=None, type=Path)
     parser.add_argument("--llm-blind-path", default=None, type=Path)
     parser.add_argument("--llm-blind-dir", default=None, type=Path)
+    parser.add_argument("--llm-blind-repeat-path", default=None, type=Path)
+    parser.add_argument("--llm-blind-repeat-dir", default=None, type=Path)
     parser.add_argument(
         "--blind-profile",
         choices=["baseline", "guided"],
@@ -3824,6 +4197,26 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_llm_sizing_summary(result)
+        return 0
+
+    if (
+        args.llm_blind_repeat_path is not None
+        or args.llm_blind_repeat_dir is not None
+    ):
+        result = compare_solver_requests_llm_blind_repeat(
+            llm_blind_repeat_path=args.llm_blind_repeat_path,
+            llm_blind_repeat_dir=args.llm_blind_repeat_dir,
+            sizing_teacher_path=args.sizing_teacher_path,
+            sizing_teacher_dir=args.sizing_teacher_dir,
+            phase=args.phase,
+            sample_ids=sample_ids,
+            llm_model=args.llm_model,
+            timeout=args.timeout,
+            blind_profile=args.blind_profile,
+            repeat_count=args.repeat_count,
+            out_dir=args.out,
+        )
+        print_llm_blind_repeat_summary(result)
         return 0
 
     if args.llm_blind_path is not None or args.llm_blind_dir is not None:

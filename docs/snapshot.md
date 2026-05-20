@@ -1081,3 +1081,14 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - baseline は Task 16 の元prompt。
 - guided は Task 16-A の一般戦略promptを比較用として残す。
 - summary/itemに blind_profile を保存。
+
+## Phase 86-Fix8 Task 16-C — HU flop Blind LLM repeatability診断
+
+背景:
+- Blind LLMは再実行ごとに alignment / violation が揺れている。
+- 本番採用前に、同一spotでaction/sizing/alignmentが安定するか確認する必要がある。
+
+目的:
+- baseline / guided profileでrepeat-count=5を実行。
+- action安定性、sizing安定性、teacher alignment安定性、violation再現性を測る。
+- 本番実装はまだしない。
