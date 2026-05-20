@@ -1092,3 +1092,15 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - baseline / guided profileでrepeat-count=5を実行。
 - action安定性、sizing安定性、teacher alignment安定性、violation再現性を測る。
 - 本番実装はまだしない。
+
+## Phase 86-Fix8 Task 16-D — HU flop Blind LLM入力監査
+
+背景:
+- Blind LLM repeatability診断では、teacher alignmentが不足した。
+- ただし、LLMにSolver requestと同等情報が渡っていない可能性がある。
+- Solver/teacher情報なしで検証する場合でも、実戦で見える情報はSolverと同等にLLMへ渡す必要がある。
+
+目的:
+- Blind LLM prompt/contextの入力情報とSolver request情報を比較する。
+- hero_cards / facing_bet / call_amount / actions_played / position などの欠落を検出する。
+- 入力不足がある場合は、prompt改善やモデル比較より先に入力整備を行う。

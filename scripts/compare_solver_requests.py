@@ -45,6 +45,36 @@ GRID_MAX_ITERATIONS = (150, 180, 200, 230, 250, 280, 300)
 GRID_TARGET_EXPLOITABILITY = (1.2, 1.0, 0.9, 0.8, 0.7, 0.6)
 GRID_BET_SIZES = ("60%,a", "60%", "50%,60%", "33%,60%")
 DEFAULT_LLM_MODEL = "openai/gpt-5.4-mini"
+BLIND_INPUT_AUDIT_FIELDS = [
+    "board",
+    "hero_cards",
+    "pot",
+    "starting_pot",
+    "effective_stack",
+    "spr",
+    "hero_position",
+    "hero_is_ip",
+    "actions_played",
+    "legal_actions",
+    "facing_bet",
+    "call_amount",
+    "street",
+    "num_players",
+    "heads_up",
+]
+BLIND_INPUT_CRITICAL_FIELDS = [
+    "hero_cards",
+    "board",
+    "pot",
+    "effective_stack",
+    "spr",
+    "hero_position",
+    "hero_is_ip",
+    "actions_played",
+    "legal_actions",
+    "facing_bet",
+    "call_amount",
+]
 LLM_ALLOWED_ACTIONS = {"CHECK", "BET", "RAISE", "CALL", "FOLD", "ALL_IN"}
 LLM_ALLOWED_SIZING_TYPES = {
     "none",
@@ -1822,6 +1852,41 @@ def compare_solver_requests_llm_blind_repeat(
     return summary
 
 
+def compare_solver_requests_llm_blind_input_audit(
+    *,
+    llm_blind_input_audit_path: Path | None,
+    llm_blind_input_audit_dir: Path | None,
+    phase: str,
+    sample_ids: list[str] | None,
+    out_dir: Path,
+) -> JsonDict:
+    """Audit parity between Solver/debug inputs and blind LLM prompt context."""
+    request_paths = discover_llm_sizing_request_files(
+        llm_blind_input_audit_path,
+        llm_blind_input_audit_dir,
+        phase,
+        sample_ids,
+    )
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+    print(f"BLIND INPUT AUDIT DISCOVERY: samples={len(request_paths)}")
+    for request_path in request_paths:
+        item = build_blind_input_audit_item(request_path)
+        items.append(item)
+        output_path = items_dir / f"{sample_id(request_path)}_blind_input_audit.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_blind_input_audit_summary(items)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "blind_input_audit_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
 def _missing_blind_teacher_item(
     request_path: Path, model: str, blind_profile: str
 ) -> JsonDict:
@@ -2039,20 +2104,7 @@ def build_blind_llm_prompt(
     blind_profile: str = "baseline",
 ) -> str:
     """Build a blind HU flop prompt using only visible game context."""
-    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
-    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
-    context = {
-        "board": request.get("board"),
-        "hero_cards": meta.get("hero_cards"),
-        "pot": request.get("starting_pot"),
-        "starting_pot": request.get("starting_pot"),
-        "effective_stack": request.get("effective_stack"),
-        "spr": meta.get("spr"),
-        "hero_position": meta.get("hero_position"),
-        "hero_is_ip": meta.get("hero_is_ip"),
-        "actions_played": request.get("actions_played", []),
-        "legal_actions": legal_actions,
-    }
+    context = build_blind_prompt_context(payload, legal_actions)
     guidance = ""
     if blind_profile == "guided":
         guidance = (
@@ -2103,6 +2155,181 @@ def build_blind_llm_prompt(
         "confidence, reason, risk_flags.\n"
         f"Visible context JSON:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
+
+
+def build_blind_prompt_context(payload: JsonDict, legal_actions: list[str]) -> JsonDict:
+    """Return the visible context currently included in blind LLM prompts."""
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    return {
+        "board": request.get("board"),
+        "hero_cards": meta.get("hero_cards"),
+        "pot": request.get("starting_pot"),
+        "starting_pot": request.get("starting_pot"),
+        "effective_stack": request.get("effective_stack"),
+        "spr": meta.get("spr"),
+        "hero_position": meta.get("hero_position"),
+        "hero_is_ip": meta.get("hero_is_ip"),
+        "actions_played": request.get("actions_played", []),
+        "legal_actions": legal_actions,
+    }
+
+
+def build_blind_input_audit_item(request_path: Path) -> JsonDict:
+    """Build one blind input audit item for a request payload."""
+    payload = load_solver_payload(request_path)
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    legal_actions = legal_actions_for_solver_request(request)
+    solver_fields = extract_solver_visible_fields(payload, legal_actions)
+    blind_fields = _expand_audit_fields(
+        build_blind_prompt_context(payload, legal_actions)
+    )
+    audit = compare_blind_input_fields(solver_fields, blind_fields)
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "solver_fields": solver_fields,
+        "blind_prompt_fields": blind_fields,
+        **audit,
+    }
+
+
+def extract_solver_visible_fields(
+    payload: JsonDict,
+    legal_actions: list[str],
+) -> JsonDict:
+    """Extract visible game fields available in the Solver/debug payload."""
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    active_seats = meta.get("active_seats")
+    num_players = len(active_seats) if isinstance(active_seats, list) else None
+    current_street_actions = meta.get("current_street_actions")
+    actions_played = request.get("actions_played", [])
+    inferred_call_amount = _infer_call_amount(actions_played)
+    inferred_facing_bet = inferred_call_amount > 0
+    return {
+        "board": request.get("board"),
+        "hero_cards": meta.get("hero_cards"),
+        "pot": request.get("starting_pot"),
+        "starting_pot": request.get("starting_pot"),
+        "effective_stack": request.get("effective_stack"),
+        "spr": meta.get("spr"),
+        "hero_position": meta.get("hero_position"),
+        "hero_is_ip": meta.get("hero_is_ip"),
+        "actions_played": actions_played,
+        "legal_actions": legal_actions,
+        "facing_bet": meta.get("facing_bet", inferred_facing_bet),
+        "call_amount": meta.get("call_amount", inferred_call_amount),
+        "street": meta.get("phase"),
+        "num_players": num_players,
+        "heads_up": num_players == 2 if num_players is not None else None,
+        "current_street_actions": current_street_actions,
+    }
+
+
+def _infer_call_amount(actions_played: object) -> int:
+    """Infer a simple facing bet amount from Solver actions_played text."""
+    if not isinstance(actions_played, list):
+        return 0
+    for action in reversed(actions_played):
+        text = str(action).strip()
+        parts = text.split()
+        if len(parts) >= 2 and parts[0].lower() in {"bet", "raise"}:
+            try:
+                return int(float(parts[1]))
+            except ValueError:
+                return 0
+    return 0
+
+
+def compare_blind_input_fields(
+    solver_fields: JsonDict,
+    blind_prompt_fields: JsonDict,
+) -> JsonDict:
+    """Compare Solver/debug visible fields against blind prompt fields."""
+    blind_fields = _expand_audit_fields(blind_prompt_fields)
+    solver_expanded = _expand_audit_fields(solver_fields)
+    missing_fields = [
+        field
+        for field in BLIND_INPUT_AUDIT_FIELDS
+        if _field_missing(blind_fields.get(field))
+    ]
+    mismatched_fields = [
+        field
+        for field in BLIND_INPUT_AUDIT_FIELDS
+        if (
+            not _field_missing(blind_fields.get(field))
+            and not _field_missing(solver_expanded.get(field))
+            and blind_fields.get(field) != solver_expanded.get(field)
+        )
+    ]
+    critical_missing_fields = [
+        field for field in missing_fields if field in BLIND_INPUT_CRITICAL_FIELDS
+    ]
+    critical_mismatch_fields = [
+        field for field in mismatched_fields if field in BLIND_INPUT_CRITICAL_FIELDS
+    ]
+    return {
+        "missing_fields": missing_fields,
+        "mismatched_fields": mismatched_fields,
+        "critical_missing_fields": critical_missing_fields,
+        "critical_mismatch_fields": critical_mismatch_fields,
+        "input_parity_ok": not critical_missing_fields
+        and not critical_mismatch_fields,
+    }
+
+
+def build_blind_input_audit_summary(items: list[JsonDict]) -> JsonDict:
+    """Aggregate blind input audit items."""
+    return {
+        "total_samples": len(items),
+        "input_parity_ok_count": sum(
+            1 for item in items if item.get("input_parity_ok") is True
+        ),
+        "input_parity_ng_count": sum(
+            1 for item in items if item.get("input_parity_ok") is False
+        ),
+        "critical_missing_counts": _field_counts(items, "critical_missing_fields"),
+        "critical_mismatch_counts": _field_counts(items, "critical_mismatch_fields"),
+        "missing_counts": _field_counts(items, "missing_fields"),
+        "mismatch_counts": _field_counts(items, "mismatched_fields"),
+        "items": [
+            {
+                "sample_id": item["sample_id"],
+                "missing_fields": item.get("missing_fields", []),
+                "mismatched_fields": item.get("mismatched_fields", []),
+                "critical_missing_fields": item.get("critical_missing_fields", []),
+                "critical_mismatch_fields": item.get(
+                    "critical_mismatch_fields", []
+                ),
+                "input_parity_ok": item.get("input_parity_ok"),
+            }
+            for item in items
+        ],
+    }
+
+
+def _expand_audit_fields(fields: JsonDict) -> JsonDict:
+    """Return audit fields with all expected keys present."""
+    expanded = {field: fields.get(field) for field in BLIND_INPUT_AUDIT_FIELDS}
+    return expanded
+
+
+def _field_missing(value: object) -> bool:
+    """Return True when an audit field is absent or empty."""
+    return value is None or value == ""
+
+
+def _field_counts(items: list[JsonDict], key: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for item in items:
+        values = item.get(key, [])
+        if not isinstance(values, list):
+            continue
+        for value in values:
+            text = str(value)
+            counts[text] = counts.get(text, 0) + 1
+    return counts
 
 
 def evaluate_blind_llm_decision(
@@ -4060,6 +4287,19 @@ def print_llm_blind_repeat_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_blind_input_audit_summary(summary: JsonDict) -> None:
+    """Print compact blind input audit statistics."""
+    print("BLIND INPUT AUDIT SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"input_parity_ok_count={summary['input_parity_ok_count']}")
+    print(f"input_parity_ng_count={summary['input_parity_ng_count']}")
+    print(f"critical_missing_counts={summary['critical_missing_counts']}")
+    print(f"critical_mismatch_counts={summary['critical_mismatch_counts']}")
+    print(f"missing_counts={summary['missing_counts']}")
+    print(f"mismatch_counts={summary['mismatch_counts']}")
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def print_llm_summary(summary: JsonDict) -> None:
     """Print compact aggregate statistics for LLM diagnostics."""
     print("LLM SUMMARY")
@@ -4123,6 +4363,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llm-blind-dir", default=None, type=Path)
     parser.add_argument("--llm-blind-repeat-path", default=None, type=Path)
     parser.add_argument("--llm-blind-repeat-dir", default=None, type=Path)
+    parser.add_argument("--llm-blind-input-audit-path", default=None, type=Path)
+    parser.add_argument("--llm-blind-input-audit-dir", default=None, type=Path)
     parser.add_argument(
         "--blind-profile",
         choices=["baseline", "guided"],
@@ -4217,6 +4459,20 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_llm_blind_repeat_summary(result)
+        return 0
+
+    if (
+        args.llm_blind_input_audit_path is not None
+        or args.llm_blind_input_audit_dir is not None
+    ):
+        result = compare_solver_requests_llm_blind_input_audit(
+            llm_blind_input_audit_path=args.llm_blind_input_audit_path,
+            llm_blind_input_audit_dir=args.llm_blind_input_audit_dir,
+            phase=args.phase,
+            sample_ids=sample_ids,
+            out_dir=args.out,
+        )
+        print_blind_input_audit_summary(result)
         return 0
 
     if args.llm_blind_path is not None or args.llm_blind_dir is not None:

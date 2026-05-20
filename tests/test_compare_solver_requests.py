@@ -18,6 +18,7 @@ from scripts.compare_solver_requests import (
     build_blind_llm_prompt,
     build_grid_probe_request,
     build_grid_summary,
+    build_blind_input_audit_summary,
     build_llm_blind_repeat_summary,
     build_repeatability_summary,
     build_resident_timing_summary,
@@ -42,6 +43,7 @@ from scripts.compare_solver_requests import (
     compare_solver_requests_grid,
     compare_solver_requests_batch,
     compare_solver_requests,
+    compare_blind_input_fields,
     discover_primary_request_files,
     extract_action_summary,
     find_compare_request_for_primary,
@@ -1362,6 +1364,81 @@ def test_blind_repeat_summary_counts_violations() -> None:
 
     assert summary["allin_violation_count"] == 1
     assert summary["passive_teacher_aggressive_violation_count"] == 1
+
+
+def test_blind_input_audit_detects_missing_hero_cards() -> None:
+    """Blind input audit catches missing hero cards as critical."""
+    solver_fields = {
+        "hero_cards": ["As", "Kd"],
+        "board": "Ah7d2c",
+        "pot": 232,
+        "effective_stack": 9000,
+        "spr": 42.0,
+        "hero_position": "BTN",
+        "hero_is_ip": True,
+        "actions_played": [],
+        "legal_actions": ["CHECK", "BET"],
+        "facing_bet": False,
+        "call_amount": 0,
+    }
+    blind_fields = dict(solver_fields)
+    blind_fields["hero_cards"] = None
+
+    result = compare_blind_input_fields(solver_fields, blind_fields)
+
+    assert "hero_cards" in result["missing_fields"]
+    assert "hero_cards" in result["critical_missing_fields"]
+    assert result["input_parity_ok"] is False
+
+
+def test_blind_input_audit_passes_when_critical_fields_match() -> None:
+    """Blind input audit passes when all critical fields are present and equal."""
+    fields = {
+        "hero_cards": ["As", "Kd"],
+        "board": "Ah7d2c",
+        "pot": 232,
+        "effective_stack": 9000,
+        "spr": 42.0,
+        "hero_position": "BTN",
+        "hero_is_ip": True,
+        "actions_played": [],
+        "legal_actions": ["CHECK", "BET"],
+        "facing_bet": False,
+        "call_amount": 0,
+    }
+
+    result = compare_blind_input_fields(fields, fields)
+
+    assert result["input_parity_ok"] is True
+    assert result["critical_missing_fields"] == []
+    assert result["critical_mismatch_fields"] == []
+
+
+def test_blind_input_audit_summary_counts_missing_fields() -> None:
+    """Blind input audit summary counts missing critical fields."""
+    items = [
+        {
+            "sample_id": "sample_a",
+            "missing_fields": ["hero_cards", "call_amount"],
+            "mismatched_fields": [],
+            "critical_missing_fields": ["hero_cards", "call_amount"],
+            "critical_mismatch_fields": [],
+            "input_parity_ok": False,
+        },
+        {
+            "sample_id": "sample_b",
+            "missing_fields": ["hero_cards"],
+            "mismatched_fields": [],
+            "critical_missing_fields": ["hero_cards"],
+            "critical_mismatch_fields": [],
+            "input_parity_ok": False,
+        },
+    ]
+
+    summary = build_blind_input_audit_summary(items)
+
+    assert summary["critical_missing_counts"]["hero_cards"] == 2
+    assert summary["critical_missing_counts"]["call_amount"] == 1
 
 
 def test_build_teacher_request_applies_standard_and_high_profiles() -> None:
