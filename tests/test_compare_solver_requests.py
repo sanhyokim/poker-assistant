@@ -18,6 +18,8 @@ from scripts.compare_solver_requests import (
     build_grid_summary,
     build_repeatability_summary,
     build_resident_timing_summary,
+    build_single_size_request,
+    build_single_size_summary,
     build_teacher_request,
     build_teacher_summary,
     build_summary,
@@ -754,6 +756,110 @@ def test_build_grid_probe_request_overrides_candidate_fields() -> None:
         target_exploitability_pct=0.9,
         bet_sizes="60%,a",
     ) == "iter180_target0_9_bets60_allin"
+
+
+def test_build_single_size_request_applies_33_profile() -> None:
+    """Single-size 33 profile applies one flop bet size and primary precision."""
+    primary = {
+        "timeout_ms": 20000,
+        "max_iterations": 150,
+        "target_exploitability_pct": 1.0,
+        "flop_bet_sizes_oop": "60%,a",
+        "flop_bet_sizes_ip": "60%,a",
+        "flop_raise_sizes_oop": "3x",
+        "flop_raise_sizes_ip": "3x",
+        "turn_bet_sizes_oop": "60%,a",
+    }
+
+    request = build_single_size_request(primary, "single_33")
+
+    assert request["flop_bet_sizes_oop"] == "33%"
+    assert request["flop_bet_sizes_ip"] == "33%"
+    assert request["flop_raise_sizes_oop"] == "2.5x"
+    assert request["flop_raise_sizes_ip"] == "2.5x"
+    assert request["max_iterations"] == 300
+    assert request["target_exploitability_pct"] == 0.6
+    assert request["timeout_ms"] == 30000
+    assert request["turn_bet_sizes_oop"] == "60%,a"
+    assert primary["flop_bet_sizes_oop"] == "60%,a"
+
+
+def test_build_single_size_request_applies_allin_profile() -> None:
+    """Single-size all-in profile applies all-in bet and raise sizes."""
+    primary = {
+        "flop_bet_sizes_oop": "60%,a",
+        "flop_bet_sizes_ip": "60%,a",
+        "flop_raise_sizes_oop": "3x",
+        "flop_raise_sizes_ip": "3x",
+    }
+
+    request = build_single_size_request(primary, "single_allin")
+
+    assert request["flop_bet_sizes_oop"] == "a"
+    assert request["flop_bet_sizes_ip"] == "a"
+    assert request["flop_raise_sizes_oop"] == "a"
+    assert request["flop_raise_sizes_ip"] == "a"
+
+
+def test_single_size_summary_counts_aggressive_actions() -> None:
+    """Single-size summary counts BET/RAISE/ALL_IN as aggressive actions."""
+    summary = build_single_size_summary(
+        [
+            {
+                "sample_id": "sample_a",
+                "profiles": [
+                    {
+                        "profile_id": "single_33",
+                        "success": True,
+                        "elapsed_ms": 12000,
+                        "under_15s": True,
+                        "action": "BET",
+                        "aggressive_action": True,
+                    },
+                    {
+                        "profile_id": "single_50",
+                        "success": True,
+                        "elapsed_ms": 16000,
+                        "under_15s": False,
+                        "action": "CHECK",
+                        "aggressive_action": False,
+                    },
+                    {
+                        "profile_id": "single_75",
+                        "success": True,
+                        "elapsed_ms": 14000,
+                        "under_15s": True,
+                        "action": "RAISE",
+                        "aggressive_action": True,
+                    },
+                    {
+                        "profile_id": "single_allin",
+                        "success": True,
+                        "elapsed_ms": 11000,
+                        "under_15s": True,
+                        "action": "CHECK",
+                        "aggressive_action": False,
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert summary["planned_runs"] == 4
+    assert summary["success_count"] == 4
+    assert summary["profile_summary"]["single_33"]["aggressive_action_count"] == 1
+    assert summary["profile_summary"]["single_50"]["aggressive_action_count"] == 0
+    assert summary["profile_summary"]["single_75"]["aggressive_action_count"] == 1
+    assert summary["profile_summary"]["single_allin"]["aggressive_action_count"] == 0
+    assert summary["sample_summary"][0]["aggressive_profiles"] == [
+        "single_33",
+        "single_75",
+    ]
+    assert summary["sample_summary"][0]["passive_profiles"] == [
+        "single_50",
+        "single_allin",
+    ]
+    assert summary["sample_summary"][0]["all_profiles_same_direction"] is False
 
 
 def test_build_teacher_request_applies_standard_and_high_profiles() -> None:

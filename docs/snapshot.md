@@ -989,3 +989,17 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - tests/test_compare_solver_requests.py: 46 passed。
 - 全HU flop LLM診断: total_samples=12 / success_count=12 / under_15s_rate=100.0% / action_match_rate=100.0% / direction_match_rate=100.0% / dangerous_flip_count=0 / legal_action_invalid_count=0 / confidence_overstated_count=0 / reason_overclaim_count=0。
 - 本番 GameLoop / RecommendationEngine / LLMPipeline は変更しない。
+
+## Phase 86-Fix8 Task 14 — HU flop single-size Solver診断
+
+背景:
+- 現状deep-SPR primaryは主に60%,a候補で判断している。
+- 60%でCHECKでも、33%や50%ならBETできるspotがある可能性がある。
+- 複数サイズ同時Solverは重すぎて失敗している。
+- そのため、単一サイズごとにSolverを回し、サイズ別の増額可否を診断する。
+
+目的:
+- LLM sizing拡張前に、33/50/60/75/all-inそれぞれでSolverがBET/RAISE/ALL_IN方向を許容するか確認する。
+- 本番設定は変更しない。
+- HU flop限定。
+- multiway / turn / river には触らない。

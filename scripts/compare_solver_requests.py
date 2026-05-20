@@ -76,6 +76,13 @@ TEACHER_PROFILES: dict[str, JsonDict] = {
         "raise_sizes": "2.5x,3.5x",
     },
 }
+SINGLE_SIZE_PROFILES: dict[str, JsonDict] = {
+    "single_33": {"bet_size": "33%", "raise_size": "2.5x"},
+    "single_50": {"bet_size": "50%", "raise_size": "2.5x"},
+    "single_60": {"bet_size": "60%", "raise_size": "2.5x"},
+    "single_75": {"bet_size": "75%", "raise_size": "2.5x"},
+    "single_allin": {"bet_size": "a", "raise_size": "a"},
+}
 
 
 def load_env_file(env_path: Path | None = None, *, override: bool = False) -> None:
@@ -313,6 +320,22 @@ def build_teacher_request(primary_request: JsonDict, profile: str) -> JsonDict:
         teacher_request[f"{street}_raise_sizes_oop"] = str(config["raise_sizes"])
         teacher_request[f"{street}_raise_sizes_ip"] = str(config["raise_sizes"])
     return teacher_request
+
+
+def build_single_size_request(primary_request: JsonDict, profile: str) -> JsonDict:
+    """Return a flop single-size diagnostic request derived from a primary request."""
+    if profile not in SINGLE_SIZE_PROFILES:
+        raise ValueError(f"Unknown single-size profile: {profile}")
+    config = SINGLE_SIZE_PROFILES[profile]
+    single_size_request = dict(primary_request)
+    single_size_request["max_iterations"] = 300
+    single_size_request["target_exploitability_pct"] = 0.6
+    single_size_request["timeout_ms"] = 30000
+    single_size_request["flop_bet_sizes_oop"] = str(config["bet_size"])
+    single_size_request["flop_bet_sizes_ip"] = str(config["bet_size"])
+    single_size_request["flop_raise_sizes_oop"] = str(config["raise_size"])
+    single_size_request["flop_raise_sizes_ip"] = str(config["raise_size"])
+    return single_size_request
 
 
 def teacher_request_config(profile: str) -> JsonDict:
@@ -878,6 +901,208 @@ def build_teacher_summary(items: list[JsonDict], profile: str) -> JsonDict:
     }
 
 
+def compare_solver_requests_single_size(
+    *,
+    single_size_path: Path | None,
+    single_size_dir: Path | None,
+    phase: str,
+    sample_ids: list[str] | None,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+) -> JsonDict:
+    """Run single-size Solver diagnostics for selected HU flop requests."""
+    request_paths = discover_single_size_request_files(
+        single_size_path,
+        single_size_dir,
+        phase,
+        sample_ids,
+    )
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+    print(
+        "SINGLE-SIZE DISCOVERY: "
+        f"samples={len(request_paths)} profiles={len(SINGLE_SIZE_PROFILES)}"
+    )
+    for request_path in request_paths:
+        item = _run_single_size_for_sample(
+            request_path,
+            timeout=timeout,
+            bridge_factory=bridge_factory,
+        )
+        items.append(item)
+        output_path = items_dir / f"{sample_id(request_path)}_single_size.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_single_size_summary(items)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "single_size_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def discover_single_size_request_files(
+    single_size_path: Path | None,
+    single_size_dir: Path | None,
+    phase: str,
+    sample_ids: list[str] | None,
+) -> list[Path]:
+    """Return request files for single-size mode."""
+    if single_size_path is not None:
+        return [single_size_path]
+    if single_size_dir is None:
+        return []
+    paths = discover_primary_request_files(single_size_dir, phase)
+    if not sample_ids:
+        return paths
+    selected = set(sample_ids)
+    return [path for path in paths if sample_id(path) in selected]
+
+
+def _run_single_size_for_sample(
+    request_path: Path,
+    *,
+    timeout: float,
+    bridge_factory: BridgeFactory,
+) -> JsonDict:
+    """Run all single-size profiles for one request."""
+    primary_request = load_solver_request(request_path)
+    profiles: list[JsonDict] = []
+    for profile_id, config in SINGLE_SIZE_PROFILES.items():
+        request = build_single_size_request(primary_request, profile_id)
+        result = run_solver_request_payload(
+            request,
+            path_label=f"generated_single_size_{profile_id}_from:{request_path}",
+            timeout=timeout,
+            bridge_factory=bridge_factory,
+        )
+        probabilities = result.get("probabilities")
+        if not isinstance(probabilities, dict):
+            probabilities = {}
+        probability_info = probability_summary(probabilities)
+        action = result.get("action")
+        profiles.append(
+            {
+                "profile_id": profile_id,
+                "bet_size": config["bet_size"],
+                "success": result["success"],
+                "elapsed_ms": result["elapsed_ms"],
+                "under_15s": _under_15s(result),
+                "action": action,
+                "amount": result.get("amount"),
+                "probabilities": probabilities,
+                "top_action": probability_info["top_action"],
+                "top_probability": probability_info["top_probability"],
+                "second_action": probability_info["second_action"],
+                "second_probability": probability_info["second_probability"],
+                "top_margin": probability_info["top_margin"],
+                "aggressive_action": _is_aggressive_action(action),
+                "error": result["error"],
+            }
+        )
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "profiles": profiles,
+    }
+
+
+def build_single_size_summary(items: list[JsonDict]) -> JsonDict:
+    """Aggregate single-size Solver diagnostics across samples and profiles."""
+    profile_rows: dict[str, list[JsonDict]] = {
+        profile_id: [] for profile_id in SINGLE_SIZE_PROFILES
+    }
+    for item in items:
+        for row in item.get("profiles", []):
+            profile_id = row.get("profile_id")
+            if isinstance(profile_id, str):
+                profile_rows.setdefault(profile_id, []).append(row)
+
+    planned_runs = sum(len(rows) for rows in profile_rows.values())
+    success_count = sum(
+        1 for rows in profile_rows.values() for row in rows if row.get("success") is True
+    )
+    error_count = sum(
+        1 for rows in profile_rows.values() for row in rows if row.get("success") is False
+    )
+    return {
+        "total_samples": len(items),
+        "profile_count": len(SINGLE_SIZE_PROFILES),
+        "planned_runs": planned_runs,
+        "success_count": success_count,
+        "error_count": error_count,
+        "profile_summary": {
+            profile_id: _single_size_profile_summary(rows)
+            for profile_id, rows in profile_rows.items()
+        },
+        "sample_summary": [_single_size_sample_summary(item) for item in items],
+    }
+
+
+def _single_size_profile_summary(rows: list[JsonDict]) -> JsonDict:
+    """Aggregate single-size rows for one profile."""
+    elapsed_values = [
+        int(row["elapsed_ms"])
+        for row in rows
+        if row.get("elapsed_ms") is not None
+    ]
+    return {
+        "success_count": sum(1 for row in rows if row.get("success") is True),
+        "error_count": sum(1 for row in rows if row.get("success") is False),
+        "under_15s_rate": _bool_rate(rows, "under_15s"),
+        "aggressive_action_count": sum(
+            1 for row in rows if row.get("aggressive_action") is True
+        ),
+        "check_count": sum(1 for row in rows if row.get("action") == "CHECK"),
+        "call_count": sum(1 for row in rows if row.get("action") == "CALL"),
+        "fold_count": sum(1 for row in rows if row.get("action") == "FOLD"),
+        "bet_count": sum(1 for row in rows if row.get("action") == "BET"),
+        "raise_count": sum(1 for row in rows if row.get("action") == "RAISE"),
+        "all_in_count": sum(1 for row in rows if row.get("action") == "ALL_IN"),
+        "avg_elapsed_ms": _average(elapsed_values),
+    }
+
+
+def _single_size_sample_summary(item: JsonDict) -> JsonDict:
+    """Summarize aggressive/passive profile directions for one sample."""
+    aggressive_profiles = [
+        row["profile_id"]
+        for row in item.get("profiles", [])
+        if row.get("success") is True and row.get("aggressive_action") is True
+    ]
+    passive_profiles = [
+        row["profile_id"]
+        for row in item.get("profiles", [])
+        if row.get("success") is True and row.get("aggressive_action") is False
+    ]
+    error_profiles = [
+        row["profile_id"]
+        for row in item.get("profiles", [])
+        if row.get("success") is False
+    ]
+    successful_count = len(aggressive_profiles) + len(passive_profiles)
+    all_profiles_same_direction = not error_profiles and successful_count > 0 and (
+        len(aggressive_profiles) == successful_count
+        or len(passive_profiles) == successful_count
+    )
+    return {
+        "sample_id": item["sample_id"],
+        "aggressive_profiles": aggressive_profiles,
+        "passive_profiles": passive_profiles,
+        "error_profiles": error_profiles,
+        "all_profiles_same_direction": all_profiles_same_direction,
+    }
+
+
+def _is_aggressive_action(action: object) -> bool:
+    """Return whether an action is BET / RAISE / ALL_IN."""
+    return action in {"BET", "RAISE", "ALL_IN"}
+
+
 def compare_solver_requests_llm(
     *,
     llm_path: Path | None,
@@ -1048,7 +1273,8 @@ def build_llm_flop_prompt(
         "  - Treat the spot as near-tie / highly mixed.\n"
         "  - Do not describe the solver action as clear, strong, dominant, or obvious.\n"
         "  - confidence must be low or medium, never high.\n"
-        "  - Explain that the chosen action is selected because it is the top solver action, not because it dominates.\n"
+        "  - Explain that the chosen action is selected because it is the top "
+        "solver action, not because it dominates.\n"
         "Do not output illegal actions. Output JSON only.\n"
         "Allowed JSON keys: action, amount, sizing_type, confidence, reason, "
         "risk_flags.\n"
@@ -2451,6 +2677,27 @@ def print_teacher_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_single_size_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for single-size diagnostics."""
+    print("SINGLE-SIZE SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"profile_count={summary['profile_count']}")
+    print(f"planned_runs={summary['planned_runs']}")
+    print(f"success_count={summary['success_count']}")
+    print(f"error_count={summary['error_count']}")
+    for profile_id, stats in summary["profile_summary"].items():
+        print(
+            f"{profile_id}: "
+            f"aggressive={stats['aggressive_action_count']} "
+            f"under_15s={_percent(stats['under_15s_rate'])} "
+            f"avg_elapsed_ms={stats['avg_elapsed_ms']} "
+            f"bet={stats['bet_count']} raise={stats['raise_count']} "
+            f"all_in={stats['all_in_count']} check={stats['check_count']} "
+            f"call={stats['call_count']} fold={stats['fold_count']}"
+        )
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def print_llm_summary(summary: JsonDict) -> None:
     """Print compact aggregate statistics for LLM diagnostics."""
     print("LLM SUMMARY")
@@ -2509,6 +2756,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llm-path", default=None, type=Path)
     parser.add_argument("--llm-dir", default=None, type=Path)
     parser.add_argument("--llm-model", default=None)
+    parser.add_argument("--single-size-path", default=None, type=Path)
+    parser.add_argument("--single-size-dir", default=None, type=Path)
     parser.add_argument("--repeat-count", default=5, type=int)
     parser.add_argument("--phase", default="flop")
     parser.add_argument("--sample-ids", default=None)
@@ -2558,6 +2807,18 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_llm_summary(result)
+        return 0
+
+    if args.single_size_path is not None or args.single_size_dir is not None:
+        result = compare_solver_requests_single_size(
+            single_size_path=args.single_size_path,
+            single_size_dir=args.single_size_dir,
+            phase=args.phase,
+            sample_ids=sample_ids,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_single_size_summary(result)
         return 0
 
     if args.resident_path is not None or args.resident_dir is not None:
