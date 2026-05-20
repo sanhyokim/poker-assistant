@@ -1080,6 +1080,29 @@ def test_build_blind_llm_prompt_excludes_solver_and_teacher_data() -> None:
     assert "profile_actions" not in prompt
 
 
+def test_blind_llm_prompt_includes_general_hu_flop_guidance() -> None:
+    """Blind LLM prompt includes general HU flop strategy guidance only."""
+    payload = {
+        "meta": {"spr": 42.0, "hero_position": "BTN", "hero_is_ip": True},
+        "request": {
+            "board": "Ah7d2c",
+            "starting_pot": 232,
+            "effective_stack": 9000,
+            "actions_played": [],
+        },
+    }
+
+    prompt = build_blind_llm_prompt(payload, ["CHECK", "BET", "ALL_IN"])
+
+    assert "Do not overuse CHECK" in prompt
+    assert "Consider small bets" in prompt
+    assert "33% pot" in prompt
+    assert "ALL_IN should be extremely rare" in prompt
+    assert "teacher_label" not in prompt
+    assert "allowed_sizing_types" not in prompt
+    assert "primary_solver_probabilities" not in prompt
+
+
 def test_evaluate_blind_llm_detects_teacher_alignment() -> None:
     """Blind LLM evaluation detects sizing teacher alignment."""
     baseline = {"action": "CHECK"}

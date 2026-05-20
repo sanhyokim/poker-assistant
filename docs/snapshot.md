@@ -1054,3 +1054,16 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 目的:
 - HU flopでLLMがSolver/teacherなしでも方向性・sizingをどこまで合わせられるか確認する。
 - 本番実装はまだしない。
+
+## Phase 86-Fix8 Task 16-A — HU flop Blind LLM prompt一般戦略ルール追加
+
+背景:
+- Task 16のBlind LLM診断ではdirection一致91.7%、dangerousな違反なし。
+- ただしteacher alignmentは66.7%で、主に小さめBET機会をCHECKに逃す傾向があった。
+- teacher情報を直接渡すのではなく、single-size Solver結果から得た傾向を一般戦略ルールとしてpromptに追加する。
+
+対応:
+- deep-SPR flopでALL_INを極めて稀にする
+- CHECKへ逃げすぎない
+- IP / dry board / small c-bet / 33% stab を明示
+- facing bet時は小〜中RAISEを候補にしつつ、無理な大型raise/all-inを避ける
