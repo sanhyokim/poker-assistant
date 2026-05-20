@@ -11,6 +11,7 @@ from typing import Any
 
 import pytest
 
+import scripts.compare_solver_requests as compare_cli
 from scripts.compare_solver_requests import (
     batch_result_filename,
     build_batch_summary,
@@ -1065,23 +1066,31 @@ def test_build_blind_llm_prompt_excludes_solver_and_teacher_data() -> None:
         },
     }
 
-    prompt = build_blind_llm_prompt(payload, ["CHECK", "BET", "ALL_IN"])
+    prompts = [
+        build_blind_llm_prompt(payload, ["CHECK", "BET", "ALL_IN"]),
+        build_blind_llm_prompt(
+            payload,
+            ["CHECK", "BET", "ALL_IN"],
+            blind_profile="guided",
+        ),
+    ]
 
-    assert "Ah7d2c" in prompt
-    assert "232" in prompt
-    assert "9000" in prompt
-    assert "42.0" in prompt
-    assert "BTN" in prompt
-    assert "CHECK" in prompt
-    assert "primary_solver_action" not in prompt
-    assert "primary_solver_probabilities" not in prompt
-    assert "teacher_label" not in prompt
-    assert "allowed_sizing_types" not in prompt
-    assert "profile_actions" not in prompt
+    for prompt in prompts:
+        assert "Ah7d2c" in prompt
+        assert "232" in prompt
+        assert "9000" in prompt
+        assert "42.0" in prompt
+        assert "BTN" in prompt
+        assert "CHECK" in prompt
+        assert "primary_solver_action" not in prompt
+        assert "primary_solver_probabilities" not in prompt
+        assert "teacher_label" not in prompt
+        assert "allowed_sizing_types" not in prompt
+        assert "profile_actions" not in prompt
 
 
-def test_blind_llm_prompt_includes_general_hu_flop_guidance() -> None:
-    """Blind LLM prompt includes general HU flop strategy guidance only."""
+def test_blind_llm_default_profile_is_baseline() -> None:
+    """Blind LLM prompt defaults to the baseline profile."""
     payload = {
         "meta": {"spr": 42.0, "hero_position": "BTN", "hero_is_ip": True},
         "request": {
@@ -1093,6 +1102,86 @@ def test_blind_llm_prompt_includes_general_hu_flop_guidance() -> None:
     }
 
     prompt = build_blind_llm_prompt(payload, ["CHECK", "BET", "ALL_IN"])
+
+    assert "Do not overuse CHECK" not in prompt
+    assert "Consider small bets" not in prompt
+    assert "33% pot" not in prompt
+    assert "ALL_IN should be extremely rare" not in prompt
+
+
+def test_blind_profile_cli_defaults_to_baseline(
+    monkeypatch: pytest.MonkeyPatch, workspace_tmp: Path
+) -> None:
+    """CLI passes baseline blind profile when --blind-profile is omitted."""
+    captured: dict[str, Any] = {}
+
+    def fake_compare_solver_requests_llm_blind(**kwargs: Any) -> dict[str, Any]:
+        captured.update(kwargs)
+        return {"blind_profile": kwargs["blind_profile"]}
+
+    monkeypatch.setattr(
+        compare_cli,
+        "compare_solver_requests_llm_blind",
+        fake_compare_solver_requests_llm_blind,
+    )
+    monkeypatch.setattr(compare_cli, "print_llm_blind_summary", lambda summary: None)
+
+    result = compare_cli.main(
+        [
+            "--llm-blind-dir",
+            str(workspace_tmp),
+            "--sizing-teacher-dir",
+            str(workspace_tmp),
+            "--out",
+            str(workspace_tmp / "out"),
+        ]
+    )
+
+    assert result == 0
+    assert captured["blind_profile"] == "baseline"
+
+
+def test_blind_llm_baseline_prompt_excludes_guidance() -> None:
+    """Baseline blind profile excludes guided strategy text."""
+    payload = {
+        "meta": {"spr": 42.0, "hero_position": "BTN", "hero_is_ip": True},
+        "request": {
+            "board": "Ah7d2c",
+            "starting_pot": 232,
+            "effective_stack": 9000,
+            "actions_played": [],
+        },
+    }
+
+    prompt = build_blind_llm_prompt(
+        payload,
+        ["CHECK", "BET", "ALL_IN"],
+        blind_profile="baseline",
+    )
+
+    assert "Do not overuse CHECK" not in prompt
+    assert "Consider small bets" not in prompt
+    assert "33% pot" not in prompt
+    assert "ALL_IN should be extremely rare" not in prompt
+
+
+def test_blind_llm_guided_prompt_includes_general_guidance() -> None:
+    """Guided blind profile includes general HU flop strategy guidance only."""
+    payload = {
+        "meta": {"spr": 42.0, "hero_position": "BTN", "hero_is_ip": True},
+        "request": {
+            "board": "Ah7d2c",
+            "starting_pot": 232,
+            "effective_stack": 9000,
+            "actions_played": [],
+        },
+    }
+
+    prompt = build_blind_llm_prompt(
+        payload,
+        ["CHECK", "BET", "ALL_IN"],
+        blind_profile="guided",
+    )
 
     assert "Do not overuse CHECK" in prompt
     assert "Consider small bets" in prompt

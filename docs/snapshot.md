@@ -1067,3 +1067,17 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - CHECKへ逃げすぎない
 - IP / dry board / small c-bet / 33% stab を明示
 - facing bet時は小〜中RAISEを候補にしつつ、無理な大型raise/all-inを避ける
+
+## Phase 86-Fix8 Task 16-B — HU flop Blind LLM prompt profile追加
+
+背景:
+- Task 16-A の一般戦略ルール追加は alignment を 66.7% から 58.3% に悪化させた。
+- passive_all_standardでBETを誘発したため、guided promptを標準にすべきではない。
+- 今後のprompt改善はprofileでA/B比較できる形にする。
+
+対応:
+- --blind-profile を追加。
+- default は baseline。
+- baseline は Task 16 の元prompt。
+- guided は Task 16-A の一般戦略promptを比較用として残す。
+- summary/itemに blind_profile を保存。

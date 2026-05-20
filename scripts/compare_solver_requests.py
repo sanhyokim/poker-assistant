@@ -1703,6 +1703,7 @@ def compare_solver_requests_llm_blind(
     llm_model: str | None,
     timeout: float,
     out_dir: Path,
+    blind_profile: str = "baseline",
     bridge_factory: BridgeFactory = PostflopSolverBridge,
     llm_caller: LLMCaller | None = None,
 ) -> JsonDict:
@@ -1719,18 +1720,22 @@ def compare_solver_requests_llm_blind(
     items: list[JsonDict] = []
     model = llm_model or os.getenv("LLM_MODEL_DEFAULT") or DEFAULT_LLM_MODEL
     caller = llm_caller or call_openrouter_llm
-    print(f"BLIND LLM DISCOVERY: samples={len(request_paths)} model={model}")
+    print(
+        f"BLIND LLM DISCOVERY: samples={len(request_paths)} "
+        f"model={model} profile={blind_profile}"
+    )
     for request_path in request_paths:
         current_sample_id = sample_id(request_path)
         teacher_item = teacher_items.get(current_sample_id)
         if teacher_item is None:
-            item = _missing_blind_teacher_item(request_path, model)
+            item = _missing_blind_teacher_item(request_path, model, blind_profile)
         else:
             item = _run_llm_blind_for_sample(
                 request_path,
                 teacher_item=teacher_item,
                 llm_model=model,
                 timeout=timeout,
+                blind_profile=blind_profile,
                 bridge_factory=bridge_factory,
                 llm_caller=caller,
             )
@@ -1739,7 +1744,7 @@ def compare_solver_requests_llm_blind(
         with output_path.open("w", encoding="utf-8") as file:
             json.dump(item, file, ensure_ascii=False, indent=2)
 
-    summary = build_llm_blind_summary(items, model)
+    summary = build_llm_blind_summary(items, model, blind_profile)
     out_dir.mkdir(parents=True, exist_ok=True)
     summary_path = out_dir / "llm_blind_summary.json"
     summary["output_path"] = str(summary_path)
@@ -1748,12 +1753,15 @@ def compare_solver_requests_llm_blind(
     return summary
 
 
-def _missing_blind_teacher_item(request_path: Path, model: str) -> JsonDict:
+def _missing_blind_teacher_item(
+    request_path: Path, model: str, blind_profile: str
+) -> JsonDict:
     """Return an error item when blind teacher data is missing."""
     return {
         "sample_id": sample_id(request_path),
         "source_request": str(request_path),
         "llm_model": model,
+        "blind_profile": blind_profile,
         "llm_success": False,
         "llm_elapsed_ms": 0,
         "llm_error": "Sizing teacher item missing",
@@ -1779,6 +1787,7 @@ def _run_llm_blind_for_sample(
     teacher_item: JsonDict,
     llm_model: str,
     timeout: float,
+    blind_profile: str,
     bridge_factory: BridgeFactory,
     llm_caller: LLMCaller,
 ) -> JsonDict:
@@ -1792,7 +1801,11 @@ def _run_llm_blind_for_sample(
         bridge_factory=bridge_factory,
     )
     legal_actions = legal_actions_for_solver_request(primary_request)
-    prompt = build_blind_llm_prompt(payload, legal_actions)
+    prompt = build_blind_llm_prompt(
+        payload,
+        legal_actions,
+        blind_profile=blind_profile,
+    )
     llm_result = run_llm_diagnostic_request(
         prompt,
         model=llm_model,
@@ -1814,6 +1827,7 @@ def _run_llm_blind_for_sample(
         "source_request": str(request_path),
         "source_teacher": teacher_item.get("source_item"),
         "llm_model": llm_model,
+        "blind_profile": blind_profile,
         "llm_success": llm_result["success"],
         "llm_elapsed_ms": llm_result["elapsed_ms"],
         "llm_action": decision.get("action"),
@@ -1835,7 +1849,12 @@ def _run_llm_blind_for_sample(
     }
 
 
-def build_blind_llm_prompt(payload: JsonDict, legal_actions: list[str]) -> str:
+def build_blind_llm_prompt(
+    payload: JsonDict,
+    legal_actions: list[str],
+    *,
+    blind_profile: str = "baseline",
+) -> str:
     """Build a blind HU flop prompt using only visible game context."""
     meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
@@ -1851,40 +1870,48 @@ def build_blind_llm_prompt(payload: JsonDict, legal_actions: list[str]) -> str:
         "actions_played": request.get("actions_played", []),
         "legal_actions": legal_actions,
     }
+    guidance = ""
+    if blind_profile == "guided":
+        guidance = (
+            "\nHU flop strategy guidance:\n"
+            "- This is a heads-up flop decision with deep SPR.\n"
+            "- Do not choose ALL_IN on the flop unless there is an exceptional "
+            "reason. In deep-SPR HU flop spots, ALL_IN should be extremely rare.\n"
+            "- Do not overuse CHECK just because it is safe.\n"
+            "- Consider small bets, especially 33% pot, when:\n"
+            "  - hero is in position,\n"
+            "  - board is dry or favorable to the bettor,\n"
+            "  - a small continuation bet can realize fold equity,\n"
+            "  - betting small applies pressure without overcommitting deep stacks.\n"
+            "- On dynamic or wet boards, small or medium bets may be preferred "
+            "over large bets when protection/value is needed but SPR is deep.\n"
+            "- Avoid large 75% sizing unless board texture and value/protection "
+            "logic strongly support it.\n"
+            "- When facing a bet, do not raise too large by default. If raising "
+            "is reasonable, prefer small-to-medium raise sizing unless there is "
+            "a strong value or denial reason.\n"
+            "- If the spot is close or uncertain, prefer the lower-risk legal "
+            "action, but do not ignore natural small-bet opportunities.\n"
+            "\nSizing options:\n"
+            "- If betting first:\n"
+            "  - bet_33 = small stab / small c-bet\n"
+            "  - bet_50 = medium bet\n"
+            "  - bet_60 = larger medium bet\n"
+            "  - bet_75 = large polar/protection bet\n"
+            "- If raising over a bet, raise_33 / raise_50 / raise_60 / raise_75 "
+            "represent increasing pressure relative to pot/context.\n"
+            "- all_in should almost never be used in deep-SPR flop spots.\n"
+            "- If choosing CHECK/CALL/FOLD, sizing_type must be \"none\".\n"
+        )
+    elif blind_profile != "baseline":
+        raise ValueError(f"Unsupported blind_profile: {blind_profile}")
+
     return (
         "You are making a heads-up no-limit hold'em flop decision.\n"
         "Use only the visible game context.\n"
         "Do not assume hidden solver output.\n"
         "Choose a legal action and sizing.\n"
-        "\nHU flop strategy guidance:\n"
-        "- This is a heads-up flop decision with deep SPR.\n"
-        "- Do not choose ALL_IN on the flop unless there is an exceptional "
-        "reason. In deep-SPR HU flop spots, ALL_IN should be extremely rare.\n"
-        "- Do not overuse CHECK just because it is safe.\n"
-        "- Consider small bets, especially 33% pot, when:\n"
-        "  - hero is in position,\n"
-        "  - board is dry or favorable to the bettor,\n"
-        "  - a small continuation bet can realize fold equity,\n"
-        "  - betting small applies pressure without overcommitting deep stacks.\n"
-        "- On dynamic or wet boards, small or medium bets may be preferred "
-        "over large bets when protection/value is needed but SPR is deep.\n"
-        "- Avoid large 75% sizing unless board texture and value/protection "
-        "logic strongly support it.\n"
-        "- When facing a bet, do not raise too large by default. If raising "
-        "is reasonable, prefer small-to-medium raise sizing unless there is "
-        "a strong value or denial reason.\n"
-        "- If the spot is close or uncertain, prefer the lower-risk legal "
-        "action, but do not ignore natural small-bet opportunities.\n"
-        "\nSizing options:\n"
-        "- If betting first:\n"
-        "  - bet_33 = small stab / small c-bet\n"
-        "  - bet_50 = medium bet\n"
-        "  - bet_60 = larger medium bet\n"
-        "  - bet_75 = large polar/protection bet\n"
-        "- If raising over a bet, raise_33 / raise_50 / raise_60 / raise_75 "
-        "represent increasing pressure relative to pot/context.\n"
-        "- all_in should almost never be used in deep-SPR flop spots.\n"
-        "- If choosing CHECK/CALL/FOLD, sizing_type must be \"none\".\n"
+        f"{guidance}"
         "Return JSON only.\n"
         "Allowed actions: CHECK, BET, RAISE, CALL, FOLD, ALL_IN.\n"
         "Allowed sizing_type values: none, bet_33, bet_50, bet_60, bet_75, "
@@ -1931,10 +1958,13 @@ def evaluate_blind_llm_decision(
     }
 
 
-def build_llm_blind_summary(items: list[JsonDict], model: str) -> JsonDict:
+def build_llm_blind_summary(
+    items: list[JsonDict], model: str, blind_profile: str = "baseline"
+) -> JsonDict:
     """Aggregate blind LLM diagnostic results."""
     success_items = [item for item in items if item.get("llm_success") is True]
     return {
+        "blind_profile": blind_profile,
         "total_samples": len(items),
         "success_count": len(success_items),
         "error_count": sum(1 for item in items if item.get("llm_success") is False),
@@ -1964,6 +1994,7 @@ def build_llm_blind_summary(items: list[JsonDict], model: str) -> JsonDict:
         "items": [
             {
                 "sample_id": item["sample_id"],
+                "blind_profile": item.get("blind_profile"),
                 "baseline_action": item.get("baseline_action"),
                 "teacher_label": item.get("teacher_label"),
                 "allowed_sizing_types": item.get("allowed_sizing_types", []),
@@ -3632,6 +3663,7 @@ def print_llm_blind_summary(summary: JsonDict) -> None:
     print("BLIND LLM SUMMARY")
     print(f"samples={summary['total_samples']}")
     print(f"model={summary['model']}")
+    print(f"blind_profile={summary['blind_profile']}")
     print(f"success_count={summary['success_count']}")
     print(f"error_count={summary['error_count']}")
     print(f"under_15s_rate={_percent(summary['under_15s_rate'])}")
@@ -3718,6 +3750,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llm-sizing-dir", default=None, type=Path)
     parser.add_argument("--llm-blind-path", default=None, type=Path)
     parser.add_argument("--llm-blind-dir", default=None, type=Path)
+    parser.add_argument(
+        "--blind-profile",
+        choices=["baseline", "guided"],
+        default="baseline",
+    )
     parser.add_argument("--llm-model", default=None)
     parser.add_argument("--single-size-path", default=None, type=Path)
     parser.add_argument("--single-size-dir", default=None, type=Path)
@@ -3800,6 +3837,7 @@ def main(argv: list[str] | None = None) -> int:
             llm_model=args.llm_model,
             timeout=args.timeout,
             out_dir=args.out,
+            blind_profile=args.blind_profile,
         )
         print_llm_blind_summary(result)
         return 0
