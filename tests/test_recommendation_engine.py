@@ -2316,6 +2316,60 @@ def test_parse_solver_strategy_uses_hero_hand_row() -> None:
     assert result["matched_hand_index"] == 0
 
 
+def test_hero_hand_candidates_include_reversed_and_rank_sorted() -> None:
+    """Hero hand candidates include original, reversed, and rank-sorted labels."""
+    candidates = RecommendationEngine._hero_hand_candidates(["3c", "Qc"])
+
+    assert "3cQc" in candidates
+    assert "Qc3c" in candidates
+    assert candidates[0] == "3cQc"
+    assert "Qc3c" in candidates
+
+
+def test_parse_solver_strategy_matches_reversed_hero_hand() -> None:
+    """Solver parse matches a reversed/rank-sorted hero hand label."""
+    engine = make_engine()
+    solver_output = {
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "hands": ["Qc3c"],
+            "strategy_matrix": [[0.05, 0.95]],
+            "average_strategy": {"Check": 0.9, "Bet 120": 0.1},
+        }
+    }
+
+    result = engine._parse_solver_strategy_with_diagnostics(
+        solver_output,
+        make_state(hero_cards=["3c", "Qc"]),
+    )
+
+    assert result["action"] == "BET"
+    assert result["strategy_source_detail"] == "hand_strategy"
+    assert result["matched_hand"] == "Qc3c"
+    assert result["hero_hand_candidates"] == ["3cQc", "Qc3c"]
+
+
+def test_parse_solver_strategy_still_matches_original_order() -> None:
+    """Solver parse still matches the original hero card order."""
+    engine = make_engine()
+    solver_output = {
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "hands": ["AsQh"],
+            "strategy_matrix": [[0.05, 0.95]],
+            "average_strategy": {"Check": 0.9, "Bet 120": 0.1},
+        }
+    }
+
+    result = engine._parse_solver_strategy_with_diagnostics(
+        solver_output,
+        make_state(hero_cards=["As", "Qh"]),
+    )
+
+    assert result["matched_hand"] == "AsQh"
+    assert result["strategy_source_detail"] == "hand_strategy"
+
+
 def test_parse_solver_strategy_falls_back_to_average_when_hero_hand_missing() -> None:
     """Diagnostic parser reports average fallback when hero hand row is absent."""
     engine = make_engine()
@@ -2336,6 +2390,32 @@ def test_parse_solver_strategy_falls_back_to_average_when_hero_hand_missing() ->
     assert result["action"] == "CHECK"
     assert result["strategy_source_detail"] == "average_strategy_fallback"
     assert "hero hand not found" in str(result["fallback_reason"])
+
+
+def test_parse_solver_strategy_logs_fallback_when_no_candidate_matches(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Solver parse logs when hero cards exist but no candidate hand matches."""
+    engine = make_engine()
+    solver_output = {
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "hands": ["AhKh"],
+            "strategy_matrix": [[0.1, 0.9]],
+            "average_strategy": {"Check": 0.9, "Bet 120": 0.1},
+        }
+    }
+
+    with caplog.at_level(logging.WARNING):
+        result = engine._parse_solver_strategy_with_diagnostics(
+            solver_output,
+            make_state(hero_cards=["3c", "Qc"]),
+        )
+
+    assert result["strategy_source_detail"] == "average_strategy_fallback"
+    assert result["fallback_reason"] == "hero hand not found"
+    assert result["hero_hand_candidates"] == ["3cQc", "Qc3c"]
+    assert "HU_SOLVER_HERO_HAND_NOT_FOUND" in caplog.text
 
 
 def test_parse_solver_strategy_call_amount() -> None:

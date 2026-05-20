@@ -1991,6 +1991,7 @@ class RecommendationEngine:
                 fallback_reason=fallback_reason or "no strategy probabilities",
                 matched_hand=hand_result.get("matched_hand"),
                 matched_hand_index=hand_result.get("matched_hand_index"),
+                hero_hand_candidates=hand_result.get("hero_hand_candidates"),
             )
 
         selected_action = max(probabilities.items(), key=lambda item: item[1])[0]
@@ -2008,6 +2009,7 @@ class RecommendationEngine:
             fallback_reason=fallback_reason,
             matched_hand=hand_result.get("matched_hand"),
             matched_hand_index=hand_result.get("matched_hand_index"),
+            hero_hand_candidates=hand_result.get("hero_hand_candidates"),
         )
 
     @staticmethod
@@ -2021,6 +2023,7 @@ class RecommendationEngine:
         fallback_reason: str | None,
         matched_hand: str | None = None,
         matched_hand_index: int | None = None,
+        hero_hand_candidates: list[str] | None = None,
     ) -> JsonDict:
         """Build a diagnostic parse result without changing public tuple parsing."""
         hero_cards = list(game_state.hero.cards or [])
@@ -2030,6 +2033,11 @@ class RecommendationEngine:
             "probabilities": probabilities,
             "strategy_source_detail": source_detail,
             "hero_cards": hero_cards,
+            "hero_hand_candidates": (
+                hero_hand_candidates
+                if hero_hand_candidates is not None
+                else RecommendationEngine._hero_hand_candidates(hero_cards)
+            ),
             "matched_hand": matched_hand,
             "matched_hand_index": matched_hand_index,
             "fallback_reason": fallback_reason,
@@ -2415,11 +2423,13 @@ class RecommendationEngine:
         matrix = root_strategy.get("strategy_matrix", [])
         actions = root_strategy.get("actions", [])
         hero_cards = game_state.hero.cards or []
+        candidates = self._hero_hand_candidates(hero_cards)
         if len(hero_cards) != 2 or not isinstance(hands, list):
             return {
                 "probabilities": {},
                 "strategy_source_detail": "average_strategy_fallback",
                 "hero_cards": list(hero_cards),
+                "hero_hand_candidates": candidates,
                 "matched_hand": None,
                 "matched_hand_index": None,
                 "fallback_reason": "hero cards missing"
@@ -2427,16 +2437,23 @@ class RecommendationEngine:
                 else "hands list missing",
             }
 
-        candidates = {"".join(hero_cards), "".join(reversed(hero_cards))}
         try:
             hand_index = next(
                 index for index, hand in enumerate(hands) if str(hand) in candidates
             )
         except StopIteration:
+            logger.warning(
+                "HU_SOLVER_HERO_HAND_NOT_FOUND: hero_cards=%s candidates=%s "
+                "sample_hands=%s",
+                list(hero_cards),
+                candidates,
+                [str(hand) for hand in hands[:10]],
+            )
             return {
                 "probabilities": {},
                 "strategy_source_detail": "average_strategy_fallback",
                 "hero_cards": list(hero_cards),
+                "hero_hand_candidates": candidates,
                 "matched_hand": None,
                 "matched_hand_index": None,
                 "fallback_reason": "hero hand not found",
@@ -2447,6 +2464,7 @@ class RecommendationEngine:
                 "probabilities": {},
                 "strategy_source_detail": "average_strategy_fallback",
                 "hero_cards": list(hero_cards),
+                "hero_hand_candidates": candidates,
                 "matched_hand": str(hands[hand_index]),
                 "matched_hand_index": hand_index,
                 "fallback_reason": "strategy matrix row missing",
@@ -2457,6 +2475,7 @@ class RecommendationEngine:
                 "probabilities": {},
                 "strategy_source_detail": "average_strategy_fallback",
                 "hero_cards": list(hero_cards),
+                "hero_hand_candidates": candidates,
                 "matched_hand": str(hands[hand_index]),
                 "matched_hand_index": hand_index,
                 "fallback_reason": "strategy matrix row invalid",
@@ -2471,10 +2490,34 @@ class RecommendationEngine:
             "probabilities": probabilities,
             "strategy_source_detail": "hand_strategy",
             "hero_cards": list(hero_cards),
+            "hero_hand_candidates": candidates,
             "matched_hand": str(hands[hand_index]),
             "matched_hand_index": hand_index,
             "fallback_reason": None,
         }
+
+    @staticmethod
+    def _hero_hand_candidates(hero_cards: list[str]) -> list[str]:
+        """Return possible Solver hand labels for hero hole cards."""
+        if len(hero_cards) != 2:
+            return []
+        first, second = str(hero_cards[0]), str(hero_cards[1])
+        rank_order = {rank: index for index, rank in enumerate("AKQJT98765432")}
+
+        def rank_key(card: str) -> int:
+            return rank_order.get(card[:1].upper(), len(rank_order))
+
+        rank_sorted_cards = sorted([first, second], key=rank_key)
+        raw_candidates = [
+            first + second,
+            second + first,
+            "".join(rank_sorted_cards),
+        ]
+        candidates: list[str] = []
+        for candidate in raw_candidates:
+            if candidate not in candidates:
+                candidates.append(candidate)
+        return candidates
 
     def _parse_solver_action(
         self,

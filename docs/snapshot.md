@@ -1127,3 +1127,17 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - _save_solver_request_json の meta に hero_cards / facing_bet / call_amount / street / heads_up / num_players / position / actions を保存する。
 - 保存時にmeta欠落warningを出す。
 - 過去データは参考扱いにし、新規ライブデータで再検証する。
+
+## Phase 86-Fix8 Task 18-B — Hero hand matching順序差修正
+
+背景:
+- Task 18後の新規ライブ3件ではhero_cards保存は成功。
+- しかしSolver parse auditで 3件中2件が average_strategy_fallback。
+- 失敗した2件は hero_cards=["3c","Qc"] で、Solver hands表記との順序差が疑われる。
+- 本番HU Solver推奨でもHero hand rowを見失う可能性があるため、parse側を修正する。
+
+対応:
+- hero hand候補として元順・逆順・rank順を生成。
+- root_strategy.handsから候補一致する行を探す。
+- 診断JSONに hero_hand_candidates / matched_hand / matched_hand_index を出す。
+- Heroカードがあるのに見つからない場合はwarning logを出す。
