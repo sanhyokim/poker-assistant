@@ -1016,3 +1016,17 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - LLMのsizing出力とteacher labelの相関を見る準備。
 - 本番実装はまだしない。
 - multiway / turn / river は対象外。
+
+## Phase 86-Fix8 Task 15 — HU flop LLM sizing診断
+
+背景:
+- single-size Solver 180秒診断で全60run成功。
+- 33/50/60/75/all-inでaction差が確認できた。
+- sizing teacher labelを作成済み。
+- 今回はLLMのsizing_typeがteacher labelと相関するかを診断する。
+
+目的:
+- LLMがteacher allowed_sizing_types内に収まるか確認。
+- all-in誤選択を検出。
+- passive_all_standardで勝手にBET/RAISEしないか確認。
+- 本番実装はまだしない。

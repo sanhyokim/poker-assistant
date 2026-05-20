@@ -47,6 +47,7 @@ from scripts.compare_solver_requests import (
     openrouter_provider_config,
     parse_solver_action,
     evaluate_llm_decision,
+    evaluate_llm_sizing_decision,
     parse_llm_decision_json,
     probability_summary,
     repeatability_item_summary,
@@ -950,6 +951,66 @@ def test_build_sizing_teacher_allin_aggressive() -> None:
     assert item["teacher_label"] == "passive_all_standard"
     assert item["allin_aggressive"] is True
     assert item["allowed_sizing_types"] == ["all_in"]
+
+
+def test_evaluate_llm_sizing_allows_bet_raise_bucket_equivalence() -> None:
+    """LLM sizing evaluation treats bet_N and raise_N as the same bucket."""
+    teacher = {
+        "teacher_label": "small_only_aggressive",
+        "allowed_sizing_types": ["bet_33", "bet_50"],
+        "allin_aggressive": False,
+    }
+    decision = {"action": "RAISE", "sizing_type": "raise_33"}
+
+    result = evaluate_llm_sizing_decision(teacher, decision)
+
+    assert result["sizing_allowed_match"] is True
+    assert result["teacher_alignment"] is True
+
+
+def test_evaluate_llm_sizing_rejects_allin_when_teacher_does_not_allow() -> None:
+    """LLM sizing evaluation rejects all-in when teacher did not allow it."""
+    teacher = {
+        "teacher_label": "all_standard_aggressive",
+        "allowed_sizing_types": ["bet_33", "bet_50", "bet_60", "bet_75"],
+        "allin_aggressive": False,
+    }
+    decision = {"action": "ALL_IN", "sizing_type": "all_in"}
+
+    result = evaluate_llm_sizing_decision(teacher, decision)
+
+    assert result["allin_violation"] is True
+    assert result["teacher_alignment"] is False
+
+
+def test_evaluate_llm_sizing_rejects_aggressive_on_passive_teacher() -> None:
+    """LLM sizing evaluation rejects invented aggression for passive teachers."""
+    teacher = {
+        "teacher_label": "passive_all_standard",
+        "allowed_sizing_types": [],
+        "allin_aggressive": False,
+    }
+    decision = {"action": "BET", "sizing_type": "bet_33"}
+
+    result = evaluate_llm_sizing_decision(teacher, decision)
+
+    assert result["passive_teacher_aggressive_violation"] is True
+    assert result["teacher_alignment"] is False
+
+
+def test_evaluate_llm_sizing_accepts_none_for_passive_teacher() -> None:
+    """LLM sizing evaluation accepts none sizing for passive teachers."""
+    teacher = {
+        "teacher_label": "passive_all_standard",
+        "allowed_sizing_types": [],
+        "allin_aggressive": False,
+    }
+    decision = {"action": "CHECK", "sizing_type": "none"}
+
+    result = evaluate_llm_sizing_decision(teacher, decision)
+
+    assert result["sizing_allowed_match"] is True
+    assert result["teacher_alignment"] is True
 
 
 def test_build_teacher_request_applies_standard_and_high_profiles() -> None:

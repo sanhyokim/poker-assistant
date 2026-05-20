@@ -46,6 +46,18 @@ GRID_TARGET_EXPLOITABILITY = (1.2, 1.0, 0.9, 0.8, 0.7, 0.6)
 GRID_BET_SIZES = ("60%,a", "60%", "50%,60%", "33%,60%")
 DEFAULT_LLM_MODEL = "openai/gpt-5.4-mini"
 LLM_ALLOWED_ACTIONS = {"CHECK", "BET", "RAISE", "CALL", "FOLD", "ALL_IN"}
+LLM_ALLOWED_SIZING_TYPES = {
+    "none",
+    "bet_33",
+    "bet_50",
+    "bet_60",
+    "bet_75",
+    "raise_33",
+    "raise_50",
+    "raise_60",
+    "raise_75",
+    "all_in",
+}
 TEACHER_PROFILES: dict[str, JsonDict] = {
     "standard": {
         "max_iterations": 500,
@@ -1287,6 +1299,383 @@ def _preferred_sizing_bucket(teacher_label: str) -> str:
     return buckets.get(teacher_label, "unknown")
 
 
+def compare_solver_requests_llm_sizing(
+    *,
+    llm_sizing_path: Path | None,
+    llm_sizing_dir: Path | None,
+    sizing_teacher_path: Path | None,
+    sizing_teacher_dir: Path | None,
+    phase: str,
+    sample_ids: list[str] | None,
+    llm_model: str | None,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+    llm_caller: LLMCaller | None = None,
+) -> JsonDict:
+    """Run LLM sizing diagnostics against sizing teacher labels."""
+    request_paths = discover_llm_sizing_request_files(
+        llm_sizing_path,
+        llm_sizing_dir,
+        phase,
+        sample_ids,
+    )
+    teacher_items = load_sizing_teacher_items(sizing_teacher_path, sizing_teacher_dir)
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+    model = llm_model or os.getenv("LLM_MODEL_DEFAULT") or DEFAULT_LLM_MODEL
+    caller = llm_caller or call_openrouter_llm
+    print(f"LLM SIZING DISCOVERY: samples={len(request_paths)} model={model}")
+    for request_path in request_paths:
+        current_sample_id = sample_id(request_path)
+        teacher_item = teacher_items.get(current_sample_id)
+        if teacher_item is None:
+            item = _missing_sizing_teacher_item(request_path, model)
+        else:
+            item = _run_llm_sizing_for_sample(
+                request_path,
+                teacher_item=teacher_item,
+                llm_model=model,
+                timeout=timeout,
+                bridge_factory=bridge_factory,
+                llm_caller=caller,
+            )
+        items.append(item)
+        output_path = items_dir / f"{current_sample_id}_llm_sizing.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_llm_sizing_summary(items, model)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "llm_sizing_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def discover_llm_sizing_request_files(
+    llm_sizing_path: Path | None,
+    llm_sizing_dir: Path | None,
+    phase: str,
+    sample_ids: list[str] | None,
+) -> list[Path]:
+    """Return request files for LLM sizing mode."""
+    if llm_sizing_path is not None:
+        return [llm_sizing_path]
+    if llm_sizing_dir is None:
+        return []
+    paths = discover_primary_request_files(llm_sizing_dir, phase)
+    if not sample_ids:
+        return paths
+    selected = set(sample_ids)
+    return [path for path in paths if sample_id(path) in selected]
+
+
+def load_sizing_teacher_items(
+    sizing_teacher_path: Path | None,
+    sizing_teacher_dir: Path | None,
+) -> dict[str, JsonDict]:
+    """Load sizing teacher items keyed by sample id."""
+    paths = discover_named_json_files(
+        sizing_teacher_path,
+        sizing_teacher_dir,
+        "*_sizing_teacher.json",
+    )
+    items: dict[str, JsonDict] = {}
+    for path in paths:
+        item = load_json_object(path)
+        sample_id_text = item.get("sample_id")
+        if isinstance(sample_id_text, str):
+            items[sample_id_text] = item
+    return items
+
+
+def discover_named_json_files(
+    item_path: Path | None,
+    item_dir: Path | None,
+    pattern: str,
+) -> list[Path]:
+    """Return JSON files from an optional single path or directory."""
+    if item_path is not None:
+        return [item_path]
+    if item_dir is None:
+        return []
+    items_dir = item_dir / "items"
+    search_dir = items_dir if items_dir.exists() else item_dir
+    return sorted(search_dir.glob(pattern))
+
+
+def _missing_sizing_teacher_item(request_path: Path, model: str) -> JsonDict:
+    """Return an error item when sizing teacher data is missing."""
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "llm_model": model,
+        "llm_success": False,
+        "llm_elapsed_ms": 0,
+        "llm_error": "Sizing teacher item missing",
+        "teacher_label": "unknown",
+        "allowed_sizing_types": [],
+        "allin_aggressive": False,
+        "llm_action": None,
+        "llm_sizing_type": None,
+        "llm_sizing_bucket": None,
+        "sizing_allowed_match": False,
+        "allin_violation": False,
+        "passive_teacher_aggressive_violation": False,
+        "sizing_type_valid": False,
+        "teacher_alignment": False,
+    }
+
+
+def _run_llm_sizing_for_sample(
+    request_path: Path,
+    *,
+    teacher_item: JsonDict,
+    llm_model: str,
+    timeout: float,
+    bridge_factory: BridgeFactory,
+    llm_caller: LLMCaller,
+) -> JsonDict:
+    """Run one LLM sizing diagnostic sample."""
+    payload = load_solver_payload(request_path)
+    primary_request = dict(payload["request"])
+    baseline = run_solver_request_payload(
+        primary_request,
+        path_label=str(request_path),
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
+    legal_actions = legal_actions_for_solver_request(primary_request)
+    prompt = build_llm_sizing_prompt(payload, baseline, legal_actions, teacher_item)
+    llm_result = run_llm_diagnostic_request(
+        prompt,
+        model=llm_model,
+        timeout=timeout,
+        llm_caller=llm_caller,
+    )
+    probabilities = baseline.get("probabilities")
+    if not isinstance(probabilities, dict):
+        probabilities = {}
+    probability_info = probability_summary(probabilities)
+    decision = llm_result.get("decision")
+    if not isinstance(decision, dict):
+        decision = {}
+    evaluation = evaluate_llm_sizing_decision(teacher_item, decision, llm_result)
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "source_teacher": teacher_item.get("source_item"),
+        "llm_model": llm_model,
+        "baseline_success": baseline["success"],
+        "baseline_elapsed_ms": baseline["elapsed_ms"],
+        "baseline_action": baseline["action"],
+        "baseline_amount": baseline["amount"],
+        "baseline_probabilities": probabilities,
+        "baseline_top_action": probability_info["top_action"],
+        "baseline_top_probability": probability_info["top_probability"],
+        "baseline_second_action": probability_info["second_action"],
+        "baseline_second_probability": probability_info["second_probability"],
+        "baseline_top_margin": probability_info["top_margin"],
+        "primary_margin_class": _margin_class(probability_info["top_margin"]),
+        "teacher_label": teacher_item.get("teacher_label"),
+        "preferred_sizing_bucket": teacher_item.get("preferred_sizing_bucket"),
+        "allowed_sizing_types": teacher_item.get("allowed_sizing_types", []),
+        "allin_aggressive": teacher_item.get("allin_aggressive", False),
+        "profile_actions": teacher_item.get("profile_actions", {}),
+        "legal_actions": legal_actions,
+        "llm_success": llm_result["success"],
+        "llm_elapsed_ms": llm_result["elapsed_ms"],
+        "llm_action": decision.get("action"),
+        "llm_amount": decision.get("amount"),
+        "llm_sizing_type": decision.get("sizing_type"),
+        "llm_sizing_bucket": decision.get("sizing_bucket"),
+        "llm_confidence": decision.get("confidence"),
+        "llm_reason": decision.get("reason"),
+        "llm_risk_flags": decision.get("risk_flags", []),
+        "llm_error": llm_result.get("error"),
+        "llm_status_code": llm_result.get("status_code"),
+        "llm_response_body": llm_result.get("response_body"),
+        "prompt": prompt,
+        **evaluation,
+    }
+
+
+def build_llm_sizing_prompt(
+    payload: JsonDict,
+    baseline: JsonDict,
+    legal_actions: list[str],
+    teacher_item: JsonDict,
+) -> str:
+    """Build a diagnostics-only LLM sizing prompt."""
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    probabilities = baseline.get("probabilities")
+    if not isinstance(probabilities, dict):
+        probabilities = {}
+    prob_info = probability_summary(probabilities)
+    context = {
+        "task": "HU flop sizing teacher diagnostic",
+        "board": request.get("board"),
+        "hero_cards": meta.get("hero_cards"),
+        "pot": request.get("starting_pot"),
+        "starting_pot": request.get("starting_pot"),
+        "effective_stack": request.get("effective_stack"),
+        "spr": meta.get("spr"),
+        "hero_position": meta.get("hero_position"),
+        "hero_is_ip": meta.get("hero_is_ip"),
+        "actions_played": request.get("actions_played", []),
+        "legal_actions": legal_actions,
+        "primary_solver_action": baseline.get("action"),
+        "primary_solver_probabilities": probabilities,
+        "primary_top_margin": prob_info["top_margin"],
+        "primary_margin_class": _margin_class(prob_info["top_margin"]),
+        "teacher_label": teacher_item.get("teacher_label"),
+        "preferred_sizing_bucket": teacher_item.get("preferred_sizing_bucket"),
+        "allowed_sizing_types": teacher_item.get("allowed_sizing_types", []),
+        "allin_aggressive": teacher_item.get("allin_aggressive", False),
+        "profile_actions": teacher_item.get("profile_actions", {}),
+    }
+    return (
+        "You are choosing a HU flop sizing bucket based on single-size "
+        "solver teacher data.\n\n"
+        "Rules:\n"
+        "- The teacher data is the anchor.\n"
+        "- Choose sizing_type only from allowed_sizing_types.\n"
+        "- If allowed_sizing_types is empty, choose action from the primary "
+        "solver direction and sizing_type=\"none\".\n"
+        "- Do not choose all_in unless allin_aggressive=true.\n"
+        "- If teacher_label is passive_all_standard, do not invent a bet or "
+        "raise sizing.\n"
+        "- If teacher_label is tiny_only_aggressive, prefer bet_33 or "
+        "raise_33 equivalent.\n"
+        "- If teacher_label is small_only_aggressive, prefer bet_33 or bet_50.\n"
+        "- If teacher_label is medium_or_small_aggressive, prefer bet_33 / "
+        "bet_50 / bet_60.\n"
+        "- If teacher_label is all_standard_aggressive, choose the sizing "
+        "that best fits board texture / SPR / position.\n"
+        "- If teacher_label is mixed_non_monotonic, choose only from "
+        "allowed_sizing_types and explain why.\n"
+        "- Output JSON only.\n"
+        "Allowed JSON keys: action, amount, sizing_type, sizing_bucket, "
+        "confidence, reason, risk_flags.\n"
+        "Allowed sizing_type values: none, bet_33, bet_50, bet_60, bet_75, "
+        "raise_33, raise_50, raise_60, raise_75, all_in.\n"
+        f"Context JSON:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+    )
+
+
+def evaluate_llm_sizing_decision(
+    teacher_item: JsonDict,
+    decision: JsonDict,
+    llm_result: JsonDict | None = None,
+) -> JsonDict:
+    """Evaluate one LLM sizing decision against a teacher label."""
+    sizing_type = str(decision.get("sizing_type", "")).lower()
+    llm_action = str(decision.get("action", "")).upper()
+    allowed_sizing_types = [
+        str(value).lower() for value in teacher_item.get("allowed_sizing_types", [])
+    ]
+    teacher_label = str(teacher_item.get("teacher_label", "unknown"))
+    allin_aggressive = bool(teacher_item.get("allin_aggressive", False))
+    sizing_type_valid = sizing_type in LLM_ALLOWED_SIZING_TYPES
+    sizing_allowed_match = _sizing_allowed_match(sizing_type, allowed_sizing_types)
+    allin_violation = sizing_type == "all_in" and not allin_aggressive
+    passive_teacher_aggressive_violation = (
+        teacher_label == "passive_all_standard"
+        and llm_action in {"BET", "RAISE", "ALL_IN"}
+    )
+    teacher_alignment = (
+        sizing_allowed_match
+        and not allin_violation
+        and not passive_teacher_aggressive_violation
+        and sizing_type_valid
+    )
+    return {
+        "sizing_allowed_match": sizing_allowed_match,
+        "allin_violation": allin_violation,
+        "passive_teacher_aggressive_violation": passive_teacher_aggressive_violation,
+        "sizing_type_valid": sizing_type_valid,
+        "teacher_alignment": teacher_alignment,
+        "under_15s": _under_15s(llm_result) if llm_result is not None else None,
+    }
+
+
+def build_llm_sizing_summary(items: list[JsonDict], model: str) -> JsonDict:
+    """Aggregate LLM sizing diagnostic results."""
+    success_items = [item for item in items if item.get("llm_success") is True]
+    label_summary: dict[str, JsonDict] = {}
+    for item in items:
+        label = str(item.get("teacher_label", "unknown"))
+        stats = label_summary.setdefault(label, {"total": 0, "teacher_alignment_count": 0})
+        stats["total"] += 1
+        if item.get("teacher_alignment") is True:
+            stats["teacher_alignment_count"] += 1
+    return {
+        "total_samples": len(items),
+        "success_count": len(success_items),
+        "error_count": sum(1 for item in items if item.get("llm_success") is False),
+        "under_15s_rate": _bool_rate(items, "under_15s"),
+        "teacher_alignment_rate": _bool_rate(success_items, "teacher_alignment"),
+        "sizing_allowed_match_count": sum(
+            1 for item in items if item.get("sizing_allowed_match") is True
+        ),
+        "allin_violation_count": sum(
+            1 for item in items if item.get("allin_violation") is True
+        ),
+        "passive_teacher_aggressive_violation_count": sum(
+            1
+            for item in items
+            if item.get("passive_teacher_aggressive_violation") is True
+        ),
+        "sizing_type_invalid_count": sum(
+            1 for item in items if item.get("sizing_type_valid") is False
+        ),
+        "label_summary": label_summary,
+        "model": model,
+        "items": [
+            {
+                "sample_id": item["sample_id"],
+                "teacher_label": item.get("teacher_label"),
+                "allowed_sizing_types": item.get("allowed_sizing_types", []),
+                "llm_success": item.get("llm_success"),
+                "llm_action": item.get("llm_action"),
+                "llm_sizing_type": item.get("llm_sizing_type"),
+                "llm_sizing_bucket": item.get("llm_sizing_bucket"),
+                "sizing_allowed_match": item.get("sizing_allowed_match"),
+                "allin_violation": item.get("allin_violation"),
+                "passive_teacher_aggressive_violation": item.get(
+                    "passive_teacher_aggressive_violation"
+                ),
+                "sizing_type_valid": item.get("sizing_type_valid"),
+                "teacher_alignment": item.get("teacher_alignment"),
+                "error": item.get("llm_error"),
+            }
+            for item in items
+        ],
+    }
+
+
+def _sizing_allowed_match(sizing_type: str, allowed_sizing_types: list[str]) -> bool:
+    """Return whether sizing type matches teacher allowed buckets."""
+    if not allowed_sizing_types:
+        return sizing_type == "none"
+    if sizing_type in allowed_sizing_types:
+        return True
+    sizing_bucket = _sizing_bucket_token(sizing_type)
+    return any(_sizing_bucket_token(allowed) == sizing_bucket for allowed in allowed_sizing_types)
+
+
+def _sizing_bucket_token(sizing_type: str) -> str:
+    """Normalize bet_N and raise_N into the same bucket token."""
+    text = sizing_type.lower()
+    if text.startswith("bet_") or text.startswith("raise_"):
+        return text.split("_", 1)[1]
+    return text
+
+
 def compare_solver_requests_llm(
     *,
     llm_path: Path | None,
@@ -1609,6 +1998,7 @@ def llm_decision_schema() -> JsonDict:
             "action",
             "amount",
             "sizing_type",
+            "sizing_bucket",
             "confidence",
             "reason",
             "risk_flags",
@@ -1617,6 +2007,7 @@ def llm_decision_schema() -> JsonDict:
             "action": {"type": "string", "enum": sorted(LLM_ALLOWED_ACTIONS)},
             "amount": {"type": "integer", "minimum": 0},
             "sizing_type": {"type": "string"},
+            "sizing_bucket": {"type": "string"},
             "confidence": {
                 "type": "string",
                 "enum": ["low", "medium", "high"],
@@ -1648,6 +2039,7 @@ def parse_llm_decision_json(content: str) -> JsonDict:
         "action": action,
         "amount": amount,
         "sizing_type": str(decision.get("sizing_type", "unknown")),
+        "sizing_bucket": str(decision.get("sizing_bucket", "unknown")),
         "confidence": str(decision.get("confidence", "low")).lower(),
         "reason": str(decision.get("reason", "")),
         "risk_flags": [str(flag) for flag in risk_flags],
@@ -2892,6 +3284,30 @@ def print_sizing_teacher_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_llm_sizing_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for LLM sizing diagnostics."""
+    print("LLM SIZING SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"model={summary['model']}")
+    print(f"success_count={summary['success_count']}")
+    print(f"error_count={summary['error_count']}")
+    print(f"under_15s_rate={_percent(summary['under_15s_rate'])}")
+    print(f"teacher_alignment_rate={_percent(summary['teacher_alignment_rate'])}")
+    print(f"sizing_allowed_match_count={summary['sizing_allowed_match_count']}")
+    print(f"allin_violation_count={summary['allin_violation_count']}")
+    print(
+        "passive_teacher_aggressive_violation_count="
+        f"{summary['passive_teacher_aggressive_violation_count']}"
+    )
+    print(f"sizing_type_invalid_count={summary['sizing_type_invalid_count']}")
+    for label, stats in summary["label_summary"].items():
+        print(
+            f"{label}: total={stats['total']} "
+            f"alignment={stats['teacher_alignment_count']}"
+        )
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def print_llm_summary(summary: JsonDict) -> None:
     """Print compact aggregate statistics for LLM diagnostics."""
     print("LLM SUMMARY")
@@ -2949,6 +3365,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--teacher-profile", default="standard")
     parser.add_argument("--llm-path", default=None, type=Path)
     parser.add_argument("--llm-dir", default=None, type=Path)
+    parser.add_argument("--llm-sizing-path", default=None, type=Path)
+    parser.add_argument("--llm-sizing-dir", default=None, type=Path)
     parser.add_argument("--llm-model", default=None)
     parser.add_argument("--single-size-path", default=None, type=Path)
     parser.add_argument("--single-size-dir", default=None, type=Path)
@@ -3003,6 +3421,21 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_llm_summary(result)
+        return 0
+
+    if args.llm_sizing_path is not None or args.llm_sizing_dir is not None:
+        result = compare_solver_requests_llm_sizing(
+            llm_sizing_path=args.llm_sizing_path,
+            llm_sizing_dir=args.llm_sizing_dir,
+            sizing_teacher_path=args.sizing_teacher_path,
+            sizing_teacher_dir=args.sizing_teacher_dir,
+            phase=args.phase,
+            sample_ids=sample_ids,
+            llm_model=args.llm_model,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_llm_sizing_summary(result)
         return 0
 
     if args.single_size_path is not None or args.single_size_dir is not None:
