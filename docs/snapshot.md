@@ -1030,3 +1030,16 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - all-in誤選択を検出。
 - passive_all_standardで勝手にBET/RAISEしないか確認。
 - 本番実装はまだしない。
+
+## Phase 86-Fix8 Task 15-A — HU flop LLM sizing診断のteacher優先prompt修正
+
+背景:
+- Task 15ではteacher_alignment_rate=83.3%。
+- 不一致2件は、LLMがsingle-size teacherではなくprimary CHECKを優先してnoneを選んだため。
+- sizing診断ではprimary Solverではなくsingle-size teacher dataをanchorにする必要がある。
+
+対応:
+- LLM sizing promptで single-size teacher data をprimary anchorと明記。
+- primary 60% Solver actionはreference情報に格下げ。
+- allowed_sizing_typesが空でない場合はnoneを禁止。
+- all_inはallin_aggressive=trueの場合のみ許可。

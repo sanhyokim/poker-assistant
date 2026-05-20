@@ -28,6 +28,7 @@ from scripts.compare_solver_requests import (
     build_light_probe_request,
     build_llm_diagnostic_summary,
     build_llm_flop_prompt,
+    build_llm_sizing_prompt,
     build_middle_probe_request,
     call_openrouter_llm,
     compare_solver_requests_repeat,
@@ -1011,6 +1012,43 @@ def test_evaluate_llm_sizing_accepts_none_for_passive_teacher() -> None:
 
     assert result["sizing_allowed_match"] is True
     assert result["teacher_alignment"] is True
+
+
+def test_llm_sizing_prompt_prioritizes_teacher_over_primary() -> None:
+    """LLM sizing prompt makes single-size teacher data the primary anchor."""
+    payload = {
+        "meta": {"spr": 38.2, "hero_position": "BB", "hero_is_ip": False},
+        "request": {
+            "board": "5h4h9h",
+            "starting_pot": 232,
+            "effective_stack": 8883,
+            "actions_played": [],
+        },
+    }
+    baseline = {
+        "action": "CHECK",
+        "amount": 0,
+        "probabilities": {"CHECK": 0.63, "BET 139": 0.37},
+    }
+    teacher = {
+        "teacher_label": "small_only_aggressive",
+        "preferred_sizing_bucket": "small",
+        "allowed_sizing_types": ["bet_33", "bet_50"],
+        "allin_aggressive": False,
+        "profile_actions": {
+            "single_33": "BET",
+            "single_50": "BET",
+            "single_60": "CHECK",
+            "single_75": "CHECK",
+            "single_allin": "CHECK",
+        },
+    }
+
+    prompt = build_llm_sizing_prompt(payload, baseline, ["CHECK", "BET"], teacher)
+
+    assert "single-size solver teacher data is the primary anchor" in prompt
+    assert "primary 60% solver action is reference information only" in prompt
+    assert "Do not choose sizing_type=\"none\"" in prompt
 
 
 def test_build_teacher_request_applies_standard_and_high_profiles() -> None:
