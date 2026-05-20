@@ -1003,3 +1003,16 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - 本番設定は変更しない。
 - HU flop限定。
 - multiway / turn / river には触らない。
+
+## Phase 86-Fix8 Task 14-C — HU flop sizing teacher label作成
+
+背景:
+- timeout 180秒のsingle-size Solver診断では全60runが成功。
+- 33/50/60/75/all-inでaction差が出た。
+- 現Solverの60%,aだけでは小さめBET/RAISEの可能性を取り逃がす。
+- LLM sizing診断前に、single-size結果からteacher labelを作る。
+
+目的:
+- LLMのsizing出力とteacher labelの相関を見る準備。
+- 本番実装はまだしない。
+- multiway / turn / river は対象外。

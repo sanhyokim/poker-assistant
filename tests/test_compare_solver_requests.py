@@ -20,6 +20,7 @@ from scripts.compare_solver_requests import (
     build_resident_timing_summary,
     build_single_size_request,
     build_single_size_summary,
+    build_sizing_teacher_item,
     build_teacher_request,
     build_teacher_summary,
     build_summary,
@@ -860,6 +861,95 @@ def test_single_size_summary_counts_aggressive_actions() -> None:
         "single_allin",
     ]
     assert summary["sample_summary"][0]["all_profiles_same_direction"] is False
+
+
+def _single_size_item_from_actions(actions: dict[str, str]) -> dict[str, Any]:
+    profiles = [
+        {
+            "profile_id": profile_id,
+            "action": action,
+            "aggressive_action": action in {"BET", "RAISE", "ALL_IN"},
+        }
+        for profile_id, action in actions.items()
+    ]
+    return {"sample_id": "sample_a", "profiles": profiles}
+
+
+def test_build_sizing_teacher_small_only() -> None:
+    """Sizing teacher labels 33/50 aggressive and 60/75 passive as small."""
+    item = build_sizing_teacher_item(
+        _single_size_item_from_actions(
+            {
+                "single_33": "BET",
+                "single_50": "BET",
+                "single_60": "CHECK",
+                "single_75": "CHECK",
+                "single_allin": "CHECK",
+            }
+        )
+    )
+
+    assert item["teacher_label"] == "small_only_aggressive"
+    assert item["preferred_sizing_bucket"] == "small"
+    assert item["allowed_sizing_types"] == ["bet_33", "bet_50"]
+    assert item["allin_aggressive"] is False
+
+
+def test_build_sizing_teacher_passive_all_standard() -> None:
+    """Sizing teacher labels all passive standard sizes as no sizing."""
+    item = build_sizing_teacher_item(
+        _single_size_item_from_actions(
+            {
+                "single_33": "CHECK",
+                "single_50": "CHECK",
+                "single_60": "CHECK",
+                "single_75": "CHECK",
+                "single_allin": "CHECK",
+            }
+        )
+    )
+
+    assert item["teacher_label"] == "passive_all_standard"
+    assert item["preferred_sizing_bucket"] == "none"
+    assert item["allowed_sizing_types"] == []
+
+
+def test_build_sizing_teacher_mixed_non_monotonic() -> None:
+    """Sizing teacher keeps non-monotonic aggressive sizes as mixed."""
+    item = build_sizing_teacher_item(
+        _single_size_item_from_actions(
+            {
+                "single_33": "BET",
+                "single_50": "CHECK",
+                "single_60": "CHECK",
+                "single_75": "BET",
+                "single_allin": "CHECK",
+            }
+        )
+    )
+
+    assert item["teacher_label"] == "mixed_non_monotonic"
+    assert item["preferred_sizing_bucket"] == "mixed"
+    assert item["allowed_sizing_types"] == ["bet_33", "bet_75"]
+
+
+def test_build_sizing_teacher_allin_aggressive() -> None:
+    """Sizing teacher can include all-in when the all-in profile is aggressive."""
+    item = build_sizing_teacher_item(
+        _single_size_item_from_actions(
+            {
+                "single_33": "CHECK",
+                "single_50": "CHECK",
+                "single_60": "CHECK",
+                "single_75": "CHECK",
+                "single_allin": "ALL_IN",
+            }
+        )
+    )
+
+    assert item["teacher_label"] == "passive_all_standard"
+    assert item["allin_aggressive"] is True
+    assert item["allowed_sizing_types"] == ["all_in"]
 
 
 def test_build_teacher_request_applies_standard_and_high_profiles() -> None:

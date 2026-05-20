@@ -83,6 +83,14 @@ SINGLE_SIZE_PROFILES: dict[str, JsonDict] = {
     "single_75": {"bet_size": "75%", "raise_size": "2.5x"},
     "single_allin": {"bet_size": "a", "raise_size": "a"},
 }
+STANDARD_SINGLE_SIZE_PROFILES = ("single_33", "single_50", "single_60", "single_75")
+SIZING_TYPE_BY_PROFILE = {
+    "single_33": "bet_33",
+    "single_50": "bet_50",
+    "single_60": "bet_60",
+    "single_75": "bet_75",
+    "single_allin": "all_in",
+}
 
 
 def load_env_file(env_path: Path | None = None, *, override: bool = False) -> None:
@@ -1101,6 +1109,182 @@ def _single_size_sample_summary(item: JsonDict) -> JsonDict:
 def _is_aggressive_action(action: object) -> bool:
     """Return whether an action is BET / RAISE / ALL_IN."""
     return action in {"BET", "RAISE", "ALL_IN"}
+
+
+def compare_solver_requests_sizing_teacher(
+    *,
+    sizing_teacher_path: Path | None,
+    sizing_teacher_dir: Path | None,
+    out_dir: Path,
+) -> JsonDict:
+    """Build sizing teacher labels from single-size diagnostic items."""
+    item_paths = discover_sizing_teacher_item_files(
+        sizing_teacher_path,
+        sizing_teacher_dir,
+    )
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+    print(f"SIZING TEACHER DISCOVERY: items={len(item_paths)}")
+    for item_path in item_paths:
+        source_item = load_json_object(item_path)
+        teacher_item = build_sizing_teacher_item(source_item, source_path=item_path)
+        items.append(teacher_item)
+        output_path = items_dir / f"{teacher_item['sample_id']}_sizing_teacher.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(teacher_item, file, ensure_ascii=False, indent=2)
+
+    summary = build_sizing_teacher_summary(items)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "sizing_teacher_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def discover_sizing_teacher_item_files(
+    sizing_teacher_path: Path | None,
+    sizing_teacher_dir: Path | None,
+) -> list[Path]:
+    """Return single-size item files for sizing teacher mode."""
+    if sizing_teacher_path is not None:
+        return [sizing_teacher_path]
+    if sizing_teacher_dir is None:
+        return []
+    items_dir = sizing_teacher_dir / "items"
+    search_dir = items_dir if items_dir.exists() else sizing_teacher_dir
+    return sorted(search_dir.glob("*_single_size.json"))
+
+
+def load_json_object(path: Path) -> JsonDict:
+    """Load a JSON object from disk."""
+    with path.open("r", encoding="utf-8") as file:
+        payload = json.load(file)
+    if not isinstance(payload, dict):
+        raise ValueError(f"JSON must be an object: {path}")
+    return payload
+
+
+def build_sizing_teacher_item(
+    single_size_item: JsonDict,
+    *,
+    source_path: Path | None = None,
+) -> JsonDict:
+    """Build one sizing teacher label from a single-size diagnostic item."""
+    profile_actions = _profile_actions(single_size_item)
+    aggressive_profiles = [
+        profile
+        for profile in SINGLE_SIZE_PROFILES
+        if _is_aggressive_action(profile_actions.get(profile))
+    ]
+    passive_profiles = [
+        profile
+        for profile in SINGLE_SIZE_PROFILES
+        if profile_actions.get(profile) in {"CHECK", "CALL", "FOLD"}
+    ]
+    standard_aggressive = [
+        profile
+        for profile in STANDARD_SINGLE_SIZE_PROFILES
+        if profile in aggressive_profiles
+    ]
+    allin_aggressive = "single_allin" in aggressive_profiles
+    teacher_label = _sizing_teacher_label(standard_aggressive, profile_actions)
+    allowed_sizing_types = [
+        SIZING_TYPE_BY_PROFILE[profile] for profile in standard_aggressive
+    ]
+    if allin_aggressive:
+        allowed_sizing_types.append(SIZING_TYPE_BY_PROFILE["single_allin"])
+    return {
+        "sample_id": str(single_size_item.get("sample_id", "unknown")),
+        "source_item": str(source_path) if source_path is not None else None,
+        "profile_actions": profile_actions,
+        "aggressive_profiles": aggressive_profiles,
+        "passive_profiles": passive_profiles,
+        "teacher_label": teacher_label,
+        "preferred_sizing_bucket": _preferred_sizing_bucket(teacher_label),
+        "allowed_sizing_types": allowed_sizing_types,
+        "allin_aggressive": allin_aggressive,
+    }
+
+
+def build_sizing_teacher_summary(items: list[JsonDict]) -> JsonDict:
+    """Aggregate sizing teacher labels."""
+    label_counts: dict[str, int] = {}
+    allowed_counts: dict[str, int] = {}
+    for item in items:
+        label = str(item.get("teacher_label", "unknown"))
+        label_counts[label] = label_counts.get(label, 0) + 1
+        for sizing_type in item.get("allowed_sizing_types", []):
+            sizing_text = str(sizing_type)
+            allowed_counts[sizing_text] = allowed_counts.get(sizing_text, 0) + 1
+    return {
+        "total_samples": len(items),
+        "label_counts": label_counts,
+        "allin_aggressive_count": sum(
+            1 for item in items if item.get("allin_aggressive") is True
+        ),
+        "allowed_sizing_type_counts": allowed_counts,
+        "items": [
+            {
+                "sample_id": item["sample_id"],
+                "teacher_label": item["teacher_label"],
+                "preferred_sizing_bucket": item["preferred_sizing_bucket"],
+                "allowed_sizing_types": item["allowed_sizing_types"],
+                "allin_aggressive": item["allin_aggressive"],
+            }
+            for item in items
+        ],
+    }
+
+
+def _profile_actions(single_size_item: JsonDict) -> dict[str, str | None]:
+    """Return action by single-size profile id."""
+    actions: dict[str, str | None] = {
+        profile_id: None for profile_id in SINGLE_SIZE_PROFILES
+    }
+    for profile in single_size_item.get("profiles", []):
+        if not isinstance(profile, dict):
+            continue
+        profile_id = profile.get("profile_id")
+        if isinstance(profile_id, str) and profile_id in actions:
+            action = profile.get("action")
+            actions[profile_id] = str(action).upper() if action is not None else None
+    return actions
+
+
+def _sizing_teacher_label(
+    standard_aggressive: list[str],
+    profile_actions: dict[str, str | None],
+) -> str:
+    """Return a teacher label from standard single-size aggressive profiles."""
+    if any(profile_actions.get(profile) is None for profile in SINGLE_SIZE_PROFILES):
+        return "unknown"
+    aggressive_set = set(standard_aggressive)
+    if aggressive_set == {"single_33", "single_50"}:
+        return "small_only_aggressive"
+    if aggressive_set == {"single_33"}:
+        return "tiny_only_aggressive"
+    if aggressive_set == set(STANDARD_SINGLE_SIZE_PROFILES):
+        return "all_standard_aggressive"
+    if aggressive_set == {"single_33", "single_50", "single_60"}:
+        return "medium_or_small_aggressive"
+    if not aggressive_set:
+        return "passive_all_standard"
+    return "mixed_non_monotonic"
+
+
+def _preferred_sizing_bucket(teacher_label: str) -> str:
+    """Map a teacher label to a compact sizing bucket."""
+    buckets = {
+        "small_only_aggressive": "small",
+        "tiny_only_aggressive": "tiny",
+        "all_standard_aggressive": "broad",
+        "medium_or_small_aggressive": "small_to_medium",
+        "passive_all_standard": "none",
+        "mixed_non_monotonic": "mixed",
+    }
+    return buckets.get(teacher_label, "unknown")
 
 
 def compare_solver_requests_llm(
@@ -2698,6 +2882,16 @@ def print_single_size_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_sizing_teacher_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for sizing teacher labels."""
+    print("SIZING TEACHER SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"allin_aggressive_count={summary['allin_aggressive_count']}")
+    for label, count in summary["label_counts"].items():
+        print(f"{label}={count}")
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def print_llm_summary(summary: JsonDict) -> None:
     """Print compact aggregate statistics for LLM diagnostics."""
     print("LLM SUMMARY")
@@ -2758,6 +2952,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llm-model", default=None)
     parser.add_argument("--single-size-path", default=None, type=Path)
     parser.add_argument("--single-size-dir", default=None, type=Path)
+    parser.add_argument("--sizing-teacher-path", default=None, type=Path)
+    parser.add_argument("--sizing-teacher-dir", default=None, type=Path)
     parser.add_argument("--repeat-count", default=5, type=int)
     parser.add_argument("--phase", default="flop")
     parser.add_argument("--sample-ids", default=None)
@@ -2819,6 +3015,15 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_single_size_summary(result)
+        return 0
+
+    if args.sizing_teacher_path is not None or args.sizing_teacher_dir is not None:
+        result = compare_solver_requests_sizing_teacher(
+            sizing_teacher_path=args.sizing_teacher_path,
+            sizing_teacher_dir=args.sizing_teacher_dir,
+            out_dir=args.out,
+        )
+        print_sizing_teacher_summary(result)
         return 0
 
     if args.resident_path is not None or args.resident_dir is not None:
