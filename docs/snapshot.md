@@ -1043,3 +1043,14 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - primary 60% Solver actionはreference情報に格下げ。
 - allowed_sizing_typesが空でない場合はnoneを禁止。
 - all_inはallin_aggressive=trueの場合のみ許可。
+
+## Phase 86-Fix8 Task 16 — HU flop Blind LLM診断
+
+背景:
+- これまでのLLM診断はSolver/teacher情報を渡していた。
+- 本番では未知局面でSolver/teacher情報を見られない。
+- そのため、実戦情報だけでLLMに判断させ、あとからSolver/teacherと照合するblind診断が必要。
+
+目的:
+- HU flopでLLMがSolver/teacherなしでも方向性・sizingをどこまで合わせられるか確認する。
+- 本番実装はまだしない。

@@ -14,6 +14,7 @@ import pytest
 from scripts.compare_solver_requests import (
     batch_result_filename,
     build_batch_summary,
+    build_blind_llm_prompt,
     build_grid_probe_request,
     build_grid_summary,
     build_repeatability_summary,
@@ -48,6 +49,7 @@ from scripts.compare_solver_requests import (
     openrouter_provider_config,
     parse_solver_action,
     evaluate_llm_decision,
+    evaluate_blind_llm_decision,
     evaluate_llm_sizing_decision,
     parse_llm_decision_json,
     probability_summary,
@@ -1049,6 +1051,87 @@ def test_llm_sizing_prompt_prioritizes_teacher_over_primary() -> None:
     assert "single-size solver teacher data is the primary anchor" in prompt
     assert "primary 60% solver action is reference information only" in prompt
     assert "Do not choose sizing_type=\"none\"" in prompt
+
+
+def test_build_blind_llm_prompt_excludes_solver_and_teacher_data() -> None:
+    """Blind LLM prompt includes visible context and excludes hidden references."""
+    payload = {
+        "meta": {"spr": 42.0, "hero_position": "BTN", "hero_is_ip": True},
+        "request": {
+            "board": "Ah7d2c",
+            "starting_pot": 232,
+            "effective_stack": 9000,
+            "actions_played": ["Check"],
+        },
+    }
+
+    prompt = build_blind_llm_prompt(payload, ["CHECK", "BET", "ALL_IN"])
+
+    assert "Ah7d2c" in prompt
+    assert "232" in prompt
+    assert "9000" in prompt
+    assert "42.0" in prompt
+    assert "BTN" in prompt
+    assert "CHECK" in prompt
+    assert "primary_solver_action" not in prompt
+    assert "primary_solver_probabilities" not in prompt
+    assert "teacher_label" not in prompt
+    assert "allowed_sizing_types" not in prompt
+    assert "profile_actions" not in prompt
+
+
+def test_evaluate_blind_llm_detects_teacher_alignment() -> None:
+    """Blind LLM evaluation detects sizing teacher alignment."""
+    baseline = {"action": "CHECK"}
+    teacher = {
+        "teacher_label": "small_only_aggressive",
+        "allowed_sizing_types": ["bet_33", "bet_50"],
+        "allin_aggressive": False,
+    }
+    decision = {"action": "BET", "sizing_type": "bet_33"}
+
+    result = evaluate_blind_llm_decision(
+        baseline, teacher, decision, ["CHECK", "BET"], {"elapsed_ms": 1000}
+    )
+
+    assert result["blind_teacher_alignment"] is True
+    assert result["blind_sizing_allowed_match"] is True
+
+
+def test_evaluate_blind_llm_detects_passive_teacher_violation() -> None:
+    """Blind LLM evaluation catches aggression against passive teacher labels."""
+    baseline = {"action": "CHECK"}
+    teacher = {
+        "teacher_label": "passive_all_standard",
+        "allowed_sizing_types": [],
+        "allin_aggressive": False,
+    }
+    decision = {"action": "BET", "sizing_type": "bet_33"}
+
+    result = evaluate_blind_llm_decision(
+        baseline, teacher, decision, ["CHECK", "BET"], {"elapsed_ms": 1000}
+    )
+
+    assert result["blind_passive_teacher_aggressive_violation"] is True
+    assert result["blind_teacher_alignment"] is False
+
+
+def test_evaluate_blind_llm_detects_allin_violation() -> None:
+    """Blind LLM evaluation catches all-in when teacher does not allow it."""
+    baseline = {"action": "CHECK"}
+    teacher = {
+        "teacher_label": "all_standard_aggressive",
+        "allowed_sizing_types": ["bet_33"],
+        "allin_aggressive": False,
+    }
+    decision = {"action": "ALL_IN", "sizing_type": "all_in"}
+
+    result = evaluate_blind_llm_decision(
+        baseline, teacher, decision, ["CHECK", "BET", "ALL_IN"], {"elapsed_ms": 1000}
+    )
+
+    assert result["blind_allin_violation"] is True
+    assert result["blind_teacher_alignment"] is False
 
 
 def test_build_teacher_request_applies_standard_and_high_profiles() -> None:

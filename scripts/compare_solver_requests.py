@@ -1692,6 +1692,280 @@ def _sizing_bucket_token(sizing_type: str) -> str:
     return text
 
 
+def compare_solver_requests_llm_blind(
+    *,
+    llm_blind_path: Path | None,
+    llm_blind_dir: Path | None,
+    sizing_teacher_path: Path | None,
+    sizing_teacher_dir: Path | None,
+    phase: str,
+    sample_ids: list[str] | None,
+    llm_model: str | None,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+    llm_caller: LLMCaller | None = None,
+) -> JsonDict:
+    """Run blind LLM diagnostics and compare against Solver/teacher data."""
+    request_paths = discover_llm_sizing_request_files(
+        llm_blind_path,
+        llm_blind_dir,
+        phase,
+        sample_ids,
+    )
+    teacher_items = load_sizing_teacher_items(sizing_teacher_path, sizing_teacher_dir)
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+    model = llm_model or os.getenv("LLM_MODEL_DEFAULT") or DEFAULT_LLM_MODEL
+    caller = llm_caller or call_openrouter_llm
+    print(f"BLIND LLM DISCOVERY: samples={len(request_paths)} model={model}")
+    for request_path in request_paths:
+        current_sample_id = sample_id(request_path)
+        teacher_item = teacher_items.get(current_sample_id)
+        if teacher_item is None:
+            item = _missing_blind_teacher_item(request_path, model)
+        else:
+            item = _run_llm_blind_for_sample(
+                request_path,
+                teacher_item=teacher_item,
+                llm_model=model,
+                timeout=timeout,
+                bridge_factory=bridge_factory,
+                llm_caller=caller,
+            )
+        items.append(item)
+        output_path = items_dir / f"{current_sample_id}_blind_llm.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_llm_blind_summary(items, model)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "llm_blind_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
+def _missing_blind_teacher_item(request_path: Path, model: str) -> JsonDict:
+    """Return an error item when blind teacher data is missing."""
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "llm_model": model,
+        "llm_success": False,
+        "llm_elapsed_ms": 0,
+        "llm_error": "Sizing teacher item missing",
+        "baseline_action": None,
+        "teacher_label": "unknown",
+        "allowed_sizing_types": [],
+        "llm_action": None,
+        "llm_sizing_type": None,
+        "blind_action_match": False,
+        "blind_direction_match": False,
+        "blind_sizing_allowed_match": False,
+        "blind_allin_violation": False,
+        "blind_passive_teacher_aggressive_violation": False,
+        "blind_teacher_alignment": False,
+        "legal_action_valid": None,
+        "under_15s": False,
+    }
+
+
+def _run_llm_blind_for_sample(
+    request_path: Path,
+    *,
+    teacher_item: JsonDict,
+    llm_model: str,
+    timeout: float,
+    bridge_factory: BridgeFactory,
+    llm_caller: LLMCaller,
+) -> JsonDict:
+    """Run one blind LLM decision and evaluate it after the fact."""
+    payload = load_solver_payload(request_path)
+    primary_request = dict(payload["request"])
+    baseline = run_solver_request_payload(
+        primary_request,
+        path_label=str(request_path),
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
+    legal_actions = legal_actions_for_solver_request(primary_request)
+    prompt = build_blind_llm_prompt(payload, legal_actions)
+    llm_result = run_llm_diagnostic_request(
+        prompt,
+        model=llm_model,
+        timeout=timeout,
+        llm_caller=llm_caller,
+    )
+    decision = llm_result.get("decision")
+    if not isinstance(decision, dict):
+        decision = {}
+    evaluation = evaluate_blind_llm_decision(
+        baseline,
+        teacher_item,
+        decision,
+        legal_actions,
+        llm_result,
+    )
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "source_teacher": teacher_item.get("source_item"),
+        "llm_model": llm_model,
+        "llm_success": llm_result["success"],
+        "llm_elapsed_ms": llm_result["elapsed_ms"],
+        "llm_action": decision.get("action"),
+        "llm_amount": decision.get("amount"),
+        "llm_sizing_type": decision.get("sizing_type"),
+        "llm_confidence": decision.get("confidence"),
+        "llm_reason": decision.get("reason"),
+        "llm_risk_flags": decision.get("risk_flags", []),
+        "llm_error": llm_result.get("error"),
+        "llm_status_code": llm_result.get("status_code"),
+        "llm_response_body": llm_result.get("response_body"),
+        "baseline_action": baseline.get("action"),
+        "baseline_amount": baseline.get("amount"),
+        "teacher_label": teacher_item.get("teacher_label"),
+        "allowed_sizing_types": teacher_item.get("allowed_sizing_types", []),
+        "allin_aggressive": teacher_item.get("allin_aggressive", False),
+        "prompt": prompt,
+        **evaluation,
+    }
+
+
+def build_blind_llm_prompt(payload: JsonDict, legal_actions: list[str]) -> str:
+    """Build a blind HU flop prompt using only visible game context."""
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    context = {
+        "board": request.get("board"),
+        "hero_cards": meta.get("hero_cards"),
+        "pot": request.get("starting_pot"),
+        "starting_pot": request.get("starting_pot"),
+        "effective_stack": request.get("effective_stack"),
+        "spr": meta.get("spr"),
+        "hero_position": meta.get("hero_position"),
+        "hero_is_ip": meta.get("hero_is_ip"),
+        "actions_played": request.get("actions_played", []),
+        "legal_actions": legal_actions,
+    }
+    return (
+        "You are making a heads-up no-limit hold'em flop decision.\n"
+        "Use only the visible game context.\n"
+        "Do not assume hidden solver output.\n"
+        "Choose a legal action and sizing.\n"
+        "Return JSON only.\n"
+        "Allowed actions: CHECK, BET, RAISE, CALL, FOLD, ALL_IN.\n"
+        "Allowed sizing_type values: none, bet_33, bet_50, bet_60, bet_75, "
+        "raise_33, raise_50, raise_60, raise_75, all_in.\n"
+        "Allowed JSON keys: action, amount, sizing_type, sizing_bucket, "
+        "confidence, reason, risk_flags.\n"
+        f"Visible context JSON:\n{json.dumps(context, ensure_ascii=False, indent=2)}"
+    )
+
+
+def evaluate_blind_llm_decision(
+    baseline: JsonDict,
+    teacher_item: JsonDict,
+    decision: JsonDict,
+    legal_actions: list[str],
+    llm_result: JsonDict | None = None,
+) -> JsonDict:
+    """Evaluate a blind LLM decision against hidden Solver/teacher references."""
+    llm_action = str(decision.get("action", "")).upper()
+    sizing_eval = evaluate_llm_sizing_decision(teacher_item, decision, llm_result)
+    legal_action_valid = llm_action in set(legal_actions)
+    baseline_action = baseline.get("action")
+    blind_action_match = llm_action == baseline_action
+    blind_direction_match = _action_direction(llm_action) == _action_direction(
+        baseline_action
+    )
+    blind_teacher_alignment = (
+        sizing_eval["sizing_allowed_match"]
+        and not sizing_eval["allin_violation"]
+        and not sizing_eval["passive_teacher_aggressive_violation"]
+        and legal_action_valid
+    )
+    return {
+        "blind_action_match": blind_action_match,
+        "blind_direction_match": blind_direction_match,
+        "blind_teacher_alignment": blind_teacher_alignment,
+        "blind_sizing_allowed_match": sizing_eval["sizing_allowed_match"],
+        "blind_allin_violation": sizing_eval["allin_violation"],
+        "blind_passive_teacher_aggressive_violation": sizing_eval[
+            "passive_teacher_aggressive_violation"
+        ],
+        "legal_action_valid": legal_action_valid,
+        "under_15s": sizing_eval["under_15s"],
+    }
+
+
+def build_llm_blind_summary(items: list[JsonDict], model: str) -> JsonDict:
+    """Aggregate blind LLM diagnostic results."""
+    success_items = [item for item in items if item.get("llm_success") is True]
+    return {
+        "total_samples": len(items),
+        "success_count": len(success_items),
+        "error_count": sum(1 for item in items if item.get("llm_success") is False),
+        "under_15s_rate": _bool_rate(items, "under_15s"),
+        "blind_action_match_rate": _bool_rate(success_items, "blind_action_match"),
+        "blind_direction_match_rate": _bool_rate(
+            success_items, "blind_direction_match"
+        ),
+        "blind_teacher_alignment_rate": _bool_rate(
+            success_items, "blind_teacher_alignment"
+        ),
+        "blind_sizing_allowed_match_count": sum(
+            1 for item in items if item.get("blind_sizing_allowed_match") is True
+        ),
+        "blind_allin_violation_count": sum(
+            1 for item in items if item.get("blind_allin_violation") is True
+        ),
+        "blind_passive_teacher_aggressive_violation_count": sum(
+            1
+            for item in items
+            if item.get("blind_passive_teacher_aggressive_violation") is True
+        ),
+        "legal_action_invalid_count": sum(
+            1 for item in items if item.get("legal_action_valid") is False
+        ),
+        "model": model,
+        "items": [
+            {
+                "sample_id": item["sample_id"],
+                "baseline_action": item.get("baseline_action"),
+                "teacher_label": item.get("teacher_label"),
+                "allowed_sizing_types": item.get("allowed_sizing_types", []),
+                "llm_success": item.get("llm_success"),
+                "llm_action": item.get("llm_action"),
+                "llm_sizing_type": item.get("llm_sizing_type"),
+                "blind_action_match": item.get("blind_action_match"),
+                "blind_direction_match": item.get("blind_direction_match"),
+                "blind_teacher_alignment": item.get("blind_teacher_alignment"),
+                "blind_sizing_allowed_match": item.get("blind_sizing_allowed_match"),
+                "blind_allin_violation": item.get("blind_allin_violation"),
+                "blind_passive_teacher_aggressive_violation": item.get(
+                    "blind_passive_teacher_aggressive_violation"
+                ),
+                "legal_action_valid": item.get("legal_action_valid"),
+                "error": item.get("llm_error"),
+            }
+            for item in items
+        ],
+    }
+
+
+def _action_direction(action: object) -> str:
+    """Return aggressive/passive/unknown direction for an action."""
+    if action in {"BET", "RAISE", "ALL_IN"}:
+        return "aggressive"
+    if action in {"CHECK", "CALL", "FOLD"}:
+        return "passive"
+    return "unknown"
+
+
 def compare_solver_requests_llm(
     *,
     llm_path: Path | None,
@@ -3324,6 +3598,36 @@ def print_llm_sizing_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_llm_blind_summary(summary: JsonDict) -> None:
+    """Print compact aggregate statistics for blind LLM diagnostics."""
+    print("BLIND LLM SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"model={summary['model']}")
+    print(f"success_count={summary['success_count']}")
+    print(f"error_count={summary['error_count']}")
+    print(f"under_15s_rate={_percent(summary['under_15s_rate'])}")
+    print(f"blind_action_match_rate={_percent(summary['blind_action_match_rate'])}")
+    print(
+        f"blind_direction_match_rate="
+        f"{_percent(summary['blind_direction_match_rate'])}"
+    )
+    print(
+        f"blind_teacher_alignment_rate="
+        f"{_percent(summary['blind_teacher_alignment_rate'])}"
+    )
+    print(
+        "blind_sizing_allowed_match_count="
+        f"{summary['blind_sizing_allowed_match_count']}"
+    )
+    print(f"blind_allin_violation_count={summary['blind_allin_violation_count']}")
+    print(
+        "blind_passive_teacher_aggressive_violation_count="
+        f"{summary['blind_passive_teacher_aggressive_violation_count']}"
+    )
+    print(f"legal_action_invalid_count={summary['legal_action_invalid_count']}")
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def print_llm_summary(summary: JsonDict) -> None:
     """Print compact aggregate statistics for LLM diagnostics."""
     print("LLM SUMMARY")
@@ -3383,6 +3687,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llm-dir", default=None, type=Path)
     parser.add_argument("--llm-sizing-path", default=None, type=Path)
     parser.add_argument("--llm-sizing-dir", default=None, type=Path)
+    parser.add_argument("--llm-blind-path", default=None, type=Path)
+    parser.add_argument("--llm-blind-dir", default=None, type=Path)
     parser.add_argument("--llm-model", default=None)
     parser.add_argument("--single-size-path", default=None, type=Path)
     parser.add_argument("--single-size-dir", default=None, type=Path)
@@ -3452,6 +3758,21 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_llm_sizing_summary(result)
+        return 0
+
+    if args.llm_blind_path is not None or args.llm_blind_dir is not None:
+        result = compare_solver_requests_llm_blind(
+            llm_blind_path=args.llm_blind_path,
+            llm_blind_dir=args.llm_blind_dir,
+            sizing_teacher_path=args.sizing_teacher_path,
+            sizing_teacher_dir=args.sizing_teacher_dir,
+            phase=args.phase,
+            sample_ids=sample_ids,
+            llm_model=args.llm_model,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_llm_blind_summary(result)
         return 0
 
     if args.single_size_path is not None or args.single_size_dir is not None:
