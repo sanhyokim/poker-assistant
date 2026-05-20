@@ -1298,7 +1298,7 @@ def evaluate_llm_decision(
     reason_overclaim = (
         margin_class == "near_tie"
         and isinstance(llm_reason, str)
-        and any(word in llm_reason.lower() for word in _overclaim_words)
+        and _reason_overclaims_near_tie(llm_reason)
     )
     return {
         "action_match": action_match,
@@ -2238,6 +2238,36 @@ def _margin_class(top_margin: float | None) -> str:
     if top_margin > 0.10:
         return "moderate"
     return "near_tie"
+
+
+def _reason_overclaims_near_tie(reason: str) -> bool:
+    """Return whether a near-tie explanation uses unqualified overclaim language."""
+    sanitized = reason.lower()
+    negated_patterns = (
+        r"\bnot\s+because\s+it\s+clearly\s+dominates?\b",
+        r"\bnot\s+because\s+\w+\s+clearly\s+dominates?\b",
+        r"\bnot\s+a\s+clear\s+or\s+dominant\b",
+        r"\bnot\s+clear\s+or\s+dominant\b",
+        r"\bdoes\s+not\s+clearly\s+dominates?\b",
+        r"\bnot\s+clearly\s+dominates?\b",
+        r"\bnot\s+clear\b",
+        r"\bnot\s+clearly\b",
+        r"\bdoes\s+not\s+clearly\b",
+        r"\bnot\s+dominant\b",
+        r"\bdoes\s+not\s+dominate\b",
+        r"\bno\s+action\s+is\s+dominant\b",
+        r"\bno\s+dominant\b",
+        r"\bnot\s+obvious\b",
+        r"\bnot\s+strong\b",
+        r"\bdoes\s+not\s+strongly\s+prefer\b",
+        r"\brather\s+than\s+treating\s+it\s+as\s+dominant\b",
+        r"\brather\s+than\s+treating\s+\w+\s+as\s+dominant\b",
+    )
+    for pattern in negated_patterns:
+        sanitized = re.sub(pattern, " ", sanitized)
+
+    overclaim_words = ("clear", "strongly prefers", "dominant", "obvious")
+    return any(word in sanitized for word in overclaim_words)
 
 
 def sample_id(primary_path: Path) -> str:

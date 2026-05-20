@@ -967,3 +967,25 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - CLI main() 実行時は load_env_file(override=True) とし、診断スクリプトでは repo root の .env を強制優先する。
 - 直接関数利用時のデフォルトは override=False のまま維持。
 - 本番 GameLoop / RecommendationEngine / LLMPipeline は変更しない。
+
+## Phase 86-Fix8 Task 13-A — HU flop LLM診断のreason_overclaim誤検出抑制
+
+背景:
+- HU flop全12 sample診断は action_match_rate=100.0%、direction_match_rate=100.0%、dangerous_flip_count=0、legal_action_invalid_count=0。
+- 一方で reason_overclaim_count=2 が残った。
+- 対象2件はいずれも near_tie で confidence=low、LLM action は primary Solver と一致していた。
+
+精査:
+- hand_000016_req_000011_flop: "not because it clearly dominates" に含まれる clearly/dominates を誤検出。
+- hand_000020_req_000017_flop: "rather than treating it as dominant" および再実行時の "not a clear or dominant solver result" を誤検出。
+- どちらも過剰主張ではなく、near-tieを抑制的に説明する否定文だった。
+
+対応:
+- reason_overclaim 判定を _reason_overclaims_near_tie() に分離。
+- not clear / not clearly / not a clear or dominant / does not dominate / rather than treating it as dominant などの否定パターンを除外してから、clear / strongly prefers / dominant / obvious を検出する。
+- test_reason_overclaim_ignores_negated_clear_language を追加し、否定文はFalse、肯定的な "Fold clearly dominates this node." はTrueのまま確認。
+
+再確認:
+- tests/test_compare_solver_requests.py: 46 passed。
+- 全HU flop LLM診断: total_samples=12 / success_count=12 / under_15s_rate=100.0% / action_match_rate=100.0% / direction_match_rate=100.0% / dangerous_flip_count=0 / legal_action_invalid_count=0 / confidence_overstated_count=0 / reason_overclaim_count=0。
+- 本番 GameLoop / RecommendationEngine / LLMPipeline は変更しない。

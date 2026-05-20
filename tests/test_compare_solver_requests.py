@@ -1118,6 +1118,59 @@ def test_evaluate_llm_near_tie_medium_confidence_no_overstatement() -> None:
     assert result["reason_overclaim"] is False
 
 
+def test_reason_overclaim_ignores_negated_clear_language() -> None:
+    """Negated clear/dominant language does not flag near-tie overclaim."""
+    baseline = {"action": "FOLD", "amount": 0}
+    baseline_probability = {
+        "top_action": "FOLD",
+        "top_probability": 0.354,
+        "second_action": "CALL",
+        "second_probability": 0.343,
+        "top_margin": 0.011,
+    }
+    llm_result = {"success": True, "elapsed_ms": 1200}
+
+    negated_decision = {
+        "action": "FOLD",
+        "amount": 0,
+        "confidence": "medium",
+        "reason": (
+            "This is a close mixed node; fold is selected only because it is "
+            "top, not because it clearly dominates."
+        ),
+    }
+    negated_clear_or_dominant_decision = {
+        "action": "FOLD",
+        "amount": 0,
+        "confidence": "medium",
+        "reason": "This is not a clear or dominant solver result.",
+    }
+    positive_decision = {
+        "action": "FOLD",
+        "amount": 0,
+        "confidence": "medium",
+        "reason": "Fold clearly dominates this node.",
+    }
+
+    negated_result = evaluate_llm_decision(
+        baseline, baseline_probability, negated_decision, ["FOLD", "CALL"], llm_result
+    )
+    negated_clear_or_dominant_result = evaluate_llm_decision(
+        baseline,
+        baseline_probability,
+        negated_clear_or_dominant_decision,
+        ["FOLD", "CALL"],
+        llm_result,
+    )
+    positive_result = evaluate_llm_decision(
+        baseline, baseline_probability, positive_decision, ["FOLD", "CALL"], llm_result
+    )
+
+    assert negated_result["reason_overclaim"] is False
+    assert negated_clear_or_dominant_result["reason_overclaim"] is False
+    assert positive_result["reason_overclaim"] is True
+
+
 def test_build_teacher_summary_aggregates_teacher_results() -> None:
     """Teacher summary includes success/error counts and elapsed aggregates."""
     summary = build_teacher_summary(
