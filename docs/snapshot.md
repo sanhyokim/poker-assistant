@@ -1104,3 +1104,14 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - Blind LLM prompt/contextの入力情報とSolver request情報を比較する。
 - hero_cards / facing_bet / call_amount / actions_played / position などの欠落を検出する。
 - 入力不足がある場合は、prompt改善やモデル比較より先に入力整備を行う。
+
+## Phase 86-Fix8 Task 17 — HU Solver parseのHero hand使用監査
+
+背景:
+- Solver教師データがaverage_strategyではなくHero実カードのhand rowを使っているか確認する必要がある。
+- average_strategy fallbackが多い場合、教師データはHeroカード別ではなくレンジ平均に寄る可能性がある。
+
+目的:
+- RecommendationEngineのSolver parseにstrategy_source_detail診断を追加。
+- hand_strategy / average_strategy_fallback / equal_probability_fallback / default_check_fallbackを区別する。
+- 実データ12件でHero hand row使用状況を監査する。

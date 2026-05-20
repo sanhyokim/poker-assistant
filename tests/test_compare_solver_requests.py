@@ -26,6 +26,7 @@ from scripts.compare_solver_requests import (
     build_single_size_request,
     build_single_size_summary,
     build_sizing_teacher_item,
+    build_solver_parse_audit_summary,
     build_teacher_request,
     build_teacher_summary,
     build_summary,
@@ -1439,6 +1440,33 @@ def test_blind_input_audit_summary_counts_missing_fields() -> None:
 
     assert summary["critical_missing_counts"]["hero_cards"] == 2
     assert summary["critical_missing_counts"]["call_amount"] == 1
+
+
+def test_solver_parse_audit_summary_counts_strategy_sources() -> None:
+    """Solver parse audit summary counts strategy source details."""
+    summary = build_solver_parse_audit_summary(
+        [
+            {
+                "sample_id": "sample_a",
+                "strategy_source_detail": "hand_strategy",
+                "hero_cards_missing": False,
+                "matched_hand_missing": False,
+                "solver_success": True,
+            },
+            {
+                "sample_id": "sample_b",
+                "strategy_source_detail": "average_strategy_fallback",
+                "hero_cards_missing": True,
+                "matched_hand_missing": True,
+                "solver_success": True,
+            },
+        ]
+    )
+
+    assert summary["hand_strategy_count"] == 1
+    assert summary["average_strategy_fallback_count"] == 1
+    assert summary["hero_cards_missing_count"] == 1
+    assert summary["matched_hand_missing_count"] == 1
 
 
 def test_build_teacher_request_applies_standard_and_high_profiles() -> None:

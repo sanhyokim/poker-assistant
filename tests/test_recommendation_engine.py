@@ -2199,6 +2199,51 @@ def test_parse_solver_strategy_hand_specific() -> None:
     assert probabilities == {"CHECK": 0.1, "BET 120": 0.9}
 
 
+def test_parse_solver_strategy_uses_hero_hand_row() -> None:
+    """Diagnostic parser reports hand_strategy when hero hand row is used."""
+    engine = make_engine()
+    solver_output = {
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "hands": ["AhKh", "QdQs"],
+            "strategy_matrix": [[0.05, 0.95], [0.95, 0.05]],
+            "average_strategy": {"Check": 0.9, "Bet 120": 0.1},
+        }
+    }
+
+    result = engine._parse_solver_strategy_with_diagnostics(
+        solver_output,
+        make_state(hero_cards=["Ah", "Kh"]),
+    )
+
+    assert result["action"] == "BET"
+    assert result["strategy_source_detail"] == "hand_strategy"
+    assert result["matched_hand"] == "AhKh"
+    assert result["matched_hand_index"] == 0
+
+
+def test_parse_solver_strategy_falls_back_to_average_when_hero_hand_missing() -> None:
+    """Diagnostic parser reports average fallback when hero hand row is absent."""
+    engine = make_engine()
+    solver_output = {
+        "root_strategy": {
+            "actions": ["Check", "Bet 120"],
+            "hands": ["QdQs"],
+            "strategy_matrix": [[0.1, 0.9]],
+            "average_strategy": {"Check": 0.9, "Bet 120": 0.1},
+        }
+    }
+
+    result = engine._parse_solver_strategy_with_diagnostics(
+        solver_output,
+        make_state(hero_cards=["Ah", "Kh"]),
+    )
+
+    assert result["action"] == "CHECK"
+    assert result["strategy_source_detail"] == "average_strategy_fallback"
+    assert "hero hand not found" in str(result["fallback_reason"])
+
+
 def test_parse_solver_strategy_call_amount() -> None:
     """Call action amount uses the current maximum bet."""
     engine = make_engine()

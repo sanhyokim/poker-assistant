@@ -1860,25 +1860,68 @@ class RecommendationEngine:
 
         Prefers node_strategy after solver tree navigation over root_strategy.
         """
+        diagnostics = self._parse_solver_strategy_with_diagnostics(
+            solver_output,
+            game_state,
+        )
+        return (
+            str(diagnostics["action"]),
+            int(diagnostics["amount"]),
+            dict(diagnostics["probabilities"]),
+        )
+
+    def _parse_solver_strategy_with_diagnostics(
+        self,
+        solver_output: JsonDict,
+        game_state: GameState,
+    ) -> JsonDict:
+        """Extract solver strategy and report the strategy source used."""
         root_strategy = solver_output.get("node_strategy") or solver_output.get(
             "root_strategy"
         )
         if not isinstance(root_strategy, dict):
-            return "CHECK", 0, {"CHECK": 1.0}
+            return self._solver_strategy_diagnostics(
+                action="CHECK",
+                amount=0,
+                probabilities={"CHECK": 1.0},
+                source_detail="default_check_fallback",
+                game_state=game_state,
+                fallback_reason="root strategy missing",
+            )
 
         actions = [str(action) for action in root_strategy.get("actions", [])]
-        probabilities = self._hand_strategy_probabilities(root_strategy, game_state)
+        hand_result = self._hand_strategy_probabilities_with_diagnostics(
+            root_strategy,
+            game_state,
+        )
+        probabilities = hand_result["probabilities"]
+        source_detail = str(hand_result["strategy_source_detail"])
+        fallback_reason = hand_result.get("fallback_reason")
         if not probabilities:
             average_strategy = root_strategy.get("average_strategy", {})
             probabilities = {
                 str(action): float(probability)
                 for action, probability in average_strategy.items()
             }
+            if probabilities:
+                source_detail = "average_strategy_fallback"
+                fallback_reason = fallback_reason or "hand strategy unavailable"
         if not probabilities and actions:
             equal_probability = 1.0 / len(actions)
             probabilities = {action: equal_probability for action in actions}
+            source_detail = "equal_probability_fallback"
+            fallback_reason = fallback_reason or "average strategy unavailable"
         if not probabilities:
-            return "CHECK", 0, {"CHECK": 1.0}
+            return self._solver_strategy_diagnostics(
+                action="CHECK",
+                amount=0,
+                probabilities={"CHECK": 1.0},
+                source_detail="default_check_fallback",
+                game_state=game_state,
+                fallback_reason=fallback_reason or "no strategy probabilities",
+                matched_hand=hand_result.get("matched_hand"),
+                matched_hand_index=hand_result.get("matched_hand_index"),
+            )
 
         selected_action = max(probabilities.items(), key=lambda item: item[1])[0]
         action, amount = self._parse_solver_action(selected_action, game_state)
@@ -1886,7 +1929,41 @@ class RecommendationEngine:
             self._probability_key(action_text): float(probability)
             for action_text, probability in probabilities.items()
         }
-        return action, amount, normalized_probabilities
+        return self._solver_strategy_diagnostics(
+            action=action,
+            amount=amount,
+            probabilities=normalized_probabilities,
+            source_detail=source_detail,
+            game_state=game_state,
+            fallback_reason=fallback_reason,
+            matched_hand=hand_result.get("matched_hand"),
+            matched_hand_index=hand_result.get("matched_hand_index"),
+        )
+
+    @staticmethod
+    def _solver_strategy_diagnostics(
+        *,
+        action: str,
+        amount: int,
+        probabilities: dict[str, float],
+        source_detail: str,
+        game_state: GameState,
+        fallback_reason: str | None,
+        matched_hand: str | None = None,
+        matched_hand_index: int | None = None,
+    ) -> JsonDict:
+        """Build a diagnostic parse result without changing public tuple parsing."""
+        hero_cards = list(game_state.hero.cards or [])
+        return {
+            "action": action,
+            "amount": amount,
+            "probabilities": probabilities,
+            "strategy_source_detail": source_detail,
+            "hero_cards": hero_cards,
+            "matched_hand": matched_hand,
+            "matched_hand_index": matched_hand_index,
+            "fallback_reason": fallback_reason,
+        }
 
     @staticmethod
     def _format_solver_mix(probabilities: dict[str, float]) -> str:
@@ -2252,12 +2329,33 @@ class RecommendationEngine:
         game_state: GameState,
     ) -> dict[str, float]:
         """Return hand-specific strategy probabilities when available."""
+        result = self._hand_strategy_probabilities_with_diagnostics(
+            root_strategy,
+            game_state,
+        )
+        return dict(result["probabilities"])
+
+    def _hand_strategy_probabilities_with_diagnostics(
+        self,
+        root_strategy: JsonDict,
+        game_state: GameState,
+    ) -> JsonDict:
+        """Return hand-specific strategy probabilities and match diagnostics."""
         hands = root_strategy.get("hands", [])
         matrix = root_strategy.get("strategy_matrix", [])
         actions = root_strategy.get("actions", [])
         hero_cards = game_state.hero.cards or []
         if len(hero_cards) != 2 or not isinstance(hands, list):
-            return {}
+            return {
+                "probabilities": {},
+                "strategy_source_detail": "average_strategy_fallback",
+                "hero_cards": list(hero_cards),
+                "matched_hand": None,
+                "matched_hand_index": None,
+                "fallback_reason": "hero cards missing"
+                if len(hero_cards) != 2
+                else "hands list missing",
+            }
 
         candidates = {"".join(hero_cards), "".join(reversed(hero_cards))}
         try:
@@ -2265,18 +2363,47 @@ class RecommendationEngine:
                 index for index, hand in enumerate(hands) if str(hand) in candidates
             )
         except StopIteration:
-            return {}
+            return {
+                "probabilities": {},
+                "strategy_source_detail": "average_strategy_fallback",
+                "hero_cards": list(hero_cards),
+                "matched_hand": None,
+                "matched_hand_index": None,
+                "fallback_reason": "hero hand not found",
+            }
 
         if not isinstance(matrix, list) or hand_index >= len(matrix):
-            return {}
+            return {
+                "probabilities": {},
+                "strategy_source_detail": "average_strategy_fallback",
+                "hero_cards": list(hero_cards),
+                "matched_hand": str(hands[hand_index]),
+                "matched_hand_index": hand_index,
+                "fallback_reason": "strategy matrix row missing",
+            }
         row = matrix[hand_index]
         if not isinstance(row, list):
-            return {}
+            return {
+                "probabilities": {},
+                "strategy_source_detail": "average_strategy_fallback",
+                "hero_cards": list(hero_cards),
+                "matched_hand": str(hands[hand_index]),
+                "matched_hand_index": hand_index,
+                "fallback_reason": "strategy matrix row invalid",
+            }
 
-        return {
+        probabilities = {
             str(actions[index]): float(probability)
             for index, probability in enumerate(row)
             if index < len(actions)
+        }
+        return {
+            "probabilities": probabilities,
+            "strategy_source_detail": "hand_strategy",
+            "hero_cards": list(hero_cards),
+            "matched_hand": str(hands[hand_index]),
+            "matched_hand_index": hand_index,
+            "fallback_reason": None,
         }
 
     def _parse_solver_action(

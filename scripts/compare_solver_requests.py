@@ -28,8 +28,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from core.game_state import GameState, PlayerState
 from solver.solver_bridge import PostflopSolverBridge
 from strategy.llm_pipeline import LLMPipeline
+from strategy.recommendation_engine import RecommendationEngine
 
 JsonDict = dict[str, Any]
 BridgeFactory = Callable[[], PostflopSolverBridge]
@@ -1887,6 +1889,47 @@ def compare_solver_requests_llm_blind_input_audit(
     return summary
 
 
+def compare_solver_requests_solver_parse_audit(
+    *,
+    solver_parse_audit_path: Path | None,
+    solver_parse_audit_dir: Path | None,
+    phase: str,
+    sample_ids: list[str] | None,
+    timeout: float,
+    out_dir: Path,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+) -> JsonDict:
+    """Audit whether Solver parsing uses hero hand-specific strategy rows."""
+    request_paths = discover_llm_sizing_request_files(
+        solver_parse_audit_path,
+        solver_parse_audit_dir,
+        phase,
+        sample_ids,
+    )
+    items_dir = out_dir / "items"
+    items_dir.mkdir(parents=True, exist_ok=True)
+    items: list[JsonDict] = []
+    print(f"SOLVER PARSE AUDIT DISCOVERY: samples={len(request_paths)}")
+    for request_path in request_paths:
+        item = build_solver_parse_audit_item(
+            request_path,
+            timeout=timeout,
+            bridge_factory=bridge_factory,
+        )
+        items.append(item)
+        output_path = items_dir / f"{sample_id(request_path)}_solver_parse_audit.json"
+        with output_path.open("w", encoding="utf-8") as file:
+            json.dump(item, file, ensure_ascii=False, indent=2)
+
+    summary = build_solver_parse_audit_summary(items)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_path = out_dir / "solver_parse_audit_summary.json"
+    summary["output_path"] = str(summary_path)
+    with summary_path.open("w", encoding="utf-8") as file:
+        json.dump(summary, file, ensure_ascii=False, indent=2)
+    return summary
+
+
 def _missing_blind_teacher_item(
     request_path: Path, model: str, blind_profile: str
 ) -> JsonDict:
@@ -2307,6 +2350,142 @@ def build_blind_input_audit_summary(items: list[JsonDict]) -> JsonDict:
             for item in items
         ],
     }
+
+
+def build_solver_parse_audit_item(
+    request_path: Path,
+    *,
+    timeout: float,
+    bridge_factory: BridgeFactory = PostflopSolverBridge,
+) -> JsonDict:
+    """Run Solver and audit the RecommendationEngine parse strategy source."""
+    payload = load_solver_payload(request_path)
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    game_state = solver_parse_audit_game_state(payload)
+    raw_result = _solve_raw_request(
+        dict(request),
+        timeout=timeout,
+        bridge_factory=bridge_factory,
+    )
+    engine = RecommendationEngine({}, None, None, None, None, None)
+    if raw_result.get("success") is True:
+        diagnostics = engine._parse_solver_strategy_with_diagnostics(
+            raw_result,
+            game_state,
+        )
+    else:
+        diagnostics = {
+            "action": None,
+            "amount": None,
+            "probabilities": {},
+            "strategy_source_detail": "solver_error",
+            "hero_cards": list(game_state.hero.cards or []),
+            "matched_hand": None,
+            "matched_hand_index": None,
+            "fallback_reason": raw_result.get("error"),
+        }
+    hero_cards = diagnostics.get("hero_cards", [])
+    matched_hand = diagnostics.get("matched_hand")
+    return {
+        "sample_id": sample_id(request_path),
+        "source_request": str(request_path),
+        "solver_success": bool(raw_result.get("success")),
+        "solver_error": raw_result.get("error"),
+        "strategy_source_detail": diagnostics.get("strategy_source_detail"),
+        "action": diagnostics.get("action"),
+        "amount": diagnostics.get("amount"),
+        "probabilities": diagnostics.get("probabilities", {}),
+        "hero_cards": hero_cards,
+        "hero_cards_missing": len(hero_cards) != 2,
+        "matched_hand": matched_hand,
+        "matched_hand_index": diagnostics.get("matched_hand_index"),
+        "matched_hand_missing": matched_hand is None,
+        "fallback_reason": diagnostics.get("fallback_reason"),
+        "meta_phase": meta.get("phase"),
+    }
+
+
+def solver_parse_audit_game_state(payload: JsonDict) -> GameState:
+    """Build the minimal GameState needed for Solver strategy parsing."""
+    meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
+    request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    state = GameState()
+    state.phase = str(meta.get("phase") or "flop")
+    state.hero.cards = list(meta.get("hero_cards") or [])
+    state.hero.position = meta.get("hero_position")
+    state.pot = int(request.get("starting_pot") or 0)
+    actions_played = request.get("actions_played") or []
+    call_amount = _infer_call_amount(actions_played)
+    if "2" not in state.players:
+        state.players["2"] = PlayerState()
+    state.players["2"].bet = call_amount
+    return state
+
+
+def build_solver_parse_audit_summary(items: list[JsonDict]) -> JsonDict:
+    """Aggregate Solver parse audit items."""
+    return {
+        "total_samples": len(items),
+        "hand_strategy_count": _count_source(items, "hand_strategy"),
+        "average_strategy_fallback_count": _count_source(
+            items,
+            "average_strategy_fallback",
+        ),
+        "equal_probability_fallback_count": _count_source(
+            items,
+            "equal_probability_fallback",
+        ),
+        "default_check_fallback_count": _count_source(
+            items,
+            "default_check_fallback",
+        ),
+        "hero_cards_missing_count": sum(
+            1 for item in items if item.get("hero_cards_missing") is True
+        ),
+        "matched_hand_missing_count": sum(
+            1 for item in items if item.get("matched_hand_missing") is True
+        ),
+        "solver_error_count": sum(
+            1 for item in items if item.get("solver_success") is False
+        ),
+        "items": [
+            {
+                "sample_id": item["sample_id"],
+                "strategy_source_detail": item.get("strategy_source_detail"),
+                "hero_cards": item.get("hero_cards", []),
+                "matched_hand": item.get("matched_hand"),
+                "matched_hand_index": item.get("matched_hand_index"),
+                "fallback_reason": item.get("fallback_reason"),
+                "hero_cards_missing": item.get("hero_cards_missing"),
+                "matched_hand_missing": item.get("matched_hand_missing"),
+                "solver_success": item.get("solver_success"),
+                "solver_error": item.get("solver_error"),
+            }
+            for item in items
+        ],
+    }
+
+
+def _count_source(items: list[JsonDict], source_detail: str) -> int:
+    return sum(
+        1 for item in items if item.get("strategy_source_detail") == source_detail
+    )
+
+
+def _solve_raw_request(
+    request: JsonDict,
+    *,
+    timeout: float,
+    bridge_factory: BridgeFactory,
+) -> JsonDict:
+    bridge = bridge_factory()
+    try:
+        return bridge.solve(request, timeout=timeout)
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+    finally:
+        bridge.stop()
 
 
 def _expand_audit_fields(fields: JsonDict) -> JsonDict:
@@ -4300,6 +4479,29 @@ def print_blind_input_audit_summary(summary: JsonDict) -> None:
     print(f"RESULT_JSON: {summary['output_path']}")
 
 
+def print_solver_parse_audit_summary(summary: JsonDict) -> None:
+    """Print compact Solver parse audit statistics."""
+    print("SOLVER PARSE AUDIT SUMMARY")
+    print(f"samples={summary['total_samples']}")
+    print(f"hand_strategy_count={summary['hand_strategy_count']}")
+    print(
+        "average_strategy_fallback_count="
+        f"{summary['average_strategy_fallback_count']}"
+    )
+    print(
+        "equal_probability_fallback_count="
+        f"{summary['equal_probability_fallback_count']}"
+    )
+    print(
+        "default_check_fallback_count="
+        f"{summary['default_check_fallback_count']}"
+    )
+    print(f"hero_cards_missing_count={summary['hero_cards_missing_count']}")
+    print(f"matched_hand_missing_count={summary['matched_hand_missing_count']}")
+    print(f"solver_error_count={summary['solver_error_count']}")
+    print(f"RESULT_JSON: {summary['output_path']}")
+
+
 def print_llm_summary(summary: JsonDict) -> None:
     """Print compact aggregate statistics for LLM diagnostics."""
     print("LLM SUMMARY")
@@ -4365,6 +4567,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--llm-blind-repeat-dir", default=None, type=Path)
     parser.add_argument("--llm-blind-input-audit-path", default=None, type=Path)
     parser.add_argument("--llm-blind-input-audit-dir", default=None, type=Path)
+    parser.add_argument("--solver-parse-audit-path", default=None, type=Path)
+    parser.add_argument("--solver-parse-audit-dir", default=None, type=Path)
     parser.add_argument(
         "--blind-profile",
         choices=["baseline", "guided"],
@@ -4473,6 +4677,21 @@ def main(argv: list[str] | None = None) -> int:
             out_dir=args.out,
         )
         print_blind_input_audit_summary(result)
+        return 0
+
+    if (
+        args.solver_parse_audit_path is not None
+        or args.solver_parse_audit_dir is not None
+    ):
+        result = compare_solver_requests_solver_parse_audit(
+            solver_parse_audit_path=args.solver_parse_audit_path,
+            solver_parse_audit_dir=args.solver_parse_audit_dir,
+            phase=args.phase,
+            sample_ids=sample_ids,
+            timeout=args.timeout,
+            out_dir=args.out,
+        )
+        print_solver_parse_audit_summary(result)
         return 0
 
     if args.llm_blind_path is not None or args.llm_blind_dir is not None:
