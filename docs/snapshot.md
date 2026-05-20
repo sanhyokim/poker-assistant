@@ -929,3 +929,41 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
     - hand_000006_req_000007_flop: Solver process closed stdout
     - hand_000016_req_000011_flop: Solver process closed stdout
   - 現profileではteacherデータ作成に失敗。より狭い候補や長時間実行方針の再検討が必要
+
+## 2026-05-20: Phase 86-Fix8 Task 12-A — LLM診断margin補正
+
+- 目的: near_tie spotでLLMがconfidence=highやclear/dominant等の過剰表現を出す問題を検出する
+- 変更ファイル:
+  - `scripts/compare_solver_requests.py`
+  - `tests/test_compare_solver_requests.py`
+  - `docs/snapshot.md`
+- 触らない: core/game_loop.py, strategy/*, solver/*, config.yaml
+- 実装内容:
+  - `_margin_class()`: top_margin → clear(>=0.20) / moderate(>0.10) / near_tie / unknown に分類
+  - `build_llm_flop_prompt()`:
+    - Context JSONに primary_top_margin, primary_margin_class, primary_second_action, primary_second_probability を追加
+    - promptにmargin別ルールを追加（near_tieではconfidence=low/mediumのみ、clear/dominant等の表現禁止）
+  - `evaluate_llm_decision()`:
+    - primary_margin_class, confidence_overstated, reason_overclaim を追加
+    - confidence_overstated: near_tie かつ llm_confidence=high
+    - reason_overclaim: near_tie かつ reasonに clear / strongly prefers / dominant / obvious / 明確 / 強い / 優勢 を含む
+  - `build_llm_diagnostic_summary()`: confidence_overstated_count, reason_overclaim_count を集計
+  - `print_llm_summary()`: 新集計カウントを表示
+- テスト追加:
+  - test_llm_prompt_includes_margin_class
+  - test_evaluate_llm_near_tie_high_confidence_flags_overstatement
+  - test_evaluate_llm_near_tie_medium_confidence_no_overstatement
+
+## Phase 86-Fix8 Task 12-A2 — LLM診断CLIの.env優先化
+
+背景:
+- Task 12-Aの実装は tests/test_compare_solver_requests.py で 44 passed。
+- margin補正関連の primary_margin_class / confidence_overstated / reason_overclaim は実装済み。
+- しかし実データLLM再実行では、PowerShell側に残った古い OPENROUTER_API_KEY が優先され、HTTP 401 User not found になった。
+- 原因は load_env_file() が os.environ.setdefault() を使っており、既存環境変数を上書きしなかったため。
+
+対応:
+- load_env_file(env_path=None, *, override=False) に変更。
+- CLI main() 実行時は load_env_file(override=True) とし、診断スクリプトでは repo root の .env を強制優先する。
+- 直接関数利用時のデフォルトは override=False のまま維持。
+- 本番 GameLoop / RecommendationEngine / LLMPipeline は変更しない。

@@ -43,6 +43,7 @@ from scripts.compare_solver_requests import (
     load_solver_request,
     openrouter_provider_config,
     parse_solver_action,
+    evaluate_llm_decision,
     parse_llm_decision_json,
     probability_summary,
     repeatability_item_summary,
@@ -149,6 +150,20 @@ def test_load_env_file_does_not_override_existing_env(
     load_env_file(env_path)
 
     assert os.environ["OPENROUTER_API_KEY"] == "existing-key"
+
+
+def test_load_env_file_can_override_existing_env(
+    workspace_tmp: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Env loader can replace existing values when override is enabled."""
+    env_path = workspace_tmp / ".env"
+    env_path.write_text("OPENROUTER_API_KEY=new-key\n", encoding="utf-8")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "old-key")
+
+    load_env_file(env_path, override=True)
+
+    assert os.environ["OPENROUTER_API_KEY"] == "new-key"
 
 
 def test_load_env_file_ignores_comments_and_strips_quotes(
@@ -1020,6 +1035,87 @@ def test_compare_solver_requests_llm_writes_items_and_summary(
     assert item["baseline_action"] == "CHECK"
     assert item["llm_action"] == "CHECK"
     assert item["legal_action_valid"] is True
+
+
+def test_llm_prompt_includes_margin_class() -> None:
+    """LLM diagnostic prompt includes primary_top_margin and primary_margin_class."""
+    payload = {
+        "meta": {"spr": 38.2, "hero_position": "BTN", "hero_is_ip": True},
+        "request": {
+            "board": "5h4h9h",
+            "starting_pot": 232,
+            "effective_stack": 8883,
+            "actions_played": [],
+        },
+    }
+    baseline = {
+        "action": "CHECK",
+        "amount": 0,
+        "probabilities": {"CHECK": 0.63, "BET 139": 0.37},
+    }
+
+    prompt = build_llm_flop_prompt(payload, baseline, ["CHECK", "BET", "ALL_IN"])
+
+    assert "primary_top_margin" in prompt
+    assert "primary_margin_class" in prompt
+    assert "primary_second_action" in prompt
+    assert "primary_second_probability" in prompt
+    assert "margin_class" in prompt
+    assert "Margin interpretation rules" in prompt
+
+
+def test_evaluate_llm_near_tie_high_confidence_flags_overstatement() -> None:
+    """near_tie + confidence=high flags confidence_overstated and reason_overclaim."""
+    baseline = {"action": "CHECK", "amount": 0}
+    baseline_probability = {
+        "top_action": "CHECK",
+        "top_probability": 0.354,
+        "second_action": "BET",
+        "second_probability": 0.343,
+        "top_margin": 0.011,
+    }
+    decision = {
+        "action": "CHECK",
+        "amount": 0,
+        "confidence": "high",
+        "reason": "Solver is clear that checking dominates here.",
+    }
+    llm_result = {"success": True, "elapsed_ms": 1200}
+
+    result = evaluate_llm_decision(
+        baseline, baseline_probability, decision, ["CHECK", "BET"], llm_result
+    )
+
+    assert result["primary_margin_class"] == "near_tie"
+    assert result["confidence_overstated"] is True
+    assert result["reason_overclaim"] is True
+
+
+def test_evaluate_llm_near_tie_medium_confidence_no_overstatement() -> None:
+    """near_tie + confidence=medium does NOT flag overstatement."""
+    baseline = {"action": "CHECK", "amount": 0}
+    baseline_probability = {
+        "top_action": "CHECK",
+        "top_probability": 0.354,
+        "second_action": "BET",
+        "second_probability": 0.343,
+        "top_margin": 0.011,
+    }
+    decision = {
+        "action": "CHECK",
+        "amount": 0,
+        "confidence": "medium",
+        "reason": "Top solver action is CHECK by a small margin.",
+    }
+    llm_result = {"success": True, "elapsed_ms": 1200}
+
+    result = evaluate_llm_decision(
+        baseline, baseline_probability, decision, ["CHECK", "BET"], llm_result
+    )
+
+    assert result["primary_margin_class"] == "near_tie"
+    assert result["confidence_overstated"] is False
+    assert result["reason_overclaim"] is False
 
 
 def test_build_teacher_summary_aggregates_teacher_results() -> None:

@@ -78,8 +78,12 @@ TEACHER_PROFILES: dict[str, JsonDict] = {
 }
 
 
-def load_env_file(env_path: Path | None = None) -> None:
-    """Load simple KEY=VALUE lines from .env without overriding env vars."""
+def load_env_file(env_path: Path | None = None, *, override: bool = False) -> None:
+    """Load simple KEY=VALUE lines from .env.
+
+    If override=True, values from .env replace existing process env vars.
+    If override=False, existing process env vars are preserved.
+    """
     path = env_path or (REPO_ROOT / ".env")
     if not path.exists():
         return
@@ -102,7 +106,10 @@ def load_env_file(env_path: Path | None = None) -> None:
         if quoted:
             value = value[1:-1]
 
-        os.environ.setdefault(key, value)
+        if override:
+            os.environ[key] = value
+        else:
+            os.environ.setdefault(key, value)
 
 
 def load_solver_request(path: Path) -> JsonDict:
@@ -990,6 +997,10 @@ def build_llm_flop_prompt(
     """Build a diagnostics-only HU deep-SPR flop LLM prompt."""
     meta = payload.get("meta") if isinstance(payload.get("meta"), dict) else {}
     request = payload.get("request") if isinstance(payload.get("request"), dict) else {}
+    probabilities = baseline.get("probabilities")
+    if not isinstance(probabilities, dict):
+        probabilities = {}
+    prob_info = probability_summary(probabilities)
     context = {
         "task": "HU deep-SPR flop decision diagnostic",
         "board": request.get("board"),
@@ -1012,14 +1023,32 @@ def build_llm_flop_prompt(
         ],
         "primary_solver_action": baseline.get("action"),
         "primary_solver_amount": baseline.get("amount"),
-        "primary_solver_probabilities": baseline.get("probabilities", {}),
+        "primary_solver_probabilities": probabilities,
+        "primary_top_action": prob_info["top_action"],
+        "primary_top_probability": prob_info["top_probability"],
+        "primary_second_action": prob_info["second_action"],
+        "primary_second_probability": prob_info["second_probability"],
+        "primary_top_margin": prob_info["top_margin"],
+        "primary_margin_class": _margin_class(prob_info["top_margin"]),
     }
     return (
         "You are evaluating a heads-up no-limit hold'em flop decision.\n"
         "Primary Solver is the anchor. Do not make a large deviation from "
         "primary Solver unless the board texture strongly justifies it.\n"
-        "If primary top_margin >= 0.20, match primary action direction.\n"
-        "If primary top_margin <= 0.10, small sizing variation is allowed.\n"
+        "Margin interpretation rules:\n"
+        "- If primary top_margin >= 0.20:\n"
+        "  - Treat the primary solver action as clear.\n"
+        "  - Match the primary action direction.\n"
+        "  - confidence may be high.\n"
+        "- If 0.10 < primary top_margin < 0.20:\n"
+        "  - Treat the spot as moderately mixed.\n"
+        "  - Prefer matching the primary action.\n"
+        "  - confidence should be medium.\n"
+        "- If primary top_margin <= 0.10:\n"
+        "  - Treat the spot as near-tie / highly mixed.\n"
+        "  - Do not describe the solver action as clear, strong, dominant, or obvious.\n"
+        "  - confidence must be low or medium, never high.\n"
+        "  - Explain that the chosen action is selected because it is the top solver action, not because it dominates.\n"
         "Do not output illegal actions. Output JSON only.\n"
         "Allowed JSON keys: action, amount, sizing_type, confidence, reason, "
         "risk_flags.\n"
@@ -1242,17 +1271,35 @@ def evaluate_llm_decision(
             "call_or_raise_to_fold": False,
             "legal_action_valid": None,
             "under_15s": False,
+            "primary_margin_class": "unknown",
+            "confidence_overstated": False,
+            "reason_overclaim": False,
         }
     baseline_action = baseline.get("action")
     llm_action = decision.get("action")
-    flags = _mismatch_flags(
-        baseline_action,
-        llm_action,
-        _optional_float(baseline_probability.get("top_margin")),
-    )
+    top_margin_raw = baseline_probability.get("top_margin")
+    margin = _optional_float(top_margin_raw) if top_margin_raw is not None else None
+    flags = _mismatch_flags(baseline_action, llm_action, margin)
     action_match = baseline_action == llm_action
     amount_match = baseline.get("amount") == decision.get("amount")
     legal_action_valid = llm_action in set(legal_actions)
+    margin_class = _margin_class(margin)
+    llm_confidence = decision.get("confidence", "")
+    llm_reason = decision.get("reason", "")
+    confidence_overstated = (
+        margin_class == "near_tie"
+        and isinstance(llm_confidence, str)
+        and llm_confidence.lower() == "high"
+    )
+    _overclaim_words = [
+        "clear", "strongly prefers", "dominant", "obvious",
+        "明確", "強い", "優勢",
+    ]
+    reason_overclaim = (
+        margin_class == "near_tie"
+        and isinstance(llm_reason, str)
+        and any(word in llm_reason.lower() for word in _overclaim_words)
+    )
     return {
         "action_match": action_match,
         "amount_match": amount_match,
@@ -1263,6 +1310,9 @@ def evaluate_llm_decision(
         "call_or_raise_to_fold": flags["call_or_raise_to_fold"],
         "legal_action_valid": legal_action_valid,
         "under_15s": _under_15s({"elapsed_ms": llm_result.get("elapsed_ms")}),
+        "primary_margin_class": margin_class,
+        "confidence_overstated": confidence_overstated,
+        "reason_overclaim": reason_overclaim,
     }
 
 
@@ -1292,6 +1342,12 @@ def build_llm_diagnostic_summary(items: list[JsonDict], model: str) -> JsonDict:
         "legal_action_invalid_count": sum(
             1 for item in items if item.get("legal_action_valid") is False
         ),
+        "confidence_overstated_count": sum(
+            1 for item in items if item.get("confidence_overstated") is True
+        ),
+        "reason_overclaim_count": sum(
+            1 for item in items if item.get("reason_overclaim") is True
+        ),
         "model": model,
         "items": [
             {
@@ -1303,6 +1359,9 @@ def build_llm_diagnostic_summary(items: list[JsonDict], model: str) -> JsonDict:
                 "action_match": item["action_match"],
                 "dangerous_flip": item["dangerous_flip"],
                 "legal_action_valid": item["legal_action_valid"],
+                "confidence_overstated": item.get("confidence_overstated", False),
+                "reason_overclaim": item.get("reason_overclaim", False),
+                "primary_margin_class": item.get("primary_margin_class", "unknown"),
                 "error": item["llm_error"],
                 "status_code": item.get("llm_status_code"),
             }
@@ -2170,6 +2229,17 @@ def _mismatch_flags(
     }
 
 
+def _margin_class(top_margin: float | None) -> str:
+    """Classify top_margin into clear / moderate / near_tie / unknown."""
+    if top_margin is None:
+        return "unknown"
+    if top_margin >= 0.20:
+        return "clear"
+    if top_margin > 0.10:
+        return "moderate"
+    return "near_tie"
+
+
 def sample_id(primary_path: Path) -> str:
     """Return a stable sample id including hand, request id, and phase."""
     parsed = parse_request_filename(primary_path)
@@ -2364,13 +2434,17 @@ def print_llm_summary(summary: JsonDict) -> None:
     print(f"direction_match_rate={_percent(summary['direction_match_rate'])}")
     print(f"dangerous_flip_count={summary['dangerous_flip_count']}")
     print(f"legal_action_invalid_count={summary['legal_action_invalid_count']}")
+    print(f"confidence_overstated_count={summary['confidence_overstated_count']}")
+    print(f"reason_overclaim_count={summary['reason_overclaim_count']}")
     for item in summary["items"]:
         print(
             f"{item['sample_id']}: "
             f"success={item['llm_success']} "
             f"baseline_action={item['baseline_action']} "
             f"llm_action={item['llm_action']} "
-            f"dangerous_flip={item['dangerous_flip']}"
+            f"dangerous_flip={item['dangerous_flip']} "
+            f"confidence_overstated={item.get('confidence_overstated', False)} "
+            f"reason_overclaim={item.get('reason_overclaim', False)}"
         )
     print(f"RESULT_JSON: {summary['output_path']}")
 
@@ -2384,7 +2458,7 @@ def main(argv: list[str] | None = None) -> int:
     Returns:
         Process exit code.
     """
-    load_env_file()
+    load_env_file(override=True)
     parser = argparse.ArgumentParser(
         description="Compare primary and compare_no_allin solver request JSON files."
     )
