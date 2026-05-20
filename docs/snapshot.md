@@ -1115,3 +1115,15 @@ e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
 - RecommendationEngineのSolver parseにstrategy_source_detail診断を追加。
 - hand_strategy / average_strategy_fallback / equal_probability_fallback / default_check_fallbackを区別する。
 - 実データ12件でHero hand row使用状況を監査する。
+
+## Phase 86-Fix8 Task 18 — Solver request/debug保存にHero実戦情報を追加
+
+背景:
+- Task 17で、過去のdebug request payloadはhero_cards欠落により全件average_strategy_fallbackだった。
+- Solver parse実装はHero hand rowを使えるが、オフライン再解析用payloadにHeroカードがないと教師データがHeroカード別にならない。
+- LLM Blind検証でも、Solverに渡る実戦情報と同等情報をLLMへ渡す必要がある。
+
+対応:
+- _save_solver_request_json の meta に hero_cards / facing_bet / call_amount / street / heads_up / num_players / position / actions を保存する。
+- 保存時にmeta欠落warningを出す。
+- 過去データは参考扱いにし、新規ライブデータで再検証する。

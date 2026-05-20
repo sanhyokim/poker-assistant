@@ -1943,6 +1943,100 @@ def test_solver_request_json_meta_includes_range_and_action_context(
     assert "PREFLOP_ACTION_NORMALIZATION_SUMMARY" in caplog.text
 
 
+def test_save_solver_request_json_includes_hero_cards_and_call_context(
+    workspace_tmp: Path,
+) -> None:
+    """Saved Solver request JSON includes hero cards and facing-bet context."""
+    config = {
+        "game": {"blind_bb": 100},
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": True,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    state = make_state(phase="flop", active_player_count=2, hero_cards=["Ah", "Kh"])
+    state.hand_id = 21
+    state.hero.position = "BB"
+    state.hero.bet = 0
+    state.players["2"].bet = 300
+    solver_request = {"board": "Td7c2h", "effective_stack": 8883}
+
+    path = engine._save_solver_request_json(state, solver_request, "unit_test")
+
+    assert path is not None
+    saved = json.loads(Path(path).read_text(encoding="utf-8"))
+    meta = saved["meta"]
+    assert meta["hero_cards"] == ["Ah", "Kh"]
+    assert meta["facing_bet"] is True
+    assert meta["call_amount"] == 300
+    assert meta["raw_call_amount"] == 300
+    assert meta["street"] == "flop"
+    assert meta["heads_up"] is True
+    assert meta["num_players"] == 2
+
+
+def test_save_solver_request_json_includes_position_and_actions(
+    workspace_tmp: Path,
+) -> None:
+    """Saved Solver request JSON includes position and action context."""
+    config = {
+        "game": {"blind_bb": 100},
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": True,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 22
+    state.hero.position = "BTN"
+    state.current_street_actions = [
+        ActionRecord(seat=2, action="CHECK", amount=0),
+    ]
+    state.preflop_actions = [
+        ActionRecord(seat=2, action="CALL", amount=100),
+        ActionRecord(seat=1, action="CHECK", amount=0),
+    ]
+
+    path = engine._save_solver_request_json(state, {"board": "Td7c2h"}, "unit_test")
+
+    assert path is not None
+    meta = json.loads(Path(path).read_text(encoding="utf-8"))["meta"]
+    assert meta["hero_position"] == "BTN"
+    assert meta["hero_is_ip"] is True
+    assert meta["current_street_actions"][0]["action"] == "CHECK"
+    assert meta["preflop_actions"][0]["action"] == "CALL"
+
+
+def test_solver_request_meta_incomplete_warns_when_hero_cards_missing(
+    workspace_tmp: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Incomplete Solver request meta emits a warning but still saves."""
+    config = {
+        "game": {"blind_bb": 100},
+        "preflop_delta": {"sample_threshold_low": 50},
+        "debug": {
+            "save_solver_io": True,
+            "solver_io_dir": str(workspace_tmp / "solver_io"),
+        },
+    }
+    engine = make_engine(config)
+    state = make_state(phase="flop", active_player_count=2)
+    state.hand_id = 23
+    state.hero.cards = []
+
+    with caplog.at_level(logging.WARNING):
+        path = engine._save_solver_request_json(state, {"board": "Td7c2h"}, "unit_test")
+
+    assert path is not None
+    assert "SOLVER_REQUEST_META_INCOMPLETE" in caplog.text
+    assert "hero_cards" in caplog.text
+
+
 def test_deep_spr_flop_compare_no_allin_request_saved_not_solved(
     workspace_tmp: Path,
     caplog: pytest.LogCaptureFixture,

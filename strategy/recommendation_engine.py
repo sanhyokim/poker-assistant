@@ -1434,9 +1434,17 @@ class RecommendationEngine:
                 "request_id": self._solver_request_json_sequence,
                 "created_at": now.isoformat(),
                 "reason": reason,
+                **self._solver_request_runtime_meta(game_state, solver_request),
             }
             if meta_extra:
-                meta.update(meta_extra)
+                meta.update(
+                    {
+                        key: value
+                        for key, value in meta_extra.items()
+                        if not self._is_missing_meta_value(value)
+                    }
+                )
+            self._log_incomplete_solver_request_meta(meta)
             payload = {"meta": meta, "request": solver_request}
             with open(filepath, "w", encoding="utf-8") as file:
                 json.dump(payload, file, ensure_ascii=False, indent=2)
@@ -1454,6 +1462,68 @@ class RecommendationEngine:
         except Exception as exc:
             logger.warning("Failed to save solver request JSON: %s", exc)
             return None
+
+    def _solver_request_runtime_meta(
+        self,
+        game_state: GameState,
+        solver_request: dict[str, Any],
+    ) -> JsonDict:
+        """Return live context needed for offline Solver request re-analysis."""
+        max_opponent_bet = self._max_opponent_bet(game_state)
+        hero_bet = int(game_state.hero.bet or 0)
+        call_amount = max(0, max_opponent_bet - hero_bet)
+        active_seats = self._active_seats_for_solver_meta(game_state)
+        return {
+            "hero_cards": list(game_state.hero.cards or []),
+            "board": list(game_state.board or []),
+            "street": game_state.phase,
+            "num_players": int(game_state.active_player_count or len(active_seats)),
+            "heads_up": (game_state.active_player_count == 2),
+            "hero_position": game_state.hero.position,
+            "hero_is_ip": self._determine_hero_is_ip(game_state),
+            "hero_bet": hero_bet,
+            "max_opponent_bet": max_opponent_bet,
+            "facing_bet": call_amount > 0,
+            "call_amount": call_amount,
+            "raw_call_amount": call_amount,
+            "pot": game_state.pot,
+            "effective_stack": solver_request.get("effective_stack"),
+            "current_street_actions": self._action_dicts(
+                game_state.current_street_actions or []
+            ),
+            "preflop_actions": self._action_dicts(game_state.preflop_actions or []),
+        }
+
+    def _log_incomplete_solver_request_meta(self, meta: JsonDict) -> None:
+        """Warn when saved Solver request metadata is incomplete for diagnostics."""
+        missing_fields: list[str] = []
+        if len(meta.get("hero_cards") or []) != 2:
+            missing_fields.append("hero_cards")
+        if not meta.get("board"):
+            missing_fields.append("board")
+        if not meta.get("street"):
+            missing_fields.append("street")
+        if meta.get("heads_up") is None:
+            missing_fields.append("heads_up")
+        if meta.get("num_players") is None:
+            missing_fields.append("num_players")
+        if meta.get("facing_bet") is None:
+            missing_fields.append("facing_bet")
+        if meta.get("call_amount") is None:
+            missing_fields.append("call_amount")
+        if missing_fields:
+            logger.warning(
+                "SOLVER_REQUEST_META_INCOMPLETE: missing_fields=%s hand_id=%s "
+                "phase=%s",
+                missing_fields,
+                meta.get("hand_id"),
+                meta.get("phase"),
+            )
+
+    @staticmethod
+    def _is_missing_meta_value(value: Any) -> bool:
+        """Return whether a meta override value should not replace live context."""
+        return value is None or value == "" or value == []
 
     def _save_deep_spr_flop_comparison_request(
         self,
