@@ -1,0 +1,106 @@
+{
+  "sample_id": "hand_000020_req_000015_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000020_req_000015_flop.json",
+  "profiles": [
+    {
+      "profile_id": "single_33",
+      "bet_size": "33%",
+      "success": true,
+      "elapsed_ms": 32667,
+      "under_15s": false,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Bet 77": 0.41499044883766417,
+        "Check": 0.5850095487583566
+      },
+      "top_action": "CHECK",
+      "top_probability": 0.585,
+      "second_action": "BET",
+      "second_probability": 0.415,
+      "top_margin": 0.17,
+      "aggressive_action": false,
+      "error": null
+    },
+    {
+      "profile_id": "single_50",
+      "bet_size": "50%",
+      "success": true,
+      "elapsed_ms": 31504,
+      "under_15s": false,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Check": 0.6920347044822774,
+        "Bet 116": 0.3079652953311014
+      },
+      "top_action": "CHECK",
+      "top_probability": 0.692,
+      "second_action": "BET",
+      "second_probability": 0.308,
+      "top_margin": 0.384,
+      "aggressive_action": false,
+      "error": null
+    },
+    {
+      "profile_id": "single_60",
+      "bet_size": "60%",
+      "success": true,
+      "elapsed_ms": 31864,
+      "under_15s": false,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Bet 139": 0.27290206667795924,
+        "Check": 0.7270979347068984
+      },
+      "top_action": "CHECK",
+      "top_probability": 0.727,
+      "second_action": "BET",
+      "second_probability": 0.273,
+      "top_margin": 0.454,
+      "aggressive_action": false,
+      "error": null
+    },
+    {
+      "profile_id": "single_75",
+      "bet_size": "75%",
+      "success": true,
+      "elapsed_ms": 31865,
+      "under_15s": false,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Bet 174": 0.20507463341288534,
+        "Check": 0.7949253691515752
+      },
+      "top_action": "CHECK",
+      "top_probability": 0.795,
+      "second_action": "BET",
+      "second_probability": 0.205,
+      "top_margin": 0.59,
+      "aggressive_action": false,
+      "error": null
+    },
+    {
+      "profile_id": "single_allin",
+      "bet_size": "a",
+      "success": true,
+      "elapsed_ms": 29901,
+      "under_15s": false,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Check": 0.9999999833841697,
+        "AllIn 8558": 1.6468241594160757e-08
+      },
+      "top_action": "CHECK",
+      "top_probability": 1.0,
+      "second_action": "ALLIN",
+      "second_probability": 0.0,
+      "top_margin": 1.0,
+      "aggressive_action": false,
+      "error": null
+    }
+  ]
+}

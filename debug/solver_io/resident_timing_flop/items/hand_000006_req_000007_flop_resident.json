@@ -1,0 +1,113 @@
+{
+  "sample_id": "hand_000006_req_000007_flop",
+  "path": "debug\\solver_io\\20260519\\hand_000006_req_000007_flop.json",
+  "repeat_count": 5,
+  "runs": [
+    {
+      "run": 1,
+      "start_ms": null,
+      "solve_ms": 28984,
+      "total_ms": 28984,
+      "success": true,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "AllIn 16434": 0.042353112801111904,
+        "Check": 0.5232920681510165,
+        "Bet 139": 0.43435482301682665
+      },
+      "error": null
+    },
+    {
+      "run": 2,
+      "start_ms": null,
+      "solve_ms": 29505,
+      "total_ms": 29505,
+      "success": true,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "AllIn 16434": 0.03663547953958733,
+        "Check": 0.6020905837881751,
+        "Bet 139": 0.36127393866977503
+      },
+      "error": null
+    },
+    {
+      "run": 3,
+      "start_ms": null,
+      "solve_ms": 28259,
+      "total_ms": 28259,
+      "success": true,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "AllIn 16434": 0.03663547953958733,
+        "Bet 139": 0.36127393866977503,
+        "Check": 0.6020905837881751
+      },
+      "error": null
+    },
+    {
+      "run": 4,
+      "start_ms": null,
+      "solve_ms": 28421,
+      "total_ms": 28421,
+      "success": true,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Bet 139": 0.36127393866977503,
+        "Check": 0.6020905837881751,
+        "AllIn 16434": 0.03663547953958733
+      },
+      "error": null
+    },
+    {
+      "run": 5,
+      "start_ms": null,
+      "solve_ms": 28151,
+      "total_ms": 28151,
+      "success": true,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "AllIn 16434": 0.03663547953958733,
+        "Check": 0.6020905837881751,
+        "Bet 139": 0.36127393866977503
+      },
+      "error": null
+    }
+  ],
+  "summary": {
+    "sample_id": "hand_000006_req_000007_flop",
+    "run_count": 5,
+    "action_set": [
+      "CHECK"
+    ],
+    "amount_set": [
+      0
+    ],
+    "action_stable": true,
+    "amount_stable": true,
+    "unstable": false,
+    "avg_elapsed_ms": 28664,
+    "min_elapsed_ms": 28151,
+    "max_elapsed_ms": 29505,
+    "elapsed_spread_ms": 1354,
+    "probability_top_action_set": [
+      "CHECK"
+    ],
+    "probability_top_margin_range": [
+      0.089,
+      0.241
+    ],
+    "start_ms": null,
+    "avg_resident_solve_ms": 28664,
+    "min_resident_solve_ms": 28151,
+    "max_resident_solve_ms": 29505,
+    "avg_total_ms": 28664,
+    "estimated_start_overhead_ms": 0,
+    "process_reuse_effective": false
+  }
+}

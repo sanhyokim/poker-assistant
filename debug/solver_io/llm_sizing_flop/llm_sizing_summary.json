@@ -1,0 +1,238 @@
+{
+  "total_samples": 12,
+  "success_count": 12,
+  "error_count": 0,
+  "under_15s_rate": 1.0,
+  "teacher_alignment_rate": 0.833,
+  "sizing_allowed_match_count": 10,
+  "allin_violation_count": 0,
+  "passive_teacher_aggressive_violation_count": 0,
+  "sizing_type_invalid_count": 0,
+  "label_summary": {
+    "passive_all_standard": {
+      "total": 7,
+      "teacher_alignment_count": 7
+    },
+    "small_only_aggressive": {
+      "total": 1,
+      "teacher_alignment_count": 1
+    },
+    "all_standard_aggressive": {
+      "total": 1,
+      "teacher_alignment_count": 0
+    },
+    "tiny_only_aggressive": {
+      "total": 1,
+      "teacher_alignment_count": 1
+    },
+    "medium_or_small_aggressive": {
+      "total": 1,
+      "teacher_alignment_count": 1
+    },
+    "mixed_non_monotonic": {
+      "total": 1,
+      "teacher_alignment_count": 0
+    }
+  },
+  "model": "openai/gpt-5.4-mini",
+  "items": [
+    {
+      "sample_id": "hand_000001_req_000001_flop",
+      "teacher_label": "passive_all_standard",
+      "allowed_sizing_types": [],
+      "llm_success": true,
+      "llm_action": "CHECK",
+      "llm_sizing_type": "none",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000003_req_000001_flop",
+      "teacher_label": "passive_all_standard",
+      "allowed_sizing_types": [],
+      "llm_success": true,
+      "llm_action": "CALL",
+      "llm_sizing_type": "none",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "teacher_label": "passive_all_standard",
+      "allowed_sizing_types": [],
+      "llm_success": true,
+      "llm_action": "CHECK",
+      "llm_sizing_type": "none",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000005_req_000004_flop",
+      "teacher_label": "small_only_aggressive",
+      "allowed_sizing_types": [
+        "bet_33",
+        "bet_50"
+      ],
+      "llm_success": true,
+      "llm_action": "BET",
+      "llm_sizing_type": "bet_33",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000006_req_000007_flop",
+      "teacher_label": "all_standard_aggressive",
+      "allowed_sizing_types": [
+        "bet_33",
+        "bet_50",
+        "bet_60",
+        "bet_75"
+      ],
+      "llm_success": true,
+      "llm_action": "CHECK",
+      "llm_sizing_type": "none",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": false,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": false,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000015_req_000008_flop",
+      "teacher_label": "passive_all_standard",
+      "allowed_sizing_types": [],
+      "llm_success": true,
+      "llm_action": "CALL",
+      "llm_sizing_type": "none",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000016_req_000009_flop",
+      "teacher_label": "tiny_only_aggressive",
+      "allowed_sizing_types": [
+        "bet_33"
+      ],
+      "llm_success": true,
+      "llm_action": "BET",
+      "llm_sizing_type": "bet_33",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000016_req_000011_flop",
+      "teacher_label": "medium_or_small_aggressive",
+      "allowed_sizing_types": [
+        "bet_33",
+        "bet_50",
+        "bet_60"
+      ],
+      "llm_success": true,
+      "llm_action": "RAISE",
+      "llm_sizing_type": "raise_50",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000020_req_000015_flop",
+      "teacher_label": "passive_all_standard",
+      "allowed_sizing_types": [],
+      "llm_success": true,
+      "llm_action": "CHECK",
+      "llm_sizing_type": "none",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000020_req_000017_flop",
+      "teacher_label": "passive_all_standard",
+      "allowed_sizing_types": [],
+      "llm_success": true,
+      "llm_action": "CALL",
+      "llm_sizing_type": "none",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000028_req_000020_flop",
+      "teacher_label": "mixed_non_monotonic",
+      "allowed_sizing_types": [
+        "bet_33",
+        "bet_75"
+      ],
+      "llm_success": true,
+      "llm_action": "CHECK",
+      "llm_sizing_type": "none",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": false,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": false,
+      "error": null
+    },
+    {
+      "sample_id": "hand_000030_req_000024_flop",
+      "teacher_label": "passive_all_standard",
+      "allowed_sizing_types": [],
+      "llm_success": true,
+      "llm_action": "CHECK",
+      "llm_sizing_type": "none",
+      "llm_sizing_bucket": "unknown",
+      "sizing_allowed_match": true,
+      "allin_violation": false,
+      "passive_teacher_aggressive_violation": false,
+      "sizing_type_valid": true,
+      "teacher_alignment": true,
+      "error": null
+    }
+  ],
+  "output_path": "debug\\solver_io\\llm_sizing_flop\\llm_sizing_summary.json"
+}

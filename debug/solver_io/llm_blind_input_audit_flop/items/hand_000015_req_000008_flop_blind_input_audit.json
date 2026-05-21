@@ -1,0 +1,80 @@
+{
+  "sample_id": "hand_000015_req_000008_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000015_req_000008_flop.json",
+  "solver_fields": {
+    "board": "JcAd5s",
+    "hero_cards": null,
+    "pot": 432,
+    "starting_pot": 432,
+    "effective_stack": 3784,
+    "spr": 8.75925925925926,
+    "hero_position": "BTN",
+    "hero_is_ip": true,
+    "actions_played": [
+      "Bet 432"
+    ],
+    "legal_actions": [
+      "CHECK",
+      "BET",
+      "RAISE",
+      "CALL",
+      "FOLD",
+      "ALL_IN"
+    ],
+    "facing_bet": true,
+    "call_amount": 432,
+    "street": "flop",
+    "num_players": 2,
+    "heads_up": true,
+    "current_street_actions": [
+      {
+        "seat": 5,
+        "action": "BET",
+        "amount": 432,
+        "confidence": "high"
+      }
+    ]
+  },
+  "blind_prompt_fields": {
+    "board": "JcAd5s",
+    "hero_cards": null,
+    "pot": 432,
+    "starting_pot": 432,
+    "effective_stack": 3784,
+    "spr": 8.75925925925926,
+    "hero_position": "BTN",
+    "hero_is_ip": true,
+    "actions_played": [
+      "Bet 432"
+    ],
+    "legal_actions": [
+      "CHECK",
+      "BET",
+      "RAISE",
+      "CALL",
+      "FOLD",
+      "ALL_IN"
+    ],
+    "facing_bet": null,
+    "call_amount": null,
+    "street": null,
+    "num_players": null,
+    "heads_up": null
+  },
+  "missing_fields": [
+    "hero_cards",
+    "facing_bet",
+    "call_amount",
+    "street",
+    "num_players",
+    "heads_up"
+  ],
+  "mismatched_fields": [],
+  "critical_missing_fields": [
+    "hero_cards",
+    "facing_bet",
+    "call_amount"
+  ],
+  "critical_mismatch_fields": [],
+  "input_parity_ok": false
+}

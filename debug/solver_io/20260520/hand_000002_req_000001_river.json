@@ -1,0 +1,179 @@
+{
+  "meta": {
+    "hand_id": 2,
+    "phase": "river",
+    "request_id": 1,
+    "created_at": "2026-05-20T12:49:06.239618+00:00",
+    "reason": "hu_postflop_solver",
+    "hero_cards": [
+      "Th",
+      "Qd"
+    ],
+    "board": [
+      "Qh",
+      "5h",
+      "7c",
+      "7s",
+      "Kc"
+    ],
+    "street": "river",
+    "num_players": 2,
+    "heads_up": true,
+    "hero_position": "SB",
+    "hero_is_ip": false,
+    "hero_bet": 0,
+    "max_opponent_bet": 0,
+    "facing_bet": false,
+    "call_amount": 0,
+    "raw_call_amount": 0,
+    "pot": 2848,
+    "effective_stack": 8418,
+    "current_street_actions": [
+      {
+        "seat": 2,
+        "action": "FOLD",
+        "amount": 0,
+        "confidence": "high"
+      }
+    ],
+    "preflop_actions": [
+      {
+        "seat": 2,
+        "action": "RAISE",
+        "amount": 200,
+        "confidence": "high"
+      },
+      {
+        "seat": 1,
+        "action": "CALL",
+        "amount": 150,
+        "confidence": "high"
+      },
+      {
+        "seat": 3,
+        "action": "RAISE",
+        "amount": 300,
+        "confidence": "high"
+      },
+      {
+        "seat": 2,
+        "action": "CALL",
+        "amount": 300,
+        "confidence": "high"
+      },
+      {
+        "seat": 1,
+        "action": "CALL",
+        "amount": 100,
+        "confidence": "high"
+      }
+    ],
+    "active_seats": [
+      1,
+      3
+    ],
+    "preflop_scenario": "3bet_pot",
+    "range_source": "baseline",
+    "range_oop": "QQ+,AKs,AKo,AQs,AJs,KQs",
+    "range_ip": "JJ+,AKs,AKo,AQs,AQo,AJs,KQs,KJs",
+    "raw_preflop_actions": [
+      {
+        "seat": 2,
+        "action": "RAISE",
+        "amount": 200,
+        "confidence": "high"
+      },
+      {
+        "seat": 1,
+        "action": "CALL",
+        "amount": 150,
+        "confidence": "high"
+      },
+      {
+        "seat": 3,
+        "action": "RAISE",
+        "amount": 300,
+        "confidence": "high"
+      },
+      {
+        "seat": 2,
+        "action": "CALL",
+        "amount": 300,
+        "confidence": "high"
+      },
+      {
+        "seat": 1,
+        "action": "CALL",
+        "amount": 100,
+        "confidence": "high"
+      }
+    ],
+    "normalized_preflop_actions": [
+      {
+        "seat": 2,
+        "action": "RAISE",
+        "amount": 200,
+        "confidence": "high"
+      },
+      {
+        "seat": 1,
+        "action": "CALL",
+        "amount": 150,
+        "confidence": "high"
+      },
+      {
+        "seat": 3,
+        "action": "RAISE",
+        "amount": 300,
+        "confidence": "high"
+      },
+      {
+        "seat": 2,
+        "action": "CALL",
+        "amount": 300,
+        "confidence": "high"
+      },
+      {
+        "seat": 1,
+        "action": "CALL",
+        "amount": 100,
+        "confidence": "high"
+      }
+    ],
+    "actions_played_status": "empty_ok",
+    "street_start_pot": 2848,
+    "street_start_effective_stack": 8418,
+    "spr": 2.955758426966292
+  },
+  "request": {
+    "board": "Qh5h7c",
+    "turn": "7s",
+    "river": "Kc",
+    "range_oop": "QQ+,AKs,AKo,AQs,AJs,KQs",
+    "range_ip": "JJ+,AKs,AKo,AQs,AQo,AJs,KQs,KJs",
+    "starting_pot": 2848,
+    "effective_stack": 8418,
+    "flop_bet_sizes_oop": "60%,a",
+    "flop_bet_sizes_ip": "60%,a",
+    "flop_raise_sizes_oop": "2.5x",
+    "flop_raise_sizes_ip": "2.5x",
+    "turn_bet_sizes_oop": "60%,a",
+    "turn_bet_sizes_ip": "60%,a",
+    "turn_raise_sizes_oop": "2.5x",
+    "turn_raise_sizes_ip": "2.5x",
+    "river_bet_sizes_oop": "60%,a",
+    "river_bet_sizes_ip": "60%,a",
+    "river_raise_sizes_oop": "2.5x",
+    "river_raise_sizes_ip": "2.5x",
+    "rake_rate": 0.0,
+    "rake_cap": 0.0,
+    "add_allin_threshold": 1.5,
+    "force_allin_threshold": 0.15,
+    "merging_threshold": 0.1,
+    "max_iterations": 200,
+    "target_exploitability_pct": 0.6,
+    "timeout_ms": 10000,
+    "bunching": null,
+    "actions_played": []
+  }
+}

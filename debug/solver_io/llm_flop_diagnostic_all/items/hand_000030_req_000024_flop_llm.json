@@ -1,0 +1,51 @@
+{
+  "sample_id": "hand_000030_req_000024_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000030_req_000024_flop.json",
+  "llm_model": "openai/gpt-5.4-mini",
+  "baseline_success": true,
+  "baseline_elapsed_ms": 22235,
+  "baseline_action": "CHECK",
+  "baseline_amount": 0,
+  "baseline_probabilities": {
+    "Check": 0.7691892658796928,
+    "Bet 139": 0.23060472347158134,
+    "AllIn 2612": 0.00020602605955876062
+  },
+  "baseline_top_action": "CHECK",
+  "baseline_top_probability": 0.769,
+  "baseline_second_action": "BET",
+  "baseline_second_probability": 0.231,
+  "baseline_top_margin": 0.539,
+  "legal_actions": [
+    "CHECK",
+    "BET",
+    "ALL_IN"
+  ],
+  "llm_success": true,
+  "llm_elapsed_ms": 1660,
+  "llm_action": "CHECK",
+  "llm_amount": 0,
+  "llm_sizing_type": "none",
+  "llm_confidence": "high",
+  "llm_reason": "Primary solver prefers checking with 76.9% frequency, and the top margin is large, so this is a clear anchor spot. On AdQsJc, BB can protect a checking range while avoiding overcommitting deep stacks on a broadway-heavy board that can continue aggressively versus bets.",
+  "llm_risk_flags": [
+    "board_is_dynamic_and_straight_heavy",
+    "out_of_position_with_deep_spr"
+  ],
+  "llm_error": null,
+  "llm_status_code": 200,
+  "llm_response_body": "\n         \n\n         \n\n         \n{\"id\":\"gen-1779240974-ZPvpMujj0u1vIUTWT0nj\",\"object\":\"chat.completion\",\"created\":1779240974,\"model\":\"openai/gpt-5.4-mini-20260317\",\"provider\":\"OpenAI\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"completed\",\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"action\\\":\\\"CHECK\\\",\\\"amount\\\":0,\\\"sizing_type\\\":\\\"none\\\",\\\"confidence\\\":\\\"high\\\",\\\"reason\\\":\\\"Primary solver prefers checking with 76.9% frequency, and the top margin is large, so this is a clear anchor spot. On AdQsJc, BB can protect a checking range while avoiding overcommitting deep stacks on a broadway-heavy board that can continue aggressively versus bets.\\\",\\\"risk_flags\\\":[\\\"board_is_dynamic_and_straight_heavy\\\",\\\"out_of_position_with_deep_spr\\\"]}\",\"refusal\":null,\"reasoning\":null}}],\"usage\":{\"prompt_tokens\":616,\"completion_tokens\":114,\"total_tokens\":730,\"cost\":0.000975,\"is_byok\":false,\"prompt_tokens_details\":{\"c",
+  "prompt": "You are evaluating a heads-up no-limit hold'em flop decision.\nPrimary Solver is the anchor. Do not make a large deviation from primary Solver unless the board texture strongly justifies it.\nMargin interpretation rules:\n- If primary top_margin >= 0.20:\n  - Treat the primary solver action as clear.\n  - Match the primary action direction.\n  - confidence may be high.\n- If 0.10 < primary top_margin < 0.20:\n  - Treat the spot as moderately mixed.\n  - Prefer matching the primary action.\n  - confidence should be medium.\n- If primary top_margin <= 0.10:\n  - Treat the spot as near-tie / highly mixed.\n  - Do not describe the solver action as clear, strong, dominant, or obvious.\n  - confidence must be low or medium, never high.\n  - Explain that the chosen action is selected because it is the top solver action, not because it dominates.\nDo not output illegal actions. Output JSON only.\nAllowed JSON keys: action, amount, sizing_type, confidence, reason, risk_flags.\nContext JSON:\n{\n  \"task\": \"HU deep-SPR flop decision diagnostic\",\n  \"board\": \"AdQsJc\",\n  \"hero_cards\": null,\n  \"pot\": 232,\n  \"starting_pot\": 232,\n  \"effective_stack\": 2612,\n  \"spr\": 11.258620689655173,\n  \"hero_position\": \"BB\",\n  \"hero_is_ip\": false,\n  \"actions_played\": [],\n  \"legal_actions\": [\n    \"CHECK\",\n    \"BET\",\n    \"ALL_IN\"\n  ],\n  \"candidate_actions\": [\n    \"CHECK\",\n    \"BET_33\",\n    \"BET_50\",\n    \"BET_60\",\n    \"BET_75\",\n    \"ALL_IN\"\n  ],\n  \"primary_solver_action\": \"CHECK\",\n  \"primary_solver_amount\": 0,\n  \"primary_solver_probabilities\": {\n    \"Check\": 0.7691892658796928,\n    \"Bet 139\": 0.23060472347158134,\n    \"AllIn 2612\": 0.00020602605955876062\n  },\n  \"primary_top_action\": \"CHECK\",\n  \"primary_top_probability\": 0.769,\n  \"primary_second_action\": \"BET\",\n  \"primary_second_probability\": 0.231,\n  \"primary_top_margin\": 0.539,\n  \"primary_margin_class\": \"clear\"\n}",
+  "action_match": true,
+  "amount_match": true,
+  "direction_match": true,
+  "near_tie_mismatch": false,
+  "dangerous_flip": false,
+  "clear_check_to_bet": false,
+  "call_or_raise_to_fold": false,
+  "legal_action_valid": true,
+  "under_15s": true,
+  "primary_margin_class": "clear",
+  "confidence_overstated": false,
+  "reason_overclaim": false
+}

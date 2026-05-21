@@ -1,0 +1,37 @@
+{
+  "sample_id": "hand_000008_req_000009_flop",
+  "source_request": "debug\\solver_io\\20260520\\hand_000008_req_000009_flop.json",
+  "solver_success": true,
+  "solver_error": null,
+  "strategy_source_detail": "average_strategy_fallback",
+  "action": "FOLD",
+  "amount": 0,
+  "probabilities": {
+    "FOLD": 0.3763055048861356,
+    "RAISE 348": 0.33375116672572364,
+    "CALL": 0.2899433314232491
+  },
+  "hero_cards": [
+    "3c",
+    "Qc"
+  ],
+  "hero_hand_candidates": [
+    "3cQc",
+    "Qc3c"
+  ],
+  "hero_cards_missing": false,
+  "matched_hand": null,
+  "matched_hand_index": null,
+  "matched_hand_missing": true,
+  "fallback_reason": "hero hand not found",
+  "meta_phase": "flop",
+  "hero_is_ip": false,
+  "hero_side": "oop",
+  "hero_combo": "Qc3c",
+  "hero_hand_class": "Q3s",
+  "hero_range_source": "range_oop",
+  "hero_range_contains_hand": false,
+  "hero_range_missing_reason": "hero hand class not in hero-side range",
+  "range_oop_excerpt": "22+,A2s+,A8o+,K9s+,KTo+,Q9s+,QTo+,J8s+,JTo,T8s+,97s+,87s,76s,65s",
+  "range_ip_excerpt": "22+,A2s+,A7o+,K5s+,K9o+,Q7s+,Q9o+,J7s+,J9o+,T7s+,T9o,96s+,86s+,75s+,65s,54s"
+}

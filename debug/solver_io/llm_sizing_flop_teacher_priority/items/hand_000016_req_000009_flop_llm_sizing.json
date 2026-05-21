@@ -1,0 +1,61 @@
+{
+  "sample_id": "hand_000016_req_000009_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000016_req_000009_flop.json",
+  "source_teacher": "debug\\solver_io\\single_size_flop_180\\items\\hand_000016_req_000009_flop_single_size.json",
+  "llm_model": "openai/gpt-5.4-mini",
+  "baseline_success": true,
+  "baseline_elapsed_ms": 23128,
+  "baseline_action": "CHECK",
+  "baseline_amount": 0,
+  "baseline_probabilities": {
+    "Check": 0.6530064509707292,
+    "Bet 139": 0.3469935460158135,
+    "AllIn 9668": 0.0
+  },
+  "baseline_top_action": "CHECK",
+  "baseline_top_probability": 0.653,
+  "baseline_second_action": "BET",
+  "baseline_second_probability": 0.347,
+  "baseline_top_margin": 0.306,
+  "primary_margin_class": "clear",
+  "teacher_label": "tiny_only_aggressive",
+  "preferred_sizing_bucket": "tiny",
+  "allowed_sizing_types": [
+    "bet_33"
+  ],
+  "allin_aggressive": false,
+  "profile_actions": {
+    "single_33": "BET",
+    "single_50": "CHECK",
+    "single_60": "CHECK",
+    "single_75": "CHECK",
+    "single_allin": "CHECK"
+  },
+  "legal_actions": [
+    "CHECK",
+    "BET",
+    "ALL_IN"
+  ],
+  "llm_success": true,
+  "llm_elapsed_ms": 1970,
+  "llm_action": "BET",
+  "llm_amount": 77,
+  "llm_sizing_type": "bet_33",
+  "llm_sizing_bucket": "tiny",
+  "llm_confidence": "high",
+  "llm_reason": "Teacher data is tiny_only_aggressive and the only allowed sizing type is bet_33, so we must choose the 33% aggressive bucket despite the primary solver preferring check. The profile_actions also show single_33 = BET while larger sizes are checked, confirming that only the tiny c-bet bucket is supported on this board.",
+  "llm_risk_flags": [
+    "primary_solver_prefers_check",
+    "low_frequency_aggressive_bucket_only"
+  ],
+  "llm_error": null,
+  "llm_status_code": 200,
+  "llm_response_body": "\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1779254524-O4LId9ylTR4KsU2K5jul\",\"object\":\"chat.completion\",\"created\":1779254524,\"model\":\"openai/gpt-5.4-mini-20260317\",\"provider\":\"OpenAI\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"completed\",\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"action\\\":\\\"BET\\\",\\\"amount\\\":77,\\\"sizing_type\\\":\\\"bet_33\\\",\\\"sizing_bucket\\\":\\\"tiny\\\",\\\"confidence\\\":\\\"high\\\",\\\"reason\\\":\\\"Teacher data is tiny_only_aggressive and the only allowed sizing type is bet_33, so we must choose the 33% aggressive bucket despite the primary solver preferring check. The profile_actions also show single_33 = BET while larger sizes are checked, confirming that only the tiny c-bet bucket is supported on this board.\\\",\\\"risk_flags\\\":[\\\"primary_solver_prefers_check\\\",\\\"low_frequency_aggressive_bucket_only\\\"]}\",\"refusal\":null,\"reasoning\":null}}],\"usage\":{\"prompt_tokens\":904,\"completion_to",
+  "prompt": "You are choosing a HU flop sizing bucket based on single-size solver teacher data.\n\nRules:\n- For this sizing diagnostic, the single-size solver teacher data is the primary anchor.\n- The primary 60% solver action is reference information only.\n- Do not follow primary CHECK/CALL/FOLD if the teacher data indicates allowed aggressive sizing.\n- Choose sizing_type only from allowed_sizing_types.\n- If allowed_sizing_types is not empty:\n  - You must choose one sizing_type from allowed_sizing_types.\n  - Do not choose sizing_type=\"none\".\n  - Do not choose CHECK/CALL/FOLD solely because the primary solver action was passive.\n  - Choose the action direction consistent with the sizing_type:\n    - bet_33 / bet_50 / bet_60 / bet_75 => BET\n    - raise_33 / raise_50 / raise_60 / raise_75 => RAISE\n    - all_in => ALL_IN\n- If allowed_sizing_types is empty, choose action from the primary solver direction and sizing_type=\"none\".\n- If allowed_sizing_types is empty, do not invent BET/RAISE/ALL_IN.\n- Do not choose all_in unless allin_aggressive=true.\n- If teacher_label is passive_all_standard, allowed_sizing_types is empty and sizing_type must be none.\n- If teacher_label is tiny_only_aggressive, allowed_sizing_types should contain only bet_33 or equivalent raise_33; choose the 33 bucket.\n- If teacher_label is small_only_aggressive, choose from 33 or 50 bucket; prefer 33 on wet/dynamic/high-SPR boards unless reason supports 50.\n- If teacher_label is medium_or_small_aggressive, prefer bet_33 / bet_50 / bet_60.\n- If teacher_label is all_standard_aggressive, choose the sizing that best fits board texture / SPR / position; do not choose none.\n- If teacher_label is mixed_non_monotonic, choose only from allowed_sizing_types, explain why the chosen allowed bucket is more suitable than the other allowed bucket, and do not choose none.\n- Output JSON only.\nAllowed JSON keys: action, amount, sizing_type, sizing_bucket, confidence, reason, risk_flags.\nAllowed sizing_type values: none, bet_33, bet_50, bet_60, bet_75, raise_33, raise_50, raise_60, raise_75, all_in.\nContext JSON:\n{\n  \"task\": \"HU flop sizing teacher diagnostic\",\n  \"board\": \"Th5s6h\",\n  \"hero_cards\": null,\n  \"pot\": 232,\n  \"starting_pot\": 232,\n  \"effective_stack\": 9668,\n  \"spr\": 41.672413793103445,\n  \"hero_position\": \"BB\",\n  \"hero_is_ip\": false,\n  \"actions_played\": [],\n  \"legal_actions\": [\n    \"CHECK\",\n    \"BET\",\n    \"ALL_IN\"\n  ],\n  \"primary_solver_action\": \"CHECK\",\n  \"primary_solver_probabilities\": {\n    \"Check\": 0.6530064509707292,\n    \"Bet 139\": 0.3469935460158135,\n    \"AllIn 9668\": 0.0\n  },\n  \"primary_top_margin\": 0.306,\n  \"primary_margin_class\": \"clear\",\n  \"teacher_label\": \"tiny_only_aggressive\",\n  \"preferred_sizing_bucket\": \"tiny\",\n  \"allowed_sizing_types\": [\n    \"bet_33\"\n  ],\n  \"allin_aggressive\": false,\n  \"profile_actions\": {\n    \"single_33\": \"BET\",\n    \"single_50\": \"CHECK\",\n    \"single_60\": \"CHECK\",\n    \"single_75\": \"CHECK\",\n    \"single_allin\": \"CHECK\"\n  }\n}",
+  "sizing_allowed_match": true,
+  "allin_violation": false,
+  "passive_teacher_aggressive_violation": false,
+  "sizing_type_valid": true,
+  "teacher_alignment": true,
+  "under_15s": true
+}

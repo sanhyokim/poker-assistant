@@ -1,0 +1,218 @@
+{
+  "timestamp": "2026-05-20T12:49:24.346542+00:00",
+  "hand_id": 2,
+  "phase": "river",
+  "street": "river",
+  "hero_cards": [
+    "Th",
+    "Qd"
+  ],
+  "board": [
+    "Qh",
+    "5h",
+    "7c",
+    "7s",
+    "Kc"
+  ],
+  "pot": 7594,
+  "call_amount": 949,
+  "active_player_count": 2,
+  "players_in_hand": {
+    "1": true,
+    "2": false,
+    "3": true,
+    "4": false,
+    "5": false,
+    "6": false
+  },
+  "folded_seats": [
+    "2",
+    "4",
+    "5",
+    "6"
+  ],
+  "current_bets": {
+    "1": 1898,
+    "2": 0,
+    "3": 2847,
+    "4": 0,
+    "5": 0,
+    "6": 0
+  },
+  "actions": [],
+  "solver_request": {
+    "board": "Qh5h7c",
+    "turn": "7s",
+    "river": "Kc",
+    "range_oop": "KK+,AKs",
+    "range_ip": "QQ+,AKs,AKo",
+    "starting_pot": 2849,
+    "effective_stack": 8417,
+    "flop_bet_sizes_oop": "60%,a",
+    "flop_bet_sizes_ip": "60%,a",
+    "flop_raise_sizes_oop": "2.5x",
+    "flop_raise_sizes_ip": "2.5x",
+    "turn_bet_sizes_oop": "60%,a",
+    "turn_bet_sizes_ip": "60%,a",
+    "turn_raise_sizes_oop": "2.5x",
+    "turn_raise_sizes_ip": "2.5x",
+    "river_bet_sizes_oop": "60%,a",
+    "river_bet_sizes_ip": "60%,a",
+    "river_raise_sizes_oop": "2.5x",
+    "river_raise_sizes_ip": "2.5x",
+    "rake_rate": 0.0,
+    "rake_cap": 0.0,
+    "add_allin_threshold": 1.5,
+    "force_allin_threshold": 0.15,
+    "merging_threshold": 0.1,
+    "max_iterations": 200,
+    "target_exploitability_pct": 0.6,
+    "timeout_ms": 10000,
+    "bunching": null,
+    "actions_played": [
+      "Bet 949",
+      "Raise 1898",
+      "Raise 2847"
+    ]
+  },
+  "solver_output": {
+    "success": true,
+    "exploitability": 13.314300537109375,
+    "exploitability_pct": 0.46733241618495525,
+    "solve_time_ms": 1,
+    "memory_usage_bytes": 151584,
+    "iterations_run": 50,
+    "root_strategy": {
+      "actions": [
+        "Check",
+        "Bet 1709",
+        "AllIn 8417"
+      ],
+      "hands": [
+        "KhKd",
+        "KsKd",
+        "AdKd",
+        "KsKh",
+        "AhKh",
+        "AsKs",
+        "AdAc",
+        "AhAc",
+        "AsAc",
+        "AhAd",
+        "AsAd",
+        "AsAh"
+      ],
+      "strategy_matrix": [
+        [
+          0.48710426688194275,
+          0.045127853751182556,
+          0.4677678644657135
+        ],
+        [
+          0.48710426688194275,
+          0.045127853751182556,
+          0.4677678644657135
+        ],
+        [
+          0.6004036068916321,
+          0.036917898803949356,
+          0.36267849802970886
+        ],
+        [
+          0.48710426688194275,
+          0.045127853751182556,
+          0.4677678644657135
+        ],
+        [
+          0.6004036068916321,
+          0.036917898803949356,
+          0.36267849802970886
+        ],
+        [
+          0.6004036068916321,
+          0.036917898803949356,
+          0.36267849802970886
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ],
+        [
+          1.0,
+          0.0,
+          0.0
+        ]
+      ],
+      "equity": [
+        1.0,
+        1.0,
+        0.23076921701431274,
+        1.0,
+        0.23076921701431274,
+        0.23076921701431274,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5,
+        0.5
+      ],
+      "ev": [
+        4040.1123046875,
+        4040.1123046875,
+        341.669677734375,
+        4040.1123046875,
+        341.669677734375,
+        341.669677734375,
+        893.4571533203125,
+        893.4571533203125,
+        893.4571533203125,
+        895.4738159179688,
+        895.4738159179688,
+        895.4738159179688
+      ],
+      "average_strategy": {
+        "Check": 0.7718769684433937,
+        "AllIn 8417": 0.2076115906238556,
+        "Bet 1709": 0.020511438138782978
+      }
+    },
+    "queried_nodes": []
+  },
+  "recommendation": {
+    "action": "CHECK",
+    "amount": 0,
+    "source": "solver",
+    "reason": "HU solver recommendation\nSolver: CHECK 77% / ALL-IN 8417 21% / BET 1709 2%"
+  },
+  "latency": {
+    "range_estimation_ms": 0.0,
+    "request_build_ms": 27.04719999746885,
+    "solver_ms": 1.8925999975181185,
+    "solver_parse_ms": 0.06749999738531187,
+    "exploit_adjustment_ms": 0.0,
+    "reason_generation_ms": 0.0,
+    "headsup_total_ms": 34.62629999557976
+  }
+}

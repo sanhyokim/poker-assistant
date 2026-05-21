@@ -1,0 +1,222 @@
+{
+  "blind_profile": "guided",
+  "total_samples": 12,
+  "repeat_count": 5,
+  "planned_runs": 60,
+  "success_count": 60,
+  "error_count": 0,
+  "under_15s_rate": 1.0,
+  "overall_blind_action_match_rate": 0.767,
+  "overall_blind_direction_match_rate": 0.85,
+  "overall_blind_teacher_alignment_rate": 0.6,
+  "action_stable_sample_count": 11,
+  "sizing_type_stable_sample_count": 11,
+  "teacher_alignment_stable_sample_count": 11,
+  "allin_violation_count": 0,
+  "passive_teacher_aggressive_violation_count": 4,
+  "legal_action_invalid_count": 0,
+  "unstable_samples": [
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "action_stable": false,
+      "sizing_type_stable": false,
+      "teacher_alignment_stable": false,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 4,
+      "action_values": [
+        "BET",
+        "CHECK"
+      ],
+      "sizing_type_values": [
+        "bet_33",
+        "none"
+      ],
+      "teacher_alignment_rate": 0.2
+    }
+  ],
+  "items": [
+    {
+      "sample_id": "hand_000001_req_000001_flop",
+      "action_values": [
+        "CHECK"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 1.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000003_req_000001_flop",
+      "action_values": [
+        "CALL"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 1.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "action_values": [
+        "BET",
+        "CHECK"
+      ],
+      "sizing_type_values": [
+        "bet_33",
+        "none"
+      ],
+      "teacher_alignment_rate": 0.2,
+      "action_stable": false,
+      "sizing_type_stable": false,
+      "teacher_alignment_stable": false,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 4
+    },
+    {
+      "sample_id": "hand_000005_req_000004_flop",
+      "action_values": [
+        "BET"
+      ],
+      "sizing_type_values": [
+        "bet_33"
+      ],
+      "teacher_alignment_rate": 1.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000006_req_000007_flop",
+      "action_values": [
+        "CHECK"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 0.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000015_req_000008_flop",
+      "action_values": [
+        "CALL"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 1.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000016_req_000009_flop",
+      "action_values": [
+        "CHECK"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 0.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000016_req_000011_flop",
+      "action_values": [
+        "CALL"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 0.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000020_req_000015_flop",
+      "action_values": [
+        "CHECK"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 1.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000020_req_000017_flop",
+      "action_values": [
+        "CALL"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 1.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000028_req_000020_flop",
+      "action_values": [
+        "CHECK"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 0.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    },
+    {
+      "sample_id": "hand_000030_req_000024_flop",
+      "action_values": [
+        "CHECK"
+      ],
+      "sizing_type_values": [
+        "none"
+      ],
+      "teacher_alignment_rate": 1.0,
+      "action_stable": true,
+      "sizing_type_stable": true,
+      "teacher_alignment_stable": true,
+      "allin_violation_count": 0,
+      "passive_teacher_aggressive_violation_count": 0
+    }
+  ],
+  "output_path": "debug\\solver_io\\llm_blind_repeat_guided\\llm_blind_repeat_summary.json"
+}

@@ -1,0 +1,37 @@
+{
+  "sample_id": "hand_000004_req_000004_flop",
+  "source_request": "debug\\solver_io\\20260520\\hand_000004_req_000004_flop.json",
+  "solver_success": true,
+  "solver_error": null,
+  "strategy_source_detail": "hand_strategy",
+  "action": "BET",
+  "amount": 739,
+  "probabilities": {
+    "CHECK": 0.2730214595794678,
+    "BET 739": 0.7269737720489502,
+    "ALL_IN 4938": 4.702517799159978e-06
+  },
+  "hero_cards": [
+    "As",
+    "Qh"
+  ],
+  "hero_hand_candidates": [
+    "AsQh",
+    "QhAs"
+  ],
+  "hero_cards_missing": false,
+  "matched_hand": "AsQh",
+  "matched_hand_index": 250,
+  "matched_hand_missing": false,
+  "fallback_reason": null,
+  "meta_phase": "flop",
+  "hero_is_ip": false,
+  "hero_side": "oop",
+  "hero_combo": "AsQh",
+  "hero_hand_class": "AQo",
+  "hero_range_source": "range_oop",
+  "hero_range_contains_hand": true,
+  "hero_range_missing_reason": null,
+  "range_oop_excerpt": "22+,A2s+,A8o+,K9s+,KTo+,Q9s+,QTo+,J8s+,JTo,T8s+,97s+,87s,76s,65s",
+  "range_ip_excerpt": "22+,A2s+,A7o+,K5s+,K9o+,Q7s+,Q9o+,J7s+,J9o+,T7s+,T9o,96s+,86s+,75s+,65s,54s"
+}

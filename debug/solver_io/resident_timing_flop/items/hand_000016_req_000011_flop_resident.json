@@ -1,0 +1,113 @@
+{
+  "sample_id": "hand_000016_req_000011_flop",
+  "path": "debug\\solver_io\\20260519\\hand_000016_req_000011_flop.json",
+  "repeat_count": 5,
+  "runs": [
+    {
+      "run": 1,
+      "start_ms": null,
+      "solve_ms": 22386,
+      "total_ms": 22386,
+      "success": true,
+      "action": "FOLD",
+      "amount": 0,
+      "probabilities": {
+        "Fold": 0.35351520318218854,
+        "Call": 0.30308235766529434,
+        "Raise 348": 0.3434024328808769
+      },
+      "error": null
+    },
+    {
+      "run": 2,
+      "start_ms": null,
+      "solve_ms": 22495,
+      "total_ms": 22495,
+      "success": true,
+      "action": "FOLD",
+      "amount": 0,
+      "probabilities": {
+        "Fold": 0.35351520318218854,
+        "Raise 348": 0.3434024328808769,
+        "Call": 0.30308235766529434
+      },
+      "error": null
+    },
+    {
+      "run": 3,
+      "start_ms": null,
+      "solve_ms": 23073,
+      "total_ms": 23073,
+      "success": true,
+      "action": "FOLD",
+      "amount": 0,
+      "probabilities": {
+        "Call": 0.30308235766529434,
+        "Raise 348": 0.3434024328808769,
+        "Fold": 0.35351520318218854
+      },
+      "error": null
+    },
+    {
+      "run": 4,
+      "start_ms": null,
+      "solve_ms": 22629,
+      "total_ms": 22629,
+      "success": true,
+      "action": "FOLD",
+      "amount": 0,
+      "probabilities": {
+        "Raise 348": 0.3434024328808769,
+        "Fold": 0.35351520318218854,
+        "Call": 0.30308235766529434
+      },
+      "error": null
+    },
+    {
+      "run": 5,
+      "start_ms": null,
+      "solve_ms": 22368,
+      "total_ms": 22368,
+      "success": true,
+      "action": "FOLD",
+      "amount": 0,
+      "probabilities": {
+        "Call": 0.30308235766529434,
+        "Raise 348": 0.3434024328808769,
+        "Fold": 0.35351520318218854
+      },
+      "error": null
+    }
+  ],
+  "summary": {
+    "sample_id": "hand_000016_req_000011_flop",
+    "run_count": 5,
+    "action_set": [
+      "FOLD"
+    ],
+    "amount_set": [
+      0
+    ],
+    "action_stable": true,
+    "amount_stable": true,
+    "unstable": false,
+    "avg_elapsed_ms": 22590,
+    "min_elapsed_ms": 22368,
+    "max_elapsed_ms": 23073,
+    "elapsed_spread_ms": 705,
+    "probability_top_action_set": [
+      "FOLD"
+    ],
+    "probability_top_margin_range": [
+      0.01,
+      0.01
+    ],
+    "start_ms": null,
+    "avg_resident_solve_ms": 22590,
+    "min_resident_solve_ms": 22368,
+    "max_resident_solve_ms": 23073,
+    "avg_total_ms": 22590,
+    "estimated_start_overhead_ms": 0,
+    "process_reuse_effective": false
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "sample_id": "hand_000016_req_000011_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000016_req_000011_flop.json",
+  "source_teacher": "debug\\solver_io\\single_size_flop_180\\items\\hand_000016_req_000011_flop_single_size.json",
+  "llm_model": "openai/gpt-5.4-mini",
+  "blind_profile": "guided",
+  "llm_success": true,
+  "llm_elapsed_ms": 1965,
+  "llm_action": "CALL",
+  "llm_amount": 232,
+  "llm_sizing_type": "none",
+  "llm_confidence": "high",
+  "llm_reason": "Facing a pot-sized flop bet on Th5s6h with deep stacks, a direct call keeps the range wide and avoids overreacting on a coordinated board where many hands can continue profitably. With no hero cards visible, the safest legal response is to continue by calling rather than inflating the pot with a thin raise or overfolding.",
+  "llm_risk_flags": [
+    "board_is_dynamic",
+    "unknown_hero_hand",
+    "facing_large_flop_bet"
+  ],
+  "llm_error": null,
+  "llm_status_code": 200,
+  "llm_response_body": "\n         \n\n         \n\n         \n{\"id\":\"gen-1779258595-r8jkTvOSbjC7IF0TyaYI\",\"object\":\"chat.completion\",\"created\":1779258595,\"model\":\"openai/gpt-5.4-mini-20260317\",\"provider\":\"OpenAI\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"completed\",\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"action\\\":\\\"CALL\\\",\\\"amount\\\":232,\\\"sizing_type\\\":\\\"none\\\",\\\"sizing_bucket\\\":\\\"pot_call\\\",\\\"confidence\\\":\\\"high\\\",\\\"reason\\\":\\\"Facing a pot-sized flop bet on Th5s6h with deep stacks, a direct call keeps the range wide and avoids overreacting on a coordinated board where many hands can continue profitably. With no hero cards visible, the safest legal response is to continue by calling rather than inflating the pot with a thin raise or overfolding.\\\",\\\"risk_flags\\\":[\\\"board_is_dynamic\\\",\\\"unknown_hero_hand\\\",\\\"facing_large_flop_bet\\\"]}\",\"refusal\":null,\"reasoning\":null}}],\"usage\":{\"prompt_tokens\":693,\"completion_tokens\":1",
+  "baseline_action": "RAISE",
+  "baseline_amount": 348,
+  "teacher_label": "medium_or_small_aggressive",
+  "allowed_sizing_types": [
+    "bet_33",
+    "bet_50",
+    "bet_60"
+  ],
+  "allin_aggressive": false,
+  "prompt": "You are making a heads-up no-limit hold'em flop decision.\nUse only the visible game context.\nDo not assume hidden solver output.\nChoose a legal action and sizing.\n\nHU flop strategy guidance:\n- This is a heads-up flop decision with deep SPR.\n- Do not choose ALL_IN on the flop unless there is an exceptional reason. In deep-SPR HU flop spots, ALL_IN should be extremely rare.\n- Do not overuse CHECK just because it is safe.\n- Consider small bets, especially 33% pot, when:\n  - hero is in position,\n  - board is dry or favorable to the bettor,\n  - a small continuation bet can realize fold equity,\n  - betting small applies pressure without overcommitting deep stacks.\n- On dynamic or wet boards, small or medium bets may be preferred over large bets when protection/value is needed but SPR is deep.\n- Avoid large 75% sizing unless board texture and value/protection logic strongly support it.\n- When facing a bet, do not raise too large by default. If raising is reasonable, prefer small-to-medium raise sizing unless there is a strong value or denial reason.\n- If the spot is close or uncertain, prefer the lower-risk legal action, but do not ignore natural small-bet opportunities.\n\nSizing options:\n- If betting first:\n  - bet_33 = small stab / small c-bet\n  - bet_50 = medium bet\n  - bet_60 = larger medium bet\n  - bet_75 = large polar/protection bet\n- If raising over a bet, raise_33 / raise_50 / raise_60 / raise_75 represent increasing pressure relative to pot/context.\n- all_in should almost never be used in deep-SPR flop spots.\n- If choosing CHECK/CALL/FOLD, sizing_type must be \"none\".\nReturn JSON only.\nAllowed actions: CHECK, BET, RAISE, CALL, FOLD, ALL_IN.\nAllowed sizing_type values: none, bet_33, bet_50, bet_60, bet_75, raise_33, raise_50, raise_60, raise_75, all_in.\nAllowed JSON keys: action, amount, sizing_type, sizing_bucket, confidence, reason, risk_flags.\nVisible context JSON:\n{\n  \"board\": \"Th5s6h\",\n  \"hero_cards\": null,\n  \"pot\": 232,\n  \"starting_pot\": 232,\n  \"effective_stack\": 9668,\n  \"spr\": 41.672413793103445,\n  \"hero_position\": \"BB\",\n  \"hero_is_ip\": false,\n  \"actions_played\": [\n    \"Bet 232\"\n  ],\n  \"legal_actions\": [\n    \"CHECK\",\n    \"BET\",\n    \"RAISE\",\n    \"CALL\",\n    \"FOLD\",\n    \"ALL_IN\"\n  ]\n}",
+  "blind_action_match": false,
+  "blind_direction_match": false,
+  "blind_teacher_alignment": false,
+  "blind_sizing_allowed_match": false,
+  "blind_allin_violation": false,
+  "blind_passive_teacher_aggressive_violation": false,
+  "legal_action_valid": true,
+  "under_15s": true
+}

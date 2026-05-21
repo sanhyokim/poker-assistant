@@ -1,0 +1,104 @@
+{
+  "total_samples": 3,
+  "start_ms": 6,
+  "avg_resident_solve_ms": 24328,
+  "min_resident_solve_ms": 21730,
+  "max_resident_solve_ms": 28664,
+  "process_reuse_effective_count": 0,
+  "items": [
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "run_count": 5,
+      "action_set": [
+        "CHECK"
+      ],
+      "amount_set": [
+        0
+      ],
+      "action_stable": true,
+      "amount_stable": true,
+      "unstable": false,
+      "avg_elapsed_ms": 21730,
+      "min_elapsed_ms": 21459,
+      "max_elapsed_ms": 21880,
+      "elapsed_spread_ms": 421,
+      "probability_top_action_set": [
+        "CHECK"
+      ],
+      "probability_top_margin_range": [
+        0.397,
+        0.431
+      ],
+      "start_ms": 6,
+      "avg_resident_solve_ms": 21730,
+      "min_resident_solve_ms": 21459,
+      "max_resident_solve_ms": 21880,
+      "avg_total_ms": 21731,
+      "estimated_start_overhead_ms": 1,
+      "process_reuse_effective": false
+    },
+    {
+      "sample_id": "hand_000006_req_000007_flop",
+      "run_count": 5,
+      "action_set": [
+        "CHECK"
+      ],
+      "amount_set": [
+        0
+      ],
+      "action_stable": true,
+      "amount_stable": true,
+      "unstable": false,
+      "avg_elapsed_ms": 28664,
+      "min_elapsed_ms": 28151,
+      "max_elapsed_ms": 29505,
+      "elapsed_spread_ms": 1354,
+      "probability_top_action_set": [
+        "CHECK"
+      ],
+      "probability_top_margin_range": [
+        0.089,
+        0.241
+      ],
+      "start_ms": null,
+      "avg_resident_solve_ms": 28664,
+      "min_resident_solve_ms": 28151,
+      "max_resident_solve_ms": 29505,
+      "avg_total_ms": 28664,
+      "estimated_start_overhead_ms": 0,
+      "process_reuse_effective": false
+    },
+    {
+      "sample_id": "hand_000016_req_000011_flop",
+      "run_count": 5,
+      "action_set": [
+        "FOLD"
+      ],
+      "amount_set": [
+        0
+      ],
+      "action_stable": true,
+      "amount_stable": true,
+      "unstable": false,
+      "avg_elapsed_ms": 22590,
+      "min_elapsed_ms": 22368,
+      "max_elapsed_ms": 23073,
+      "elapsed_spread_ms": 705,
+      "probability_top_action_set": [
+        "FOLD"
+      ],
+      "probability_top_margin_range": [
+        0.01,
+        0.01
+      ],
+      "start_ms": null,
+      "avg_resident_solve_ms": 22590,
+      "min_resident_solve_ms": 22368,
+      "max_resident_solve_ms": 23073,
+      "avg_total_ms": 22590,
+      "estimated_start_overhead_ms": 0,
+      "process_reuse_effective": false
+    }
+  ],
+  "output_path": "debug\\solver_io\\resident_timing_flop\\resident_timing_summary.json"
+}

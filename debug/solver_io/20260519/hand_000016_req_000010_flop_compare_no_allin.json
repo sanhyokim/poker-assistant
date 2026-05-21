@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "hand_id": 16,
+    "phase": "flop",
+    "request_id": 10,
+    "created_at": "2026-05-19T05:30:21.052686+00:00",
+    "reason": "deep_spr_flop_compare_no_allin",
+    "hero_position": "BB",
+    "hero_is_ip": false,
+    "active_seats": [
+      1,
+      5
+    ],
+    "preflop_scenario": "limp_pot",
+    "range_source": "baseline",
+    "range_oop": "22+,A2s+,A2o+,K2s+,K5o+,Q4s+,Q8o+,J6s+,J8o+,T6s+,T8o+,96s+,86s+,76s,65s,54s",
+    "range_ip": "22+,A2s+,A2o+,K2s+,K5o+,Q3s+,Q7o+,J5s+,J8o+,T6s+,T8o+,95s+,85s+,75s+,64s+,54s",
+    "raw_preflop_actions": [
+      {
+        "seat": 5,
+        "action": "CALL",
+        "amount": 100,
+        "confidence": "high"
+      },
+      {
+        "seat": 1,
+        "action": "CHECK",
+        "amount": 0,
+        "confidence": "high"
+      }
+    ],
+    "normalized_preflop_actions": [
+      {
+        "seat": 5,
+        "action": "CALL",
+        "amount": 100,
+        "confidence": "high"
+      },
+      {
+        "seat": 1,
+        "action": "CHECK",
+        "amount": 0,
+        "confidence": "high"
+      }
+    ],
+    "current_street_actions": [],
+    "actions_played_status": "empty_ok",
+    "street_start_pot": 232,
+    "street_start_effective_stack": 9668,
+    "spr": 41.672413793103445
+  },
+  "request": {
+    "board": "Th5s6h",
+    "turn": null,
+    "river": null,
+    "range_oop": "22+,A2s+,A2o+,K2s+,K5o+,Q4s+,Q8o+,J6s+,J8o+,T6s+,T8o+,96s+,86s+,76s,65s,54s",
+    "range_ip": "22+,A2s+,A2o+,K2s+,K5o+,Q3s+,Q7o+,J5s+,J8o+,T6s+,T8o+,95s+,85s+,75s+,64s+,54s",
+    "starting_pot": 232,
+    "effective_stack": 9668,
+    "flop_bet_sizes_oop": "60%",
+    "flop_bet_sizes_ip": "60%",
+    "flop_raise_sizes_oop": "2.5x",
+    "flop_raise_sizes_ip": "2.5x",
+    "turn_bet_sizes_oop": "60%,a",
+    "turn_bet_sizes_ip": "60%,a",
+    "turn_raise_sizes_oop": "2.5x",
+    "turn_raise_sizes_ip": "2.5x",
+    "river_bet_sizes_oop": "60%,a",
+    "river_bet_sizes_ip": "60%,a",
+    "river_raise_sizes_oop": "2.5x",
+    "river_raise_sizes_ip": "2.5x",
+    "rake_rate": 0.0,
+    "rake_cap": 0.0,
+    "add_allin_threshold": 1.5,
+    "force_allin_threshold": 0.15,
+    "merging_threshold": 0.1,
+    "max_iterations": 300,
+    "target_exploitability_pct": 0.6,
+    "timeout_ms": 20000,
+    "bunching": null,
+    "actions_played": []
+  }
+}

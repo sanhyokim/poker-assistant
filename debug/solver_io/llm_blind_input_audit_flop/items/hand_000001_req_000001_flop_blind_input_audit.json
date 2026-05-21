@@ -1,0 +1,63 @@
+{
+  "sample_id": "hand_000001_req_000001_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000001_req_000001_flop.json",
+  "solver_fields": {
+    "board": "Jd3dTd",
+    "hero_cards": null,
+    "pot": 432,
+    "starting_pot": 432,
+    "effective_stack": 8999,
+    "spr": 20.83101851851852,
+    "hero_position": "BB",
+    "hero_is_ip": false,
+    "actions_played": [],
+    "legal_actions": [
+      "CHECK",
+      "BET",
+      "ALL_IN"
+    ],
+    "facing_bet": false,
+    "call_amount": 0,
+    "street": "flop",
+    "num_players": 2,
+    "heads_up": true,
+    "current_street_actions": []
+  },
+  "blind_prompt_fields": {
+    "board": "Jd3dTd",
+    "hero_cards": null,
+    "pot": 432,
+    "starting_pot": 432,
+    "effective_stack": 8999,
+    "spr": 20.83101851851852,
+    "hero_position": "BB",
+    "hero_is_ip": false,
+    "actions_played": [],
+    "legal_actions": [
+      "CHECK",
+      "BET",
+      "ALL_IN"
+    ],
+    "facing_bet": null,
+    "call_amount": null,
+    "street": null,
+    "num_players": null,
+    "heads_up": null
+  },
+  "missing_fields": [
+    "hero_cards",
+    "facing_bet",
+    "call_amount",
+    "street",
+    "num_players",
+    "heads_up"
+  ],
+  "mismatched_fields": [],
+  "critical_missing_fields": [
+    "hero_cards",
+    "facing_bet",
+    "call_amount"
+  ],
+  "critical_mismatch_fields": [],
+  "input_parity_ok": false
+}

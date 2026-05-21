@@ -1915,3 +1915,621 @@ call_amount = max_bet - hero_bet > 0
 - 1 actionにつき正規化ログは1回だけ出す
 ```
 
+確認しました。`DESIGN_NOTES.md` は **セクション32「preflop CHECKをCALLへ正規化する理由」まで存在**しているので、今回の追記は **`## 33.`** として末尾に追加してください。
+
+````markdown
+---
+
+## 33. HU Solver / LLM検証における教師データ信頼性を見直した理由
+
+### 33.1 背景
+
+HU flop LLM化検証中に、旧 `debug/solver_io/20260519` の12件を使って以下を行っていた。
+
+```text
+single-size Solver診断
+sizing teacher作成
+LLM sizing診断
+Blind LLM診断
+repeatability診断
+````
+
+当初は、LLMのaction / direction / sizing alignmentが高く見えた。
+
+しかし後から、教師データ側に重大な問題が見つかった。
+
+主な問題:
+
+```text
+- 旧request JSONに hero_cards が保存されていなかった
+- 旧12件は全件 average_strategy_fallback だった
+- Blind LLM検証では hero_cards / facing_bet / call_amount などがLLM入力から欠落していた
+- 新規3件では hero_cards 保存は成功したが、2件でHero実カードQ3sがHero側range_oop外だった
+```
+
+そのため、旧データ由来のteacher / LLM診断結果は、本実装判断に使わない。
+
+---
+
+### 33.2 teacher情報ありLLM診断は本番想定ではなかった
+
+teacher情報ありのLLM診断では、LLMに以下を渡していた。
+
+```text
+primary Solver action / probabilities
+single-size teacher label
+allowed_sizing_types
+profile_actions
+```
+
+そのため、この検証で分かったのは以下である。
+
+```text
+LLMがteacher情報を見た状態で、その方針に追従できるか
+```
+
+これは本番想定ではない。
+
+本番で必要なのは以下である。
+
+```text
+LLMがSolver/teacher情報なしで、実戦情報だけから未知spotを判断できるか
+```
+
+今後は、以下を明確に分ける。
+
+```text
+追従性検証:
+Solver/teacher情報を渡し、LLMが従えるかを見る
+
+本番想定検証:
+Solver/teacher情報を渡さず、実戦情報だけでLLMが判断し、後からSolver/teacherと照合する
+```
+
+本番採用判断には後者が必要である。
+
+---
+
+### 33.3 Blind LLM検証も入力不足だった
+
+Blind LLM診断では、Solver/teacher情報を渡さずに判断させた。
+
+しかし後で入力監査をした結果、LLM prompt/contextに以下が欠落していた。
+
+```text
+hero_cards: 12/12 欠落
+facing_bet: 12/12 欠落
+call_amount: 12/12 欠落
+street: 12/12 欠落
+num_players: 12/12 欠落
+heads_up: 12/12 欠落
+```
+
+この状態では、Solver/teacherとの相関を正しく測れない。
+
+理由:
+
+```text
+Hero hand strength
+draw
+blocker
+showdown value
+facing bet context
+call amount
+```
+
+をLLMが判断できないため。
+
+今後のBlind LLM検証では、Solver/teacher情報は渡さない。
+ただし、Solverと同等の実戦情報は必ず渡す。
+
+必須入力:
+
+```text
+hero_cards
+board
+pot
+effective_stack
+SPR
+hero_position
+hero_is_ip
+actions_played
+legal_actions
+facing_bet
+call_amount
+street
+heads_up
+num_players
+```
+
+この入力が欠けたBlind LLM検証結果は、本番採用判断に使ってはならない。
+
+---
+
+### 33.4 旧request JSONにhero_cardsが保存されていなかった
+
+旧 `debug/solver_io/20260519` のrequest JSONには `hero_cards` が入っていなかった。
+
+そのため、オフラインでSolver出力を再解析しても、Hero実カードに該当するhand rowを抜くことができず、全件 `average_strategy_fallback` になった。
+
+Task 17の結果:
+
+```text
+total_samples=12
+hand_strategy_count=0
+average_strategy_fallback_count=12
+hero_cards_missing_count=12
+matched_hand_missing_count=12
+solver_error_count=0
+```
+
+この旧12件は、Heroカード別teacherとして無効扱いにする。
+
+旧12件から作成した以下も、本判断には使わない。
+
+```text
+single_size_flop_180
+sizing_teacher_flop
+llm_sizing_flop
+llm_blind_flop
+llm_blind_repeat
+```
+
+参考ログとして残すのはよいが、正規teacher / 本実装判断の根拠にしてはならない。
+
+---
+
+### 33.5 Solver requestにhero_cardsが直接入らないこと自体は通常構造
+
+Solverは通常、Heroの具体ハンド1つだけを入力して解くのではなく、以下を入力してレンジ全体を解く。
+
+```text
+board
+range_oop
+range_ip
+pot
+effective_stack
+actions_played
+bet size
+raise size
+```
+
+そのため、Solver request本体に `hero_cards` が直接入らないこと自体は、レンジSolver構造としては問題ではない。
+
+正しい流れは以下。
+
+```text
+1. board / range_oop / range_ip / pot / stack / actions / sizing をSolverへ渡す
+2. Solverがレンジ全体の strategy_matrix を返す
+3. Python側で game_state.hero.cards に一致する hands row を探す
+4. その hand row の strategy を推奨に使う
+```
+
+問題は、Hero hand rowが取れない場合に `average_strategy` を使うことである。
+
+---
+
+### 33.6 average_strategy fallbackはteacherとして不適切
+
+`average_strategy` はレンジ平均であり、Hero実カード別の戦略ではない。
+
+これをteacherや本番推奨として扱うと、以下の差が潰れる危険がある。
+
+```text
+強い手
+中程度の手
+ドロー
+ブロッカー持ち
+ブラフ候補
+完全な弱手
+```
+
+極端に言えば、Heroが強い手でも弱い手でも、レンジ平均に寄った推奨になる危険がある。
+
+そのため、今後 `average_strategy_fallback` になったデータはteacherとして使わない。
+
+本番推奨としても原則採用しない。
+
+---
+
+### 33.7 Hero hand matching順序差
+
+Hero cards の表記とSolver出力 `hands` の表記順が異なる可能性がある。
+
+例:
+
+```text
+hero_cards=["3c","Qc"]
+
+候補:
+3cQc
+Qc3c
+```
+
+Task 18-Bで、元順・逆順・rank順候補を生成して照合するよう修正した。
+
+この修正は、本番HU Solver parseにも効く。
+
+ただし、新規3件で失敗した `3c,Qc` の2件は、順序差ではなかった。
+
+確認結果:
+
+```text
+3cQc も Qc3c も Solver output hands に存在しなかった
+```
+
+つまり、原因はHero hand matchingの順序差ではなく、Hero実カードがSolver側のHero rangeに含まれていないことだった。
+
+---
+
+### 33.8 Hero実カードがHero側range外だった
+
+Task 18後の新規ライブ3件では、`hero_cards` 保存は成功した。
+
+しかし、`3c,Qc` の2件は以下の状態だった。
+
+```text
+hero_cards=["3c","Qc"]
+hero_hand_class=Q3s
+hero_side=oop
+hero_range_source=range_oop
+hero_range_contains_hand=false
+```
+
+つまり、Hero実カード `Q3s` がHero側 `range_oop` に含まれていなかった。
+
+この場合、SolverにとってHeroが `Q3s` を持つ前提がrange内に存在しない。
+
+そのため、Solver output `hands` に該当comboがなく、Hero hand rowを取得できない。
+
+結果として `average_strategy_fallback` になった。
+
+---
+
+### 33.9 Hero hand range外の原因候補
+
+Hero実カードがHero側range外になる原因候補は以下。
+
+```text
+A. preflop_scenario の判定ミス
+B. hero_position / hero_is_ip / OOP-IP割当ミス
+C. BB defend range が狭すぎる
+D. 実カードをSolver rangeへ補完すべき
+E. range外spotはSolver不適格として扱うべき
+```
+
+Task 18-Dで原因診断を予定していたが、ユーザー方針により一旦保留した。
+
+理由:
+
+* 他Solver候補の検証を優先するため。
+
+---
+
+### 33.10 今後のteacher採用条件
+
+以下のデータはteacherとして使わない。
+
+```text
+hero_cards 欠落
+matched_hand_missing
+hero_range_contains_hand=false
+average_strategy_fallback
+equal_probability_fallback
+default_check_fallback
+solver_error
+```
+
+Solver teacherとして採用できる最低条件:
+
+```text
+hero_cards が2枚存在する
+Hero hand candidatesのいずれかが root_strategy または node_strategy の hands に存在する
+strategy_source_detail=hand_strategy
+hero_range_contains_hand=true
+solver_success=true
+```
+
+Teacherデータ作成前には、必ずparse auditを行う。
+
+---
+
+### 33.11 Solver request/debug保存に実戦情報を残す理由
+
+旧データでは `hero_cards` が保存されていなかったため、オフライン再解析でHero hand rowを特定できなかった。
+
+そのため、Task 18で今後保存されるSolver request JSONの `meta` に以下を保存するよう修正した。
+
+```text
+hero_cards
+board
+street
+num_players
+heads_up
+hero_position
+hero_is_ip
+hero_bet
+max_opponent_bet
+facing_bet
+call_amount
+raw_call_amount
+pot
+effective_stack
+current_street_actions
+preflop_actions
+```
+
+保存時に重要metaが欠落している場合は、保存を止めずにwarningを出す。
+
+```text
+SOLVER_REQUEST_META_INCOMPLETE
+```
+
+この情報がないデータは、teacher作成・LLM検証・後日監査に使うべきではない。
+
+---
+
+### 33.12 HU flop LLM化検証を保留する理由
+
+HU flop LLM化検証は一旦保留する。
+
+理由:
+
+```text
+- 旧teacherデータがHeroカード欠落により無効
+- 新規データでもHero hand range外問題が発覚
+- Blind LLM検証も、以前はhero_cards / facing_bet / call_amount欠落があり公平な検証ではなかった
+- 他Solver候補の検証を優先する方針になった
+```
+
+他Solver検証後に、以下を再判断する。
+
+```text
+現Solverを継続する
+他Solverへ切り替える
+現Solverをteacher生成専用にする
+HU flopをLLM化する
+LLMを補助/fallbackとして使う
+Task 18-D range外原因診断へ戻る
+```
+
+---
+
+### 33.13 他Solver検証を優先する理由
+
+現Solverでは以下の課題がある。
+
+```text
+deep-SPR flopで遅い
+Hero実カードがHero側range外の場合にhand rowを取得できない
+旧データ由来のteacher検証をやり直す必要がある
+```
+
+この状態でHU flop LLM化を急ぐより、他Solver候補を検証した方がよい。
+
+他Solver候補の比較観点:
+
+```text
+Hero hand別strategyが取れるか
+Hero実カードを直接指定できるか
+range strategy型の場合、Hero hand row抽出が確実か
+HU flop / turn / river対応
+deep SPR flopの速度
+sizing候補の柔軟性
+all-in候補の制御
+Windowsローカル動作
+Python連携
+ライセンス / 商用利用可否
+現システムへの組み込み難易度
+```
+
+この比較後に、現Solver継続・他Solver採用・LLM化の方針を再判断する。
+
+## 34. Rust postflop CLIからDeep CFRへ切り替える理由
+
+### 34.1 Rust postflop CLIで起きていた問題
+
+HU postflopで以下の構造的問題があった。
+
+1. deep-SPR flopで22秒タイムアウト。CoinPokerのアクションタイマーに間に合わない。
+2. Hero実カード（Q3s等）がHero側range外の場合、hand_strategyが取得できず
+   average_strategy_fallbackになる。新規3件中2件で発生。
+3. レンジ全体を解く方式のため、range定義の品質に推奨精度が依存する。
+
+### 34.2 Deep CFRを採用する理由
+
+Deep CFR 6-player NLHEは以下を同時に解決する。
+
+速度: 推論0.5〜1ミリ秒。タイムアウト不可能。
+Hero hand問題: 具体的なゲーム状態（Hero実カード含む）を直接入力するため、
+  range外という概念が存在しない。Q3sでも72oでも入力すれば判断が返る。
+Multiway対応: 6人テーブルを前提に訓練されているため、
+  LLMをMultiway判断主軸から外せる。
+
+### 34.3 精度のトレードオフ
+
+Deep CFRの判断はSolverほど精密ではない。
+
+Solverが返すもの: レンジ全体のベットサイズ別精密頻度（Nash Distance 0.3%以下）
+Deep CFRが返すもの: 1つのゲーム状態に対する近似的な確率分布（訓練品質に依存）
+
+ただし、Solverが22秒タイムアウトで結果を返せないか、
+average_strategy_fallbackになるケースでは、
+精度が多少低くてもDeep CFRの方が実用価値が高い。
+
+### 34.4 LLM Multiway判断を廃止する理由
+
+LLMはポーカーの数理計算に本質的に向いていない。
+KK+47% equityでfold推奨が出た事例（DESIGN_NOTES Section 11.1）が象徴的。
+数理ガードで補正しているが、構造的に不安定。
+
+Deep CFRはCFRアルゴリズムで訓練されているため、
+数理的根拠のある判断を返す。LLM特有のJSON不安定性、
+reasoning品質のばらつき、プロンプト管理の複雑さが解消される。
+
+### 34.5 LLM exploit_adjustmentを残す理由
+
+Deep CFRはGTO近似戦略を返す。
+実際の対戦相手はGTO通りには打たない。
+相手の実データ（50ハンド以上の戦績）に基づくエクスプロイト補正は、
+GTO戦略の上に載せる補正層として価値がある。
+
+LLMの役割を「戦略判断」から「統計ベース微調整」に限定する。
+OpenRouter / gpt-5.4-miniインフラはexploit用途で継続使用する。
+
+### 34.6 段階的移行を採用する理由
+
+Rust postflop CLIを即座に削除せず、Deep CFR統合完了後に廃止する。
+
+理由:
+- Deep CFR訓練に約1ヶ月かかる
+- 訓練中も既存システムを使いたい
+- Deep CFRモデルの品質検証後に切り替える方が安全
+- config.yamlのfallback_to_solverフラグで切り替えられる
+
+### 34.7 Deep CFRの訓練計画
+
+訓練環境: RTX 3080 / VRAM 10GB
+訓練リポジトリ: https://github.com/dberweger2017/deepcfr-texas-no-limit-holdem-6-players
+ライセンス: MIT
+
+訓練スケジュール:
+  Step 0: 環境構築（20分）
+  Step 1: Phase 1 基礎訓練 ×3シード（3〜6日）
+  Step 2: Phase 1 品質確認（数時間）
+  Step 3: Phase 2 自己対戦（2〜3日）
+  Step 4: Phase 3 混合訓練（1〜2週間）
+  Step 5: 最終品質検証（1日）
+  合計: 約1ヶ月
+
+訓練とシステム改修は並行して進められる。
+訓練中にdeep_cfr_bridge.pyの実装・テストを行う。
+
+### 34.8 Deep CFR選定に至る比較検討経緯
+
+2026年5月時点で、以下のソルバー／フレームワークを検討した。
+
+検討候補と不採用理由:
+
+TexasSolver GPU:
+  CUDAでCFRを直接実行、CPU比約4倍速。フルNLHE対応。
+  不採用理由: GUI専用でCLI未提供。自システムとのプログラム連携が不可能。
+  Windows限定。GPU版のソースコード非公開。
+
+GTO Wizard AI:
+  クラウドGPU＋ニューラルネット。PioSolver比200倍速。
+  不採用理由: API未公開。Web UIのみ。ローカル実行不可。月額課金。
+
+Deepsolver:
+  CFR＋ニューラルネットハイブリッド。数秒で解答。
+  不採用理由: API未公開。クラウド専用。ローカル実行不可。
+
+NoRegret (GPUGT):
+  Python + CUDAカーネル。CPU比最大203倍速。MIT。
+  不採用理由: Kuhn、Leduc等の小〜中規模ゲームのみ実証済み。
+  フルサイズ6人NLHEはノード数10^14〜10^18でVRAM不足。実用不可。
+
+cfrx (JAX):
+  JAX GPU/TPU対応CFR。Python。OSS。
+  不採用理由: NoRegretと同様、小〜中規模ゲーム向け。フルNLHE未対応。
+
+ReBel (Facebook/Meta):
+  ヘッズアップNLHEでプロに勝利した実績あり。Apache 2.0。
+  不採用理由: 公開実装がLiar's Diceのみ。ポーカー用コード未公開。
+  2人ゼロサムゲーム限定で6人NLHEに適用不可。
+  再実装には数ヶ月の工数が必要。再実装試行者が発散問題を報告。
+
+PokerRL:
+  PyTorch GPU＋分散学習。Deep CFR/SD-CFR実装あり。MIT。
+  不採用理由: メンテナンスが停滞（Python 3.6 / PyTorch 0.4.1）。
+  6人NLHEのフル実装・訓練パイプラインが整っていない。
+
+Shark 2.0:
+  C++ OSS。SIMD/TBB最適化。
+  不採用理由: GPU未対応。フルNLHE flopの速度が不十分。
+  CLIインターフェースが不明確。
+
+postflop-solver (Rust crate):
+  現行システムで使用中のRust postflop CLIのベースライブラリ。
+  高速だがCPU専用。開発一時停止中。
+  問題: deep-SPR flopで22秒タイムアウト、Hero hand range外問題。
+
+PioSolver + UPI:
+  業界標準。テキストベースCLI。Python wrapper (pyosolver)あり。
+  不採用理由: 1スポット数分〜数十分。リアルタイム推奨に間に合わない。
+  有料（€450+）。
+
+採用: Deep CFR 6-player NLHE (dberweger2017):
+  PyTorch GPU。6人NLHEフル実装。MIT。CLI対応。
+  訓練済みモデル公開。推論0.5〜1ミリ秒。
+  Hero実カードを直接入力（range外問題なし）。
+  HU/Multiway両対応（モデル共通）。
+  状態エンコーディング変換のみで現システムに接続可能。
+
+### 34.9 Deep CFRの既知の限界
+
+以下はDeep CFR採用にあたり認識している限界である。
+
+精度:
+  Deep CFRはGTO近似であり、Solver（PioSolver等）ほど精密ではない。
+  特定スポットのベットサイズ別精密頻度は得られない。
+  「Fold 3% / Call 25% / Raise 72% / raise 0.8x pot」のような近似分布を返す。
+
+プロ実績:
+  ReBelやLibratusのような「査読済み論文でプロに勝った」水準の実績はない。
+  開発者は「プロの友人に善戦」と報告しているが、統計的検証は未公開。
+
+Exploitability計算不能:
+  6人NLHEではゲーム木が巨大すぎて、Best Response計算による
+  正確なexploitabilityの測定が不可能。
+  モデルの品質は実戦的テスト（大量対戦、スポットチェック）に依存する。
+
+プレイヤー数:
+  6人テーブル専用。7人以上は状態エンコーディング・ゲーム環境の改修が必要。
+  学術的にはkdb-D2CFR（2023年、3〜8人）で原理的には動くことが示されているが、
+  dberweger2017版は6人固定。CoinPoker 6maxでは問題ない。
+
+訓練の再現性:
+  開発者READMEに「正確な収益性は研究段階」「ロバスト性は完全に証明されていない」
+  と明記されている。シードや訓練スケジュールにより結果が変動する。
+  そのため3シード並行訓練で最良を選ぶ方針を採用。
+
+訓練期間:
+  RTX 3080で約1ヶ月。訓練中は既存Solver経路をfallbackとして使用。
+
+### 34.10 Deep CFR訓練の原則
+
+原論文（Brown & Sandholm, Meta AI, 2019）および後続研究から確立された原則。
+
+毎イテレーション、ネットワークをゼロから再訓練する:
+  前回の重みを引き継いでファインチューニングすると、
+  exploitabilityが約50%悪化する（原論文Figure 4で実証）。
+
+Reservoir Samplingを使う:
+  メモリバッファが満杯になったとき、スライディングウィンドウ方式だと
+  バッファ満杯時点で収束が停止する。
+  Reservoir Samplingなら収束が継続する（原論文Figure 4で実証）。
+  スライディングウィンドウは禁止。
+
+Linear CFR重み付けを適用する:
+  各イテレーションのサンプルにイテレーション番号tに比例した重みを付ける。
+  漸近的性能は同等だが収束が速くなる。
+
+全リグレットが負のとき、最大リグレットのアクションを確率1で選ぶ:
+  標準Regret Matchingの均等戦略ではなく、最大リグレットアクションを選ぶ方が
+  exploitabilityが約50%改善する（原論文Figure 4で実証）。
+  近似誤差がある環境ではこの変更が重要。
+
+メモリバッファサイズ:
+  原論文では各プレイヤーのadvantageメモリに4000万サンプルを割り当て。
+  小さすぎると過去の重要経験が失われ戦略が不安定になる。
+  RAMが許す限り大きくする。
+
+ネットワークサイズ:
+  原論文Figure 3で、hidden layer 256次元を超えてもFHPでは改善なし。
+  dberweger2017版の5層×256ユニットはこの知見に基づく。
+  無駄に大きくすると学習が不安定になる。
+
+これらの原則は2人の小〜中規模ゲームで実証されたものであり、
+6人NLHEで厳密に最適化されたレシピは2026年5月時点で存在しない。
+dberweger2017版の3段階訓練は開発者の経験則であり、原論文の手法とは異なる。

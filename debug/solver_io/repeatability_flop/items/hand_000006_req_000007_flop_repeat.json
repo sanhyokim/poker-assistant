@@ -1,0 +1,96 @@
+{
+  "sample_id": "hand_000006_req_000007_flop",
+  "path": "debug\\solver_io\\20260519\\hand_000006_req_000007_flop.json",
+  "repeat_count": 5,
+  "runs": [
+    {
+      "run": 1,
+      "success": true,
+      "elapsed_ms": 27486,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Check": 0.5232920681510165,
+        "Bet 139": 0.43435482301682665,
+        "AllIn 16434": 0.042353112801111904
+      },
+      "error": null
+    },
+    {
+      "run": 2,
+      "success": true,
+      "elapsed_ms": 29527,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Check": 0.6020905837881751,
+        "Bet 139": 0.36127393866977503,
+        "AllIn 16434": 0.03663547953958733
+      },
+      "error": null
+    },
+    {
+      "run": 3,
+      "success": true,
+      "elapsed_ms": 29129,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Check": 0.6020905837881751,
+        "Bet 139": 0.36127393866977503,
+        "AllIn 16434": 0.03663547953958733
+      },
+      "error": null
+    },
+    {
+      "run": 4,
+      "success": true,
+      "elapsed_ms": 29034,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Bet 139": 0.36127393866977503,
+        "Check": 0.6020905837881751,
+        "AllIn 16434": 0.03663547953958733
+      },
+      "error": null
+    },
+    {
+      "run": 5,
+      "success": true,
+      "elapsed_ms": 28589,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "Bet 139": 0.36127393866977503,
+        "Check": 0.6020905837881751,
+        "AllIn 16434": 0.03663547953958733
+      },
+      "error": null
+    }
+  ],
+  "summary": {
+    "sample_id": "hand_000006_req_000007_flop",
+    "run_count": 5,
+    "action_set": [
+      "CHECK"
+    ],
+    "amount_set": [
+      0
+    ],
+    "action_stable": true,
+    "amount_stable": true,
+    "unstable": false,
+    "avg_elapsed_ms": 28753,
+    "min_elapsed_ms": 27486,
+    "max_elapsed_ms": 29527,
+    "elapsed_spread_ms": 2041,
+    "probability_top_action_set": [
+      "CHECK"
+    ],
+    "probability_top_margin_range": [
+      0.089,
+      0.241
+    ]
+  }
+}

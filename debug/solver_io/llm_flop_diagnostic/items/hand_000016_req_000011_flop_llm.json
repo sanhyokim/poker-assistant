@@ -1,0 +1,53 @@
+{
+  "sample_id": "hand_000016_req_000011_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000016_req_000011_flop.json",
+  "llm_model": "openai/gpt-5.4-mini",
+  "baseline_success": true,
+  "baseline_elapsed_ms": 22304,
+  "baseline_action": "FOLD",
+  "baseline_amount": 0,
+  "baseline_probabilities": {
+    "Fold": 0.35351520318218854,
+    "Call": 0.30308235766529434,
+    "Raise 348": 0.3434024328808769
+  },
+  "baseline_top_action": "FOLD",
+  "baseline_top_probability": 0.354,
+  "baseline_second_action": "RAISE",
+  "baseline_second_probability": 0.343,
+  "baseline_top_margin": 0.01,
+  "legal_actions": [
+    "CHECK",
+    "BET",
+    "RAISE",
+    "CALL",
+    "FOLD",
+    "ALL_IN"
+  ],
+  "llm_success": true,
+  "llm_elapsed_ms": 2119,
+  "llm_action": "FOLD",
+  "llm_amount": 0,
+  "llm_sizing_type": "none",
+  "llm_confidence": "high",
+  "llm_reason": "Primary solver indicates a clear folding node on this flop versus the flop bet, with fold the highest-probability action. On Th5s6h, the texture is dynamic but not enough to override the solver anchor; the action direction should match primary, and fold is also the least risky deviation-free choice given the available strategy mix is close but still centered on folding. No hero hand is provided, so no hand-specific exploit can justify continuing.",
+  "llm_risk_flags": [
+    "no_hero_cards",
+    "solver_mixed_node",
+    "deep_spr",
+    "board_connected"
+  ],
+  "llm_error": null,
+  "llm_status_code": 200,
+  "llm_response_body": "\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1779204297-5bhrGTz3zPXD1C6HLfUt\",\"object\":\"chat.completion\",\"created\":1779204297,\"model\":\"openai/gpt-5.4-mini-20260317\",\"provider\":\"OpenAI\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"completed\",\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"action\\\":\\\"FOLD\\\",\\\"amount\\\":0,\\\"sizing_type\\\":\\\"none\\\",\\\"confidence\\\":\\\"high\\\",\\\"reason\\\":\\\"Primary solver indicates a clear folding node on this flop versus the flop bet, with fold the highest-probability action. On Th5s6h, the texture is dynamic but not enough to override the solver anchor; the action direction should match primary, and fold is also the least risky deviation-free choice given the available strategy mix is close but still centered on folding. No hero hand is provided, so no hand-specific exploit can justify continuing.\\\",\\\"risk_flags\\\":[\\\"no_hero_cards\\\",\\\"solver_mixed_node\\\",\\\"deep_spr\\\"",
+  "prompt": "You are evaluating a heads-up no-limit hold'em flop decision.\nPrimary Solver is the anchor. Do not make a large deviation from primary Solver unless the board texture strongly justifies it.\nIf primary top_margin >= 0.20, match primary action direction.\nIf primary top_margin <= 0.10, small sizing variation is allowed.\nDo not output illegal actions. Output JSON only.\nAllowed JSON keys: action, amount, sizing_type, confidence, reason, risk_flags.\nContext JSON:\n{\n  \"task\": \"HU deep-SPR flop decision diagnostic\",\n  \"board\": \"Th5s6h\",\n  \"hero_cards\": null,\n  \"pot\": 232,\n  \"starting_pot\": 232,\n  \"effective_stack\": 9668,\n  \"spr\": 41.672413793103445,\n  \"hero_position\": \"BB\",\n  \"hero_is_ip\": false,\n  \"actions_played\": [\n    \"Bet 232\"\n  ],\n  \"legal_actions\": [\n    \"CHECK\",\n    \"BET\",\n    \"RAISE\",\n    \"CALL\",\n    \"FOLD\",\n    \"ALL_IN\"\n  ],\n  \"candidate_actions\": [\n    \"CHECK\",\n    \"BET_33\",\n    \"BET_50\",\n    \"BET_60\",\n    \"BET_75\",\n    \"ALL_IN\"\n  ],\n  \"primary_solver_action\": \"FOLD\",\n  \"primary_solver_amount\": 0,\n  \"primary_solver_probabilities\": {\n    \"Fold\": 0.35351520318218854,\n    \"Call\": 0.30308235766529434,\n    \"Raise 348\": 0.3434024328808769\n  }\n}",
+  "action_match": true,
+  "amount_match": true,
+  "direction_match": true,
+  "near_tie_mismatch": false,
+  "dangerous_flip": false,
+  "clear_check_to_bet": false,
+  "call_or_raise_to_fold": false,
+  "legal_action_valid": true,
+  "under_15s": true
+}

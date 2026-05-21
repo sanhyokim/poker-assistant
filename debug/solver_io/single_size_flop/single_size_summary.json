@@ -1,0 +1,239 @@
+{
+  "total_samples": 12,
+  "profile_count": 5,
+  "planned_runs": 60,
+  "success_count": 6,
+  "error_count": 54,
+  "profile_summary": {
+    "single_33": {
+      "success_count": 0,
+      "error_count": 12,
+      "under_15s_rate": 0.0,
+      "aggressive_action_count": 0,
+      "check_count": 0,
+      "call_count": 0,
+      "fold_count": 0,
+      "bet_count": 0,
+      "raise_count": 0,
+      "all_in_count": 0,
+      "avg_elapsed_ms": 30601
+    },
+    "single_50": {
+      "success_count": 0,
+      "error_count": 12,
+      "under_15s_rate": 0.0,
+      "aggressive_action_count": 0,
+      "check_count": 0,
+      "call_count": 0,
+      "fold_count": 0,
+      "bet_count": 0,
+      "raise_count": 0,
+      "all_in_count": 0,
+      "avg_elapsed_ms": 30455
+    },
+    "single_60": {
+      "success_count": 0,
+      "error_count": 12,
+      "under_15s_rate": 0.0,
+      "aggressive_action_count": 0,
+      "check_count": 0,
+      "call_count": 0,
+      "fold_count": 0,
+      "bet_count": 0,
+      "raise_count": 0,
+      "all_in_count": 0,
+      "avg_elapsed_ms": 30433
+    },
+    "single_75": {
+      "success_count": 0,
+      "error_count": 12,
+      "under_15s_rate": 0.0,
+      "aggressive_action_count": 0,
+      "check_count": 0,
+      "call_count": 0,
+      "fold_count": 0,
+      "bet_count": 0,
+      "raise_count": 0,
+      "all_in_count": 0,
+      "avg_elapsed_ms": 30424
+    },
+    "single_allin": {
+      "success_count": 6,
+      "error_count": 6,
+      "under_15s_rate": 0.083,
+      "aggressive_action_count": 0,
+      "check_count": 6,
+      "call_count": 0,
+      "fold_count": 0,
+      "bet_count": 0,
+      "raise_count": 0,
+      "all_in_count": 0,
+      "avg_elapsed_ms": 24851
+    }
+  },
+  "sample_summary": [
+    {
+      "sample_id": "hand_000001_req_000001_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [
+        "single_allin"
+      ],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000003_req_000001_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [
+        "single_allin"
+      ],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75",
+        "single_allin"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000005_req_000004_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [
+        "single_allin"
+      ],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000006_req_000007_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75",
+        "single_allin"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000015_req_000008_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [
+        "single_allin"
+      ],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000016_req_000009_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75",
+        "single_allin"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000016_req_000011_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75",
+        "single_allin"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000020_req_000015_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75",
+        "single_allin"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000020_req_000017_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [
+        "single_allin"
+      ],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000028_req_000020_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75",
+        "single_allin"
+      ],
+      "all_profiles_same_direction": false
+    },
+    {
+      "sample_id": "hand_000030_req_000024_flop",
+      "aggressive_profiles": [],
+      "passive_profiles": [
+        "single_allin"
+      ],
+      "error_profiles": [
+        "single_33",
+        "single_50",
+        "single_60",
+        "single_75"
+      ],
+      "all_profiles_same_direction": false
+    }
+  ],
+  "output_path": "debug\\solver_io\\single_size_flop\\single_size_summary.json"
+}

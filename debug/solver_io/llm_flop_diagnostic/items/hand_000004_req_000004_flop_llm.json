@@ -1,0 +1,50 @@
+{
+  "sample_id": "hand_000004_req_000004_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000004_req_000004_flop.json",
+  "llm_model": "openai/gpt-5.4-mini",
+  "baseline_success": true,
+  "baseline_elapsed_ms": 21945,
+  "baseline_action": "CHECK",
+  "baseline_amount": 0,
+  "baseline_probabilities": {
+    "AllIn 8883": 0.00034463237123603816,
+    "Check": 0.7286753437639367,
+    "Bet 139": 0.2709800225720803
+  },
+  "baseline_top_action": "CHECK",
+  "baseline_top_probability": 0.729,
+  "baseline_second_action": "BET",
+  "baseline_second_probability": 0.271,
+  "baseline_top_margin": 0.458,
+  "legal_actions": [
+    "CHECK",
+    "BET",
+    "ALL_IN"
+  ],
+  "llm_success": true,
+  "llm_elapsed_ms": 1984,
+  "llm_action": "CHECK",
+  "llm_amount": 0,
+  "llm_sizing_type": "none",
+  "llm_confidence": "high",
+  "llm_reason": "Primary solver strongly prefers checking on this monotone connected flop (5h4h9h) and the highest betting option is only ~27%, so the anchor direction is clear. With no hand info and very high SPR, checking preserves range coverage and avoids inflating the pot on a board that favors strong continuing ranges and many draws.",
+  "llm_risk_flags": [
+    "monotone board",
+    "high SPR",
+    "range disadvantage possible when betting",
+    "no hero hand information"
+  ],
+  "llm_error": null,
+  "llm_status_code": 200,
+  "llm_response_body": "\n         \n\n         \n{\"id\":\"gen-1779204244-pIpwhwpQZTxUEHtfU7VM\",\"object\":\"chat.completion\",\"created\":1779204244,\"model\":\"openai/gpt-5.4-mini-20260317\",\"provider\":\"OpenAI\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"completed\",\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"action\\\":\\\"CHECK\\\",\\\"amount\\\":0,\\\"sizing_type\\\":\\\"none\\\",\\\"confidence\\\":\\\"high\\\",\\\"reason\\\":\\\"Primary solver strongly prefers checking on this monotone connected flop (5h4h9h) and the highest betting option is only ~27%, so the anchor direction is clear. With no hand info and very high SPR, checking preserves range coverage and avoids inflating the pot on a board that favors strong continuing ranges and many draws.\\\",\\\"risk_flags\\\":[\\\"monotone board\\\",\\\"high SPR\\\",\\\"range disadvantage possible when betting\\\",\\\"no hero hand information\\\"]}\",\"refusal\":null,\"reasoning\":null}}],\"usage\":{\"prompt_tokens\":433,\"completion_tokens\":128,\"t",
+  "prompt": "You are evaluating a heads-up no-limit hold'em flop decision.\nPrimary Solver is the anchor. Do not make a large deviation from primary Solver unless the board texture strongly justifies it.\nIf primary top_margin >= 0.20, match primary action direction.\nIf primary top_margin <= 0.10, small sizing variation is allowed.\nDo not output illegal actions. Output JSON only.\nAllowed JSON keys: action, amount, sizing_type, confidence, reason, risk_flags.\nContext JSON:\n{\n  \"task\": \"HU deep-SPR flop decision diagnostic\",\n  \"board\": \"5h4h9h\",\n  \"hero_cards\": null,\n  \"pot\": 232,\n  \"starting_pot\": 232,\n  \"effective_stack\": 8883,\n  \"spr\": 38.28879310344828,\n  \"hero_position\": \"BTN\",\n  \"hero_is_ip\": true,\n  \"actions_played\": [],\n  \"legal_actions\": [\n    \"CHECK\",\n    \"BET\",\n    \"ALL_IN\"\n  ],\n  \"candidate_actions\": [\n    \"CHECK\",\n    \"BET_33\",\n    \"BET_50\",\n    \"BET_60\",\n    \"BET_75\",\n    \"ALL_IN\"\n  ],\n  \"primary_solver_action\": \"CHECK\",\n  \"primary_solver_amount\": 0,\n  \"primary_solver_probabilities\": {\n    \"AllIn 8883\": 0.00034463237123603816,\n    \"Check\": 0.7286753437639367,\n    \"Bet 139\": 0.2709800225720803\n  }\n}",
+  "action_match": true,
+  "amount_match": true,
+  "direction_match": true,
+  "near_tie_mismatch": false,
+  "dangerous_flip": false,
+  "clear_check_to_bet": false,
+  "call_or_raise_to_fold": false,
+  "legal_action_valid": true,
+  "under_15s": true
+}

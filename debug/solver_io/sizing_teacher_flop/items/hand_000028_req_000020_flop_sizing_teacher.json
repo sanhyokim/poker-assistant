@@ -1,0 +1,27 @@
+{
+  "sample_id": "hand_000028_req_000020_flop",
+  "source_item": "debug\\solver_io\\single_size_flop_180\\items\\hand_000028_req_000020_flop_single_size.json",
+  "profile_actions": {
+    "single_33": "BET",
+    "single_50": "CHECK",
+    "single_60": "CHECK",
+    "single_75": "BET",
+    "single_allin": "CHECK"
+  },
+  "aggressive_profiles": [
+    "single_33",
+    "single_75"
+  ],
+  "passive_profiles": [
+    "single_50",
+    "single_60",
+    "single_allin"
+  ],
+  "teacher_label": "mixed_non_monotonic",
+  "preferred_sizing_bucket": "mixed",
+  "allowed_sizing_types": [
+    "bet_33",
+    "bet_75"
+  ],
+  "allin_aggressive": false
+}

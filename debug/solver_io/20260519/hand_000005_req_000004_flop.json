@@ -1,0 +1,83 @@
+{
+  "meta": {
+    "hand_id": 5,
+    "phase": "flop",
+    "request_id": 4,
+    "created_at": "2026-05-19T00:57:53.483812+00:00",
+    "reason": "hu_postflop_solver",
+    "hero_position": "BTN",
+    "hero_is_ip": true,
+    "active_seats": [
+      1,
+      3
+    ],
+    "preflop_scenario": "single_raised_pot",
+    "range_source": "baseline",
+    "range_oop": "22+,A2s+,A8o+,K9s+,KTo+,Q9s+,QTo+,J8s+,JTo,T8s+,97s+,87s,76s,65s",
+    "range_ip": "22+,A2s+,A7o+,K5s+,K9o+,Q7s+,Q9o+,J7s+,J9o+,T7s+,T9o,96s+,86s+,75s+,65s,54s",
+    "raw_preflop_actions": [
+      {
+        "seat": 6,
+        "action": "FOLD",
+        "amount": 0,
+        "confidence": "high"
+      },
+      {
+        "seat": 3,
+        "action": "CALL",
+        "amount": 300,
+        "confidence": "high"
+      }
+    ],
+    "normalized_preflop_actions": [
+      {
+        "seat": 6,
+        "action": "FOLD",
+        "amount": 0,
+        "confidence": "high"
+      },
+      {
+        "seat": 3,
+        "action": "CALL",
+        "amount": 300,
+        "confidence": "high"
+      }
+    ],
+    "current_street_actions": [],
+    "actions_played_status": "empty_ok",
+    "street_start_pot": 698,
+    "street_start_effective_stack": 7956,
+    "spr": 11.398280802292264
+  },
+  "request": {
+    "board": "Jd6c5s",
+    "turn": null,
+    "river": null,
+    "range_oop": "22+,A2s+,A8o+,K9s+,KTo+,Q9s+,QTo+,J8s+,JTo,T8s+,97s+,87s,76s,65s",
+    "range_ip": "22+,A2s+,A7o+,K5s+,K9o+,Q7s+,Q9o+,J7s+,J9o+,T7s+,T9o,96s+,86s+,75s+,65s,54s",
+    "starting_pot": 698,
+    "effective_stack": 7956,
+    "flop_bet_sizes_oop": "60%,a",
+    "flop_bet_sizes_ip": "60%,a",
+    "flop_raise_sizes_oop": "2.5x",
+    "flop_raise_sizes_ip": "2.5x",
+    "turn_bet_sizes_oop": "60%,a",
+    "turn_bet_sizes_ip": "60%,a",
+    "turn_raise_sizes_oop": "2.5x",
+    "turn_raise_sizes_ip": "2.5x",
+    "river_bet_sizes_oop": "60%,a",
+    "river_bet_sizes_ip": "60%,a",
+    "river_raise_sizes_oop": "2.5x",
+    "river_raise_sizes_ip": "2.5x",
+    "rake_rate": 0.0,
+    "rake_cap": 0.0,
+    "add_allin_threshold": 1.5,
+    "force_allin_threshold": 0.15,
+    "merging_threshold": 0.1,
+    "max_iterations": 300,
+    "target_exploitability_pct": 0.6,
+    "timeout_ms": 20000,
+    "bunching": null,
+    "actions_played": []
+  }
+}

@@ -1,0 +1,66 @@
+{
+  "sample_id": "hand_000006_req_000007_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000006_req_000007_flop.json",
+  "source_teacher": "debug\\solver_io\\single_size_flop_180\\items\\hand_000006_req_000007_flop_single_size.json",
+  "llm_model": "openai/gpt-5.4-mini",
+  "baseline_success": true,
+  "baseline_elapsed_ms": 28941,
+  "baseline_action": "CHECK",
+  "baseline_amount": 0,
+  "baseline_probabilities": {
+    "AllIn 16434": 0.03663547953958733,
+    "Check": 0.6020905837881751,
+    "Bet 139": 0.36127393866977503
+  },
+  "baseline_top_action": "CHECK",
+  "baseline_top_probability": 0.602,
+  "baseline_second_action": "BET",
+  "baseline_second_probability": 0.361,
+  "baseline_top_margin": 0.241,
+  "primary_margin_class": "clear",
+  "teacher_label": "all_standard_aggressive",
+  "preferred_sizing_bucket": "broad",
+  "allowed_sizing_types": [
+    "bet_33",
+    "bet_50",
+    "bet_60",
+    "bet_75"
+  ],
+  "allin_aggressive": false,
+  "profile_actions": {
+    "single_33": "BET",
+    "single_50": "BET",
+    "single_60": "BET",
+    "single_75": "BET",
+    "single_allin": "CHECK"
+  },
+  "legal_actions": [
+    "CHECK",
+    "BET",
+    "ALL_IN"
+  ],
+  "llm_success": true,
+  "llm_elapsed_ms": 1973,
+  "llm_action": "CHECK",
+  "llm_amount": 0,
+  "llm_sizing_type": "none",
+  "llm_sizing_bucket": "unknown",
+  "llm_confidence": "high",
+  "llm_reason": "Primary solver action is clearly CHECK, and the profile confirms all single-size aggressive options are lower-frequency than checking. Teacher label is all_standard_aggressive, but on this board with high SPR and out-of-position BB, the best fit is to take the solver-leading check rather than force a bet sizing. All-in is not allowed by the rules here and is not the primary direction.",
+  "llm_risk_flags": [
+    "primary_solver_clear_check",
+    "out_of_position",
+    "high_spr",
+    "do_not_invent_sizing"
+  ],
+  "llm_error": null,
+  "llm_status_code": 200,
+  "llm_response_body": "\n         \n\n         \n\n         \n\n         \n{\"id\":\"gen-1779253621-Y23kgJh0W8vCaBVcRBxW\",\"object\":\"chat.completion\",\"created\":1779253621,\"model\":\"openai/gpt-5.4-mini-20260317\",\"provider\":\"OpenAI\",\"system_fingerprint\":null,\"service_tier\":\"default\",\"choices\":[{\"index\":0,\"logprobs\":null,\"finish_reason\":\"stop\",\"native_finish_reason\":\"completed\",\"message\":{\"role\":\"assistant\",\"content\":\"{\\\"action\\\":\\\"CHECK\\\",\\\"amount\\\":0,\\\"sizing_type\\\":\\\"none\\\",\\\"confidence\\\":\\\"high\\\",\\\"reason\\\":\\\"Primary solver action is clearly CHECK, and the profile confirms all single-size aggressive options are lower-frequency than checking. Teacher label is all_standard_aggressive, but on this board with high SPR and out-of-position BB, the best fit is to take the solver-leading check rather than force a bet sizing. All-in is not allowed by the rules here and is not the primary direction.\\\",\\\"risk_flags\\\":[\\\"primary_solver_clear_check\\\",\\\"out_of_position\\\",\\\"high_spr\\\",\\\"do_not_invent_sizing\\\"]}\",\"refusal\":null,\"reason",
+  "prompt": "You are choosing a HU flop sizing bucket based on single-size solver teacher data.\n\nRules:\n- The teacher data is the anchor.\n- Choose sizing_type only from allowed_sizing_types.\n- If allowed_sizing_types is empty, choose action from the primary solver direction and sizing_type=\"none\".\n- Do not choose all_in unless allin_aggressive=true.\n- If teacher_label is passive_all_standard, do not invent a bet or raise sizing.\n- If teacher_label is tiny_only_aggressive, prefer bet_33 or raise_33 equivalent.\n- If teacher_label is small_only_aggressive, prefer bet_33 or bet_50.\n- If teacher_label is medium_or_small_aggressive, prefer bet_33 / bet_50 / bet_60.\n- If teacher_label is all_standard_aggressive, choose the sizing that best fits board texture / SPR / position.\n- If teacher_label is mixed_non_monotonic, choose only from allowed_sizing_types and explain why.\n- Output JSON only.\nAllowed JSON keys: action, amount, sizing_type, sizing_bucket, confidence, reason, risk_flags.\nAllowed sizing_type values: none, bet_33, bet_50, bet_60, bet_75, raise_33, raise_50, raise_60, raise_75, all_in.\nContext JSON:\n{\n  \"task\": \"HU flop sizing teacher diagnostic\",\n  \"board\": \"5s8cQh\",\n  \"hero_cards\": null,\n  \"pot\": 232,\n  \"starting_pot\": 232,\n  \"effective_stack\": 16434,\n  \"spr\": 70.83620689655173,\n  \"hero_position\": \"BB\",\n  \"hero_is_ip\": false,\n  \"actions_played\": [],\n  \"legal_actions\": [\n    \"CHECK\",\n    \"BET\",\n    \"ALL_IN\"\n  ],\n  \"primary_solver_action\": \"CHECK\",\n  \"primary_solver_probabilities\": {\n    \"AllIn 16434\": 0.03663547953958733,\n    \"Check\": 0.6020905837881751,\n    \"Bet 139\": 0.36127393866977503\n  },\n  \"primary_top_margin\": 0.241,\n  \"primary_margin_class\": \"clear\",\n  \"teacher_label\": \"all_standard_aggressive\",\n  \"preferred_sizing_bucket\": \"broad\",\n  \"allowed_sizing_types\": [\n    \"bet_33\",\n    \"bet_50\",\n    \"bet_60\",\n    \"bet_75\"\n  ],\n  \"allin_aggressive\": false,\n  \"profile_actions\": {\n    \"single_33\": \"BET\",\n    \"single_50\": \"BET\",\n    \"single_60\": \"BET\",\n    \"single_75\": \"BET\",\n    \"single_allin\": \"CHECK\"\n  }\n}",
+  "sizing_allowed_match": false,
+  "allin_violation": false,
+  "passive_teacher_aggressive_violation": false,
+  "sizing_type_valid": true,
+  "teacher_alignment": false,
+  "under_15s": true
+}

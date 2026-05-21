@@ -1,0 +1,24 @@
+{
+  "sample_id": "hand_000004_req_000004_flop",
+  "source_request": "debug\\solver_io\\20260520\\hand_000004_req_000004_flop.json",
+  "solver_success": true,
+  "solver_error": null,
+  "strategy_source_detail": "hand_strategy",
+  "action": "BET",
+  "amount": 739,
+  "probabilities": {
+    "CHECK": 0.2730214595794678,
+    "BET 739": 0.7269737720489502,
+    "ALL_IN 4938": 4.702517799159978e-06
+  },
+  "hero_cards": [
+    "As",
+    "Qh"
+  ],
+  "hero_cards_missing": false,
+  "matched_hand": "AsQh",
+  "matched_hand_index": 250,
+  "matched_hand_missing": false,
+  "fallback_reason": null,
+  "meta_phase": "flop"
+}

@@ -1,0 +1,52 @@
+{
+  "total_samples": 3,
+  "success_count": 3,
+  "error_count": 0,
+  "avg_llm_elapsed_ms": 1946,
+  "under_15s_rate": 1.0,
+  "action_match_rate": 1.0,
+  "direction_match_rate": 1.0,
+  "dangerous_flip_count": 0,
+  "clear_check_to_bet_count": 0,
+  "legal_action_invalid_count": 0,
+  "model": "openai/gpt-5.4-mini",
+  "items": [
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "baseline_action": "CHECK",
+      "llm_action": "CHECK",
+      "llm_success": true,
+      "llm_elapsed_ms": 1984,
+      "action_match": true,
+      "dangerous_flip": false,
+      "legal_action_valid": true,
+      "error": null,
+      "status_code": 200
+    },
+    {
+      "sample_id": "hand_000006_req_000007_flop",
+      "baseline_action": "CHECK",
+      "llm_action": "CHECK",
+      "llm_success": true,
+      "llm_elapsed_ms": 1735,
+      "action_match": true,
+      "dangerous_flip": false,
+      "legal_action_valid": true,
+      "error": null,
+      "status_code": 200
+    },
+    {
+      "sample_id": "hand_000016_req_000011_flop",
+      "baseline_action": "FOLD",
+      "llm_action": "FOLD",
+      "llm_success": true,
+      "llm_elapsed_ms": 2119,
+      "action_match": true,
+      "dangerous_flip": false,
+      "legal_action_valid": true,
+      "error": null,
+      "status_code": 200
+    }
+  ],
+  "output_path": "debug\\solver_io\\llm_flop_diagnostic\\llm_summary.json"
+}

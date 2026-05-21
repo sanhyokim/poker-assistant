@@ -1,1157 +1,276 @@
+
 # Commander Snapshot
 
-## Latest diagnostic note: 2026-05-19
-
-- teacher standard は候補BETサイズが広すぎて3件すべて失敗
-- 次は teacher_narrow を追加
-- teacher_narrow:
-  - max_iterations=500
-  - target_exploitability_pct=0.4
-  - timeout_ms=180000
-  - bet_sizes=60%,a
-  - raise_sizes=2.5x
-- 目的:
-  - まず現状primaryと同じBET候補で、より高精度なteacherが作れるか確認
-- teacher_narrow 実行結果:
-  - samples=3 / success_count=0 / error_count=3
-  - hand_000004_req_000004_flop: 180秒timeout
-  - hand_000006_req_000007_flop: 180秒timeout
-  - hand_000016_req_000011_flop: 180秒timeout
-  - BET候補をprimary同等に戻してもteacher作成は成功せず
-- teacher standard / narrow は失敗
-- 次は teacher_300_plus を検証
-- teacher_300_plus:
-  - max_iterations=300
-  - target_exploitability_pct=0.6
-  - timeout_ms=180000
-  - bet_sizes=50%,60%,75%,a
-  - raise_sizes=2.5x
-- 目的:
-  - 現状deep-SPR primaryの精度水準を維持したまま、BET候補だけ増やして完走するか確認
-- teacher_300_plus 実行結果:
-  - samples=3 / success_count=0 / error_count=3
-  - hand_000004_req_000004_flop: 180秒timeout
-  - hand_000006_req_000007_flop: Solver process closed stdout
-  - hand_000016_req_000011_flop: 180秒timeout
-  - 現状primary精度水準でもBET候補追加だけでteacher作成は成功せず
-- HU deep-SPR flop LLM診断方針:
-  - 本番採用ではない
-  - 現状deep-SPR primaryを教師基準にする
-  - まずaction方向が近いかを確認する
-  - BETサイズ拡張は二段階目
-  - dangerous flip / legal action違反 / 15秒以内率を見る
-- LLM診断実行結果:
-  - samples=3 / success_count=0 / error_count=3
-  - error=OPENROUTER_API_KEY missing
-  - baseline primary Solver結果は保存済み
-  - APIキー設定後に同じ `--llm-dir` 診断を再実行する
-- LLM診断の.env読み込み:
-  - compare_solver_requests.py はこれまで os.getenv() のみ参照していた
-  - PowerShell環境変数にOPENROUTER_API_KEYがない場合、.envに設定済みでも
-    LLM診断が OPENROUTER_API_KEY missing になっていた
-  - 診断スクリプト内で repo root の .env を読み込む処理を追加
-  - 既存の環境変数は .env で上書きしない
-  - 再実行結果:
-    - OPENROUTER_API_KEY missing は解消
-    - OpenRouter応答は HTTP Error 401: Unauthorized
-    - 次は .env のキー値またはOpenRouter側認証状態を確認する
-- LLM診断mode修正方針:
-  - 既存本番LLMPipelineではOpenRouterをrequests.postで呼び出しており、
-    環境変数のprovider設定を読んでいる
-  - 診断スクリプトだけが独自urllib実装になっていたため、本番LLM経路と差異があった
-  - compare_solver_requests.py の LLM診断呼び出しを既存LLMPipeline互換の
-    requests.post方式へ修正
-  - OPENROUTER_REQUIRE_PARAMETERS=false を尊重する
-  - HTTPエラー時はstatus codeとresponse bodyを保存する
-  - 再実行結果:
-    - status_code=401
-    - response_body={"error":{"message":"User not found.","code":401}}
-    - `.env` 読み込みとHTTP body保存は機能しているため、次はOpenRouterキー自体を確認する
-
-## Updated: 2026-05-18 JST
-## Status: Post-Fix85 architecture reset point
+## Updated: 2026-05-20 JST
+## Status: Deep CFR統合決定 / 訓練開始準備中
 
 ---
 
 ## 0. このsnapshotの位置づけ
 
-このファイルは、Fix85完了後の次セッション用スナップショットである。
-
-目的は、次セッションで以下をすぐ理解できる状態にすること。
-
-```text
-- 現在の最新commit
-- Fix68〜Fix85で何が変わったか
-- Solver / HUD / PRE-HAND / Fold badge / deep-SPR比較requestの現状
-- 今後の最優先方針
-- 局所guard追加から本流設計へ戻す必要性
-```
-
-重要:
-
-```text
-- 本システムの目的は、オンラインポーカーで勝率を上げるための信頼できる推奨サインを出すこと
-- CoinPoker固有の例外処理集にしない
-- 以後の修正は Site Adapter / GameState / Decision Engine / HUD のどの層の問題かを分類してから行う
-- Builder指示書は、ユーザーが明示的に「指示書を出して」と言うまで出さない
-```
+このsnapshotは、次セッションでポーカーAIアシスタント開発を再開するための現在地点メモである。
 
 ---
 
 ## 1. 現在地点
 
-### 1.1 最新commit
-
-Fix85まで完了。
+### 1.1 最新重要code commit
 
 ```text
-e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
+775d3ab 追加: HU Solver Hero hand range membership監査を追加
 ```
 
 ### 1.2 最新テスト結果
 
 ```text
-python -m pytest tests/test_game_loop.py -q -> 244 passed
-python -m pytest tests/test_hand_manager.py -q -> 190 passed
-python -m pytest tests/test_hud_overlay.py -q -> 22 passed
-python -m pytest -q -> 1282 passed, 7 warnings
+python -m pytest tests/test_recommendation_engine.py tests/test_compare_solver_requests.py -q
+181 passed
 ```
 
 ### 1.3 現在の開発状態
 
-Fix68〜Fix85で以下が入った。
+HU postflop / Multiway postflopの判断エンジンを、
+Rust postflop CLI + LLMからDeep CFR推論に切り替える方針が確定した。
 
-```text
-- PRE-HAND / PRE-HAND-CANDIDATE
-- position lock安定化
-- HU position表記調整
-- blind記録をposition計算と整合
-- Solver timeout / stale / orphan worker対策
-- Solver process reset
-- Solver request完全JSON保存
-- Solver input stability gate
-- deep-SPR flop compare_no_allin request保存
-- preflop Hero CHECK→CALL正規化
-- Solver中HUDちらつき抑制
-- hand start直後のFold badge抑制
-- active_player_count < 2 / hero_position None 時のpreflop推奨ブロック
-```
+確定事項:
 
-ただし、局所guardが増えすぎてシステムの本流から離れつつある。
-
-次は新しいバグ修正を急がず、設計整理を優先する。
+- Preflop: Chart（変更なし）
+- HU Postflop: Deep CFR推論に切り替え
+- Multiway Postflop: Deep CFR推論に切り替え（LLM判断主軸を廃止）
+- exploit_adjustment: LLM継続（Deep CFR出力に対する統計ベース補正）
+- Rust postflop CLI: Deep CFR統合完了後に廃止
+- OpenRouter / gpt-5.4-mini: exploit用途で継続
 
 ---
 
-## 2. 最重要方針
+## 2. Deep CFR統合計画
 
-### 2.1 システム目的
+### 2.1 訓練（並行作業A）
 
-```text
-オンラインポーカーで勝率を上げるための信頼できる推奨サインを出すこと。
-```
+訓練リポジトリ: https://github.com/dberweger2017/deepcfr-texas-no-limit-holdem-6-players
+訓練環境: RTX 3080 / VRAM 10GB / Windows 10/11
+訓練スケジュール: 約1ヶ月（Step 0〜5）
 
-速く何かを表示することが目的ではない。
+訓練は本体システム改修と並行して進める。
 
-禁止:
+### 2.2 システム改修（並行作業B）
 
-```text
-- 不安定GameStateで推奨を出す
-- stale推奨を出す
-- fallback FOLDを安易に出す
-- 推奨ではない状態表示をRecommendationとして保存する
-- CoinPoker固有の例外処理をDecision Engineへ混ぜる
-```
+訓練中に以下を実装する。
 
-### 2.2 層分離
+1. deep_cfr_bridge.py 新規作成
+   - GameState → 500次元入力変換
+   - モデルロード・推論
+   - 出力 → Recommendation変換
+   - エラーハンドリング
 
-今後は以下の4層で考える。
+2. recommendation_engine.py 改修
+   - Section 9.1 戦略ルーティング変更
+   - HU postflop: Deep CFR呼び出し
+   - Multiway postflop: Deep CFR呼び出し
+   - exploit_adjustment: Deep CFR出力に対して適用
 
-```text
-1. Site Adapter層
-   - CoinPoker固有の座標・UI認識
-   - Fold badge
-   - dealer button
-   - bet / stack / pot OCR領域
-   - アニメーション・遮蔽・残像guard
-   - 将来の他サイト対応profile
+3. config.yaml 追加
+   - deep_cfr セクション
 
-2. GameState層
-   - hand_id
-   - phase
-   - hero cards
-   - board
-   - pot
-   - players_in_hand
-   - actions
-   - position
-   - サイト非依存のポーカー状態
+4. テスト追加
+   - test_deep_cfr_bridge.py
+   - test_recommendation_engine.py 拡張
 
-3. Decision Engine層
-   - Preflop Chart
-   - HU Postflop Solver
-   - Multiway eval7 + LLM + 数理ガード
-   - all-in pot odds / equity避難路
-   - 安定GameStateだけを入力にする
+5. HUD表示変更
+   - 確率分布＋金額表記
+   - DEEP CFR THINKING... 処理中表示
 
-4. HUD層
-   - 確定推奨表示
-   - 処理中表示
-   - WAITING / PRE-HAND / UNSTABLE表示
-   - 推奨と状態表示を混同しない
-```
+### 2.3 切り替え手順
 
-### 2.3 次の実装判断ルール
+Phase A: 訓練＋bridge実装（並行、約1ヶ月）
+Phase B: 訓練済みモデルでbridge統合テスト（数日）
+Phase C: ライブテストでDeep CFR推奨を検証（数日）
+Phase D: 問題なければRust postflop CLI廃止＋LLM Multiway廃止
 
-今後、バグ報告やログ分析時は、実装指示の前に必ず以下を分類する。
-
-```text
-- Site Adapter層の問題か
-- GameState層の問題か
-- Decision Engine層の問題か
-- HUD層の問題か
-- CoinPoker固有か
-- 汎用化できるか
-- 勝率・判断品質に直接寄与するか
-```
-
-小さな症状ごとのguard追加を最初の選択肢にしない。
+fallback_to_solver=true の間は既存Solver経路が生きている。
+Deep CFR品質確認後にfallback_to_solver=false へ切り替える。
 
 ---
 
-## 3. Fix68〜Fix85の重要変更サマリ
+## 3. HUD出力形式
 
-### 3.1 PRE-HAND / PRE-HAND-CANDIDATE
+Deep CFR出力:
+  fold_prob / call_prob / raise_prob / raise_size_ratio
 
-目的:
+HUD表示例:
+  RAISE 2092  (72%)
+  CALL 498    (25%)
+  FOLD        (3%)
 
-```text
-hand start前に発生したblind / raise / callなどのpreflop actionを失わない。
-```
-
-現在の状態:
-
-```text
-- PRE-HAND表示あり
-- PRE-HAND-CANDIDATEあり
-- waiting中のpreflop action bufferあり
-- soft timeout / hard timeoutあり
-- low confidence / Hero actionの誤commit抑制あり
-```
-
-注意:
-
-```text
-PRE-HAND系はCoinPokerのカード配布・blind演出に強く依存している可能性がある。
-将来的にはSite Adapter層へ整理する候補。
-```
+推奨アクション: 最も確率が高いアクション
+金額: チップ額表記
+confidence: top_prob >= 0.70 → high / >= 0.45 → medium / < 0.45 → low
 
 ---
 
-### 3.2 position lock / blind記録
+## 4. 旧課題の扱い
 
-完了内容:
+### 4.1 解決される課題
 
-```text
-- active hand中のdealer OCR mismatchではposition lockをclear/relockしない
-- POSITION_LOCK_APPLIED / IGNORED / CLEARED / SKIPPEDログ追加
-- HU表示はBTN / BBのまま
-- HU blind記録ではBTN側をBLIND_SB、BB側をBLIND_BBとして扱う
-- blind記録をcalculate_positions()ベースへ変更
-```
+- deep-SPR flop Solver timeout → Deep CFRで消滅
+- Hero hand range外問題 → Deep CFRで消滅
+- Multiway LLM品質不安定 → Deep CFRで消滅
+- Solver process reset / orphan問題 → Deep CFRで消滅
 
-現在方針:
+### 4.2 継続する課題
 
-```text
-- active hand中はhand開始時のdealer / positionを原則固定
-- waiting / hand_end / 明確なnew hand時のみposition更新
-```
+- 金額OCR再読確認方式（Section 18）
+- Hero turn音通知（Section 18.7）
+- hand start latency改善（Section 18.8）
+- Site Adapter層分離（将来）
 
----
+### 4.3 保留のまま解消される課題
 
-### 3.3 Solver input stability gate
-
-Fix82で実装済み。
-
-目的:
-
-```text
-不安定なGameStateをSolverへ渡さない。
-```
-
-Solver起動前に確認するもの:
-
-```text
-- active_player_count == 2
-- board_countとphaseが一致
-- hero cardsが安定
-- hero_positionが確定
-- hero_is_ipが確定
-- effective_stackが取得可能
-- street_start_potが異常でない
-- actions_playedが構築可能
-- active seats / position lock / folded seatsが矛盾していない
-```
-
-不安定時:
-
-```text
-strategy_source=solver_input_unstable
-HUD表示のみ
-HandManagerへ保存しない
-Solverを起動しない
-```
+- Task 18-D: Hero hand range外原因診断 → Deep CFRで不要化
+- HU flop LLM化検証 → Deep CFRで不要化
+- Solver先行計算検討 → Deep CFRで不要化
+- deep-SPR軽量Solver検討 → Deep CFRで不要化
+- 旧teacherデータ信頼性問題 → Deep CFRで不要化
 
 ---
 
-### 3.4 Solver process reset
-
-Fix83で実装済み。
-
-背景:
-
-```text
-表向きcancelされたSolver requestの裏でpostflop_cli.exeが計算を続け、
-次のSolver requestを詰まらせる可能性が高かった。
-```
-
-現在方針:
-
-```text
-- Python worker threadは直接killしない
-- timeout / cancel / orphan / hand_end / waiting時はpostflop_cli.exeをprocess resetする
-- 次requestはclean processへ送る
-- timeout / solver_input_unstable はRecommendation保存しない
-```
-
-reset条件:
-
-```text
-- Solver timeout
-- Hero turn終了
-- street変更
-- hand_end
-- waiting
-- orphan worker
-```
-
----
-
-### 3.5 Solver request完全JSON保存
-
-Fix83〜Fix84で実装済み。
-
-保存先:
-
-```text
-debug/solver_io/YYYYMMDD/
-```
-
-保存内容:
-
-```text
-- hand_id
-- phase
-- request_id
-- created_at
-- hero_position
-- hero_is_ip
-- active_seats
-- preflop_scenario
-- range_source
-- range_oop
-- range_ip
-- raw_preflop_actions
-- normalized_preflop_actions
-- current_street_actions
-- actions_played_status
-- street_start_pot
-- street_start_effective_stack
-- SPR
-- 完全なSolver request
-```
-
-目的:
-
-```text
-Solver timeout時に、実際にpostflop_cli.exeへ渡したrequestを単体再現できるようにする。
-```
-
----
-
-### 3.6 deep-SPR flop compare_no_allin request
-
-Fix84で実装済み。
-
-背景:
-
-```text
-deep-SPR flopではSolver treeが大きくなり、timeoutしやすい。
-現行requestのbet sizeは 60%,a。
-a はAll-in候補。
-```
-
-現在方針:
-
-```text
-- 本番requestの60%,aは維持
-- deep-SPR flop rootでは比較用no-allin requestを保存
-- compare_no_allinはSolverへ送らない
-- 正式推奨には使わない
-- 十分な比較結果を見てから条件付きall-in候補化を判断
-```
-
-候補ルール:
-
-```text
-flop:
-  SPRが高くstreet初手ならall-in候補なしを検討
-  SPRが低い場合、またはfacing bet / raise後はall-in候補維持
-
-turn:
-  状況次第で条件付き
-
-river:
-  all-in候補維持
-
-相手ALL-IN:
-  Solver可能ならSolver
-  Solver不可ならequity / pot odds数理避難路
-```
-
----
-
-### 3.7 preflop Hero CHECK→CALL正規化
-
-Fix84で実装済み。
-
-問題:
-
-```text
-HU preflopでHeroがBBとして相手RAISEを受けているのに、
-Hero actionがCHECK 0として記録されるケースがあった。
-```
-
-現在方針:
-
-```text
-phase == preflop
-seat == 1
-detected_action == CHECK
-max_bet > hero_bet
-call_amount = max_bet - hero_bet > 0
-```
-
-この条件を満たす場合、Hero CHECKをCALL call_amountとして正規化する。
-
-注意:
-
-```text
-- postflop CHECKは変換しない
-- max_bet == hero_bet のCHECKはそのまま
-- 1 actionにつきログは1回だけ
-```
-
----
-
-### 3.8 HUDちらつき抑制
-
-Fix85で実装済み。
-
-問題:
-
-```text
-deep-SPR flop Solver中に
-SOLVER_START_SUPPRESSED
-SOLVER_HUD_RUNNING_DETAIL
-が毎frame出て、HUD文字がちらついていた。
-```
-
-現在方針:
-
-```text
-- 同一request_id / phase / messageのSolver running HUDは再通知しない
-- HUD側も同一computing messageを再描画しない
-- SOLVER_START_SUPPRESSEDの同一key連続INFOログは3秒以内は間引く
-```
-
----
-
-### 3.9 hand start直後FOLD表示抑制
-
-Fix85で実装済み。
-
-問題:
-
-```text
-New hand started
-↓
-相手Fold badge残像を検出
-↓
-相手seatをFOLD扱い
-↓
-active_player_count=1
-↓
-position計算不能
-↓
-preflop fallback FOLD
-↓
-HUDに一瞬FOLDが出る
-```
-
-現在方針:
-
-```text
-- hand start直後は相手Fold badge由来FOLDを抑制
-- participant observation中も相手Fold badge由来FOLDを抑制
-- guard終了後のFold badgeは従来通り処理
-- active_player_count < 2 / hero_position None ではpreflop推奨を出さない
-- 新hand開始時は前hand推奨をクリアしてWAITING FOR STABLE HAND表示
-```
-
----
-
-## 4. 現在の既知課題
-
-### 4.1 deep-SPR flop Solver timeout
-
-現象:
-
-```text
-flopだけ遅い / timeoutしやすい。
-turn / riverはかなり速い。
-```
-
-有力原因:
-
-```text
-- deep-SPR flop treeが大きい
-- 60%,a のall-in候補がtreeを膨らませている可能性
-- flopはturn/river全分岐を含むため重い
-```
-
-現在状態:
-
-```text
-- compare_no_allin request保存中
-- 本番requestは未変更
-- 次回以降、新しいdebug/solver_io JSONで比較確認が必要
-```
-
-やるべきこと:
-
-```text
-- 本番requestとcompare_no_allin requestを比較
-- 可能なら単体CLIで60%,a vs 60%の速度比較
-- 勝率影響を考慮して条件付きall-in候補化を判断
-```
-
----
-
-### 4.2 ログ量と本流からの逸脱
-
-現象:
-
-```text
-局所guardと検証ログが増え、通常運用ログが読みづらい。
-```
-
-現在方針:
-
-```text
-- 通常運用ログと検証ログを分ける
-- 毎frame級ログはDEBUGへ落とす
-- 初回・状態変化・一定時間経過時のみINFO
-- 重要状態変化ログは維持
-```
-
-今後の注意:
-
-```text
-ログ追加だけで問題を解決した気にならない。
-ログは判断品質を上げるためのものに限定する。
-```
-
----
-
-### 4.3 CoinPoker依存の整理
-
-現状:
-
-```text
-Fold badge / PRE-HAND / obstruction / card animation / dealer OCRなど、
-CoinPoker固有の現象に対するguardがGameLoop / HandManagerに増えている。
-```
-
-今後:
-
-```text
-- Site Adapter層を定義する
-- profile / recognition / animation guardを分離する
-- GameState以降はサイト非依存を目指す
-```
-
----
-
-### 4.4 Heroカード不安定
-
-継続監視対象。
-
-現状:
-
-```text
-- waiting中Heroカードは連続一致確認
-- active hand中のHeroカード矛盾は複数frame確認
-- 矛盾確定時はhand abandon
-- DB/replay保存除外
-```
-
-注意:
-
-```text
-Heroカードは勝率判断の最重要入力。
-怪しい場合は推奨を出さない。
-```
-
----
-
-### 4.5 range推定
-
-現状:
-
-```text
-HU postflopではbaseline rangeを使用
-LLM range_estimationはリアルタイムでは呼ばない
-preflop_scenarioに応じてrange_oop/range_ipを決める
-```
-
-課題:
-
-```text
-- preflop_scenarioが誤るとSolver rangeも誤る
-- normalized_preflop_actionsとrange_sourceをdebug JSONに保存済み
-- 今後はrange選択の品質検証が必要
-```
-
----
 
 ## 5. 次にやること
 
-### 5.1 最優先: 書類更新
-
-現在は実装ではなく、書類更新フェーズ。
-
-対象:
+### 5.1 即時: Deep CFR訓練環境構築
 
 ```text
-SPEC.md
-DESIGN_NOTES.md
-snapshot.md
+git clone https://github.com/dberweger2017/deepcfr-texas-no-limit-holdem-6-players.git
+cd deepcfr-texas-no-limit-holdem-6-players
+python3 -m venv .venv
+.venv\Scripts\activate  (Windows)
+pip install -r requirements.txt
+
+# 動作確認
+python -m src.training.train --iterations 5 --traversals 50 --log-dir logs/test --save-dir models/test
+# 成功したら削除
+rmdir /s /q logs\test models\test
 ```
 
-目的:
+### 5.2 訓練開始: Phase 1 ×3シード
 
 ```text
-- Fix85後の正仕様に更新
-- Solver process reset方針を旧記述から更新
-- Site Adapter / GameState / Decision Engine / HUD の層分離を明記
-- deep-SPR flop compare_no_allin方針を明記
-- 勝てる推奨サインを最優先にする設計へ戻す
+# シードA
+python -m src.training.train --iterations 1500 --traversals 300 --log-dir logs/phase1_seedA --save-dir models/phase1_seedA
+
+# シードB
+python -m src.training.train --iterations 1500 --traversals 300 --log-dir logs/phase1_seedB --save-dir models/phase1_seedB
+
+# シードC
+python -m src.training.train --iterations 1500 --traversals 300 --log-dir logs/phase1_seedC --save-dir models/phase1_seedC
+```
+
+1シードずつ順番実行を推奨（RTX 3080 VRAM 10GBの安全運用）。
+1シードあたり推定2〜3日。合計約1週間。
+
+TensorBoard監視:
+```text
+tensorboard --logdir=logs
+```
+
+Phase 1合格基準:
+- advantage lossが安定的に低下していること
+- ランダム相手への利益が10チップ/ゲーム以上
+
+### 5.3 Phase 1品質確認
+
+```text
+python scripts/visualize_tournament.py \
+  --checkpoints models/phase1_seedA/checkpoint_iter_1500.pt models/phase1_seedB/checkpoint_iter_1500.pt models/phase1_seedC/checkpoint_iter_1500.pt \
+  --num-games 5000
+```
+
+最も勝率が高い（または最も負けが少ない）シードを選定。
+
+### 5.4 Phase 2: 自己対戦
+
+```text
+python -m src.training.train \
+  --checkpoint models/phase1_seedX/checkpoint_iter_1500.pt \
+  --self-play \
+  --iterations 2000 \
+  --traversals 400 \
+  --log-dir logs/phase2 \
+  --save-dir models/phase2
+```
+
+推定2〜3日。lossが激しく振動し始めたらその直前のcheckpointが最良。
+
+Phase 2中間検証:
+```text
+python scripts/visualize_tournament.py \
+  --checkpoints models/phase1_seedX/checkpoint_iter_1500.pt models/phase2/checkpoint_iter_1000.pt models/phase2/checkpoint_iter_1500.pt models/phase2/checkpoint_iter_2000.pt \
+  --num-games 3000
+```
+
+Phase 2がPhase 1に負け越している場合、Phase 1 checkpointのままPhase 3へ進む。
+
+### 5.5 Phase 3: 混合訓練
+
+```text
+python -m src.training.train \
+  --mixed \
+  --checkpoint-dir models \
+  --model-prefix "*" \
+  --refresh-interval 1000 \
+  --num-opponents 5 \
+  --iterations 15000 \
+  --traversals 400 \
+  --log-dir logs/phase3 \
+  --save-dir models/phase3
+```
+
+重要: 学習率が0.0001に半減されることを確認。されていなければ手動調整。
+推定1〜2週間。PCを止める場合は--checkpointオプションで再開可能。
+
+### 5.6 最終品質検証
+
+```text
+python scripts/visualize_tournament.py \
+  --checkpoints models/phase1_seedX/checkpoint_iter_1500.pt models/phase2/checkpoint_iter_2000.pt models/phase3/checkpoint_iter_5000.pt models/phase3/checkpoint_iter_10000.pt models/phase3/checkpoint_iter_15000.pt \
+  --num-games 10000
+```
+
+合格基準:
+- ランダム相手への利益: 15チップ/ゲーム以上
+- Phase 1 checkpointへの勝率: 60%以上
+- CLIプレイ（python scripts/play.py）で明らかな異常行動がないこと
+
+最良checkpointを models/deep_cfr/best_checkpoint.pt へコピー。
+
+### 5.7 並行: deep_cfr_bridge.py 設計・実装
+
+訓練中に実装する。ダミーモデル（ランダム出力）でテスト可能。
+
+### 5.8 RTX 3080に関する注記
+
+当初RTX 4080と聞いていたが、RTX 3080（CUDA 8704コア、VRAM 10GB）と訂正された。
+推論は問題なし（0.5〜1ms）。訓練はRTX 4080比で2〜3割遅くなる見込み。
+VRAM 10GBでリプレイバッファ全GPUロードはできない可能性があるため、
+CPU側メモリ管理で対応する。
 ```
 
 ---
 
-### 5.2 書類更新後の次ライブ確認
+## 6. 禁止事項・維持事項
 
-Fix85後のライブ確認項目:
+既存の全禁止事項を維持する（snapshot v前回 Section 11参照）。
 
-```text
-1. hand start直後に一瞬FOLDが出ないか
-2. deep-SPR flop Solver中にHUDがちらつかないか
-3. SOLVER_START_SUPPRESSED / SOLVER_HUD_RUNNING_DETAIL が連続INFOで出ないか
-4. preflopでactive_player_count < 2 / hero_position None時にFOLD推奨が出ないか
-5. PREFLOP_HERO_CHECK_NORMALIZED_TO_CALL が1 actionにつき1回だけか
-6. debug/solver_ioに本番requestとcompare_no_allin requestが保存されるか
-7. compare_no_allinがSolverへ送られていないか
-```
+追加:
+
+- Deep CFR訓練中の中間checkpointを本番推論に使わない
+- Deep CFR品質検証前にRust postflop CLIを削除しない
+- LLM exploit_adjustmentを廃止しない（Multiway主軸LLMのみ廃止）
+- Deep CFR推論失敗時に暫定推奨を出さない
 
 ---
 
-### 5.3 ライブ後の判断
+## 7. ユーザー要望・進行ルール
 
-ライブ後、いきなり実装指示を出さない。
-
-まず以下を分類する。
-
-```text
-- 問題はSite Adapter層か
-- GameState層か
-- Decision Engine層か
-- HUD層か
-- CoinPoker固有か
-- 汎用ロジックにすべきか
-- 勝率・判断品質に関係するか
+既存ルールを維持（snapshot v前回 Section 10参照）。
 ```
-
-分類後、必要ならBuilder指示書を出す。
-
----
-
-## 6. Git / テスト状態
-
-最新commit:
-
-```text
-e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
-```
-
-最新テスト:
-
-```text
-python -m pytest tests/test_game_loop.py -q -> 244 passed
-python -m pytest tests/test_hand_manager.py -q -> 190 passed
-python -m pytest tests/test_hud_overlay.py -q -> 22 passed
-python -m pytest -q -> 1282 passed, 7 warnings
-```
-
-作業ツリーには、過去から以下が残ることがある。
-
-```text
-data/poker_assistant.db-shm
-data/poker_assistant.db-wal
-.test_tmp/
-debug/solver_io/
-```
-
-これらは通常、commit対象外。
-
----
-
-## 7. 次回セッション最初の手順
-
-### 7.1 ユーザー側で実行するGit更新
-
-次回セッション開始時、ユーザーにはまず以下のみ案内する。
-
-```powershell
-git pull origin main
-```
-
-その後、必要に応じて最新commitを確認する。
-
-期待最新commit:
-
-```text
-e250b99 修正: Solver中HUDちらつきとhand開始直後FOLD表示を抑制
-```
-
-### 7.2 Commander側の進め方
-
-```text
-1. SPEC.md / DESIGN_NOTES.md / snapshot.md の更新状態を確認
-2. GitHub main が e250b99 以降であることを確認
-3. 追加実装ではなく、まずライブテスト方針を確認
-4. ログが来たら層分類して分析
-5. ユーザーが「指示書を出して」と明示するまでBuilder指示書は出さない
-```
-
----
-
-## 8. ユーザー要望・進行ルール
-
-```text
-- 説明は短く、結論→原因→次にやること
-- 冗長な長文説明は避ける
-- snapshot / SPEC / DESIGN_NOTESは次セッションが再開できる粒度で詳細に書く
-- Builder指示書は、ユーザーが「指示書を出して」と明示するまで出さない
-- コード調査が必要な場合、BuilderではなくCommanderがGitHubを先に確認する
-- GitHub調査前には必要ならgit更新コマンドだけ提示する
-- 実装完了後はcommit / pushまで行う
-- ユーザーが手動編集する書類差し替え本文は、必ずコードブロックで出す
-```
-
----
-
-## 9. 禁止事項・維持事項
-
-```text
-- Solver中もGameLoopを止めない
-- 古いSolver / fallback / LLM結果を表示しない
-- 暫定推奨を出さない
-- timeoutをRecommendationとして保存しない
-- solver_input_unstableをRecommendationとして保存しない
-- Hero Fold badgeを完全無効化しない
-- hand start直後の相手Fold badgeを即FOLD確定しない
-- Hero通常actionはturn boundary由来を正規保存する
-- frame由来Hero CHECK/CALL/BET/RAISE/ALL_INをstreet actionへ直接保存しない
-- cards_visibleとin_current_handを同一視しない
-- UI表示補正のためにGameState本体を書き換えない
-- phase fast-forwardは残すが、hand_end直後・stale解除直後は抑制する
-- Multiway LLMにはpot odds / required equity / current_street_actionsを渡す
-- LLM foldは数理ガードで検証する
-- strict_json=true運用を安易にfalseへ逃がさない
-- GUI WorkerとGameLoop.startの処理順を再び分岐させない
-- seat=0 actionを保存しない
-- suspicious金額をALL_IN再分類に使わない
-- 大型BET/ALL-INを一律除外しない
-- actionだけ除外してpot/max_betだけ巨大値を残す矛盾を作らない
-- CoinPoker固有処理をDecision Engineへ直接混ぜない
-- 局所guardを無制限に増やさない
-```
-
----
-
-## Temporary Diagnostic Tool
-
-一時診断ツール:
-- `scripts/compare_solver_requests.py`
-- 目的: deep-SPR flopのprimary requestとcompare_no_allin requestの速度差確認
-- 本番GameLoop / RecommendationEngine / Solverルーティングからは呼ばない
-- CLIで手動実行したときだけ動く
-- Solver速度調査完了後、削除またはdiagnostics用として残すか判断する
-- 2026-05-19: compare_no_allin検証では速度改善なし
-  - hand5: primary 21614ms / compare 21536ms / speedup 1.004
-  - hand6: primary 28173ms / compare 29770ms / speedup 0.946
-- 次の検証対象: deep_spr_light_probe相当の軽量request
-  - max_iterations=80
-  - target_exploitability_pct=1.5
-  - flop/turn bet_sizes=50%
-- light_probe検証結果:
-  - hand5: primary CHECK 63.5% / BET 36.5%、light BET 58.3% / CHECK 41.7%
-  - hand6: primary CHECK 60.2% / BET 36.1% / ALL-IN 3.7%、light BET 60.4% / CHECK 39.6%
-  - lightは速度改善するが、primaryのCHECK優勢をBET優勢へ反転させるため、そのまま本番採用は危険
-- 次の検証対象: middle_probe
-  - max_iterations=150
-  - target_exploitability_pct=1.0
-  - flop/turn bet_sizes=60%
-  - 目的: primaryに近い判断を保ちながら速度改善できるか確認
-- middle_probe検証結果:
-  - hand5: primary 21686ms CHECK、middle 13328ms CHECK、speedup 1.627
-  - hand6: primary 29616ms CHECK、middle 18372ms BET 139、speedup 1.612
-  - middleはhand5では良好だが、hand6では15秒を超え、かつBETへ反転
-- 次の検証対象: fast_middle_probe
-  - timeout_ms=15000
-  - max_iterations=120
-  - target_exploitability_pct=1.2
-  - flop/turn bet_sizes=60%
-  - 目的: 15秒以内でprimaryに近い判断を維持できるか確認
-- Solver性能検証:
-  - 個別2件の比較では判断できないため、HU flop request一括比較へ移行
-  - `scripts/compare_solver_requests.py` に batch mode を追加
-  - 対象: `debug/solver_io/20260519/hand_*_flop.json`
-  - 除外: compare_no_allin / light / middle / fast_middle 派生request
-  - 集計項目:
-    - 15秒以内率
-    - primaryとのaction一致率
-    - primaryとのamount一致率
-    - CHECK→BET反転率
-    - timeout/error件数
-  - 2026-05-19 batch実行結果:
-    - total_primary_files=12 / compared=10 / skipped_missing_compare=2
-    - PRIMARY: avg=23076ms / median=22278ms / under_15s=0.0% / errors=0
-    - COMPARE: avg=23270ms / median=21906ms / under_15s=0.0% / action_match=50.0% / errors=1
-    - LIGHT: avg=8690ms / median=7494ms / under_15s=90.0% / action_match=20.0% / CHECK→BET=7
-    - MIDDLE: avg=15275ms / median=14293ms / under_15s=70.0% / action_match=60.0% / CHECK→BET=3
-    - FAST_MIDDLE: avg=17939ms / median=17016ms / under_15s=0.0% / action_match=70.0% / CHECK→BET=2
-- 2026-05-19:
-  - batch比較ではMIDDLEが最有力だが、action一致率だけでは判断不可
-  - primary probability marginを集計し、僅差不一致と明確な反転を分ける
-  - 採用候補条件:
-    - 15秒以内
-    - primary action一致
-    - またはprimary top_margin <= 0.10 の僅差不一致
-  - 不採用寄り条件:
-    - primary top_margin >= 0.20 でCHECK→BET
-    - primary CALL/RAISEをFOLDへ反転
-  - margin付きbatch実行結果:
-    - total_primary_files=12 / compared=10 / skipped_missing_compare=2
-    - PRIMARY: avg=23100ms / median=21779ms / under_15s=0.0% / errors=1
-    - COMPARE: action_match=50.0% / near_tie_mismatch=2 / dangerous_flip=2 / CHECK→BET=2
-    - LIGHT: under_15s=90.0% / action_match=10.0% / near_tie_mismatch=1 / dangerous_flip=7 / CHECK→BET=7
-    - MIDDLE: under_15s=70.0% / action_match=50.0% / near_tie_mismatch=1 / dangerous_flip=3 / CHECK→BET=3
-    - FAST_MIDDLE: under_15s=0.0% / action_match=60.0% / near_tie_mismatch=1 / dangerous_flip=2 / CHECK→BET=2
-- HU deep-SPR flop最適化方針:
-  - turn / LLMにはまだ進まない
-  - 現状deep-SPR flop primaryを基準に、grid探索で15秒以内かつ整合性の高い設定を探す
-  - max_iterations / target_exploitability_pct / bet_sizes / all-in候補有無を比較
-  - 低精度・高速側から試し、20秒超え枝はpruningする
-  - 本番設定は変更しない
-  - 代表3件grid実行結果:
-    - samples=3 / planned=504 / executed=36 / skipped_by_pruning=468
-    - 上位scoreは `iter150_target0_9_bets60_allin`,
-      `iter150_target1_0_bets60_allin`,
-      `iter150_target1_2_bets60_allin`
-    - 上位3profileはいずれも action_match_rate=100.0% / dangerous_flip=0
-    - ただし avg_elapsed_ms は約23.7秒〜24.0秒で under_15s_rate=0.0%
-    - 15秒以内候補は代表3件gridでは見つからず
-- all-in候補について:
-  - grid結果ではall-in候補を外しても速度改善はほぼ見られない
-  - all-in候補ありの方が現状primaryと整合するケースがある
-  - 現時点ではflop deep-SPR primaryの `60%,a` は維持方針
-- 次の検証:
-  - 同一deep-SPR flop primary requestを複数回実行し、Solver出力の再現性を確認する
-  - repeatability実行結果:
-    - samples=3 / repeat_count=5 / unstable_sample_count=1
-    - hand_000004_req_000004_flop: action_stable=True / action_set=[CHECK] / elapsed_spread_ms=715
-    - hand_000006_req_000007_flop: action_stable=True / action_set=[CHECK] / elapsed_spread_ms=2041
-    - hand_000016_req_000011_flop: action_stable=False / action_set=[FOLD, RAISE] / elapsed_spread_ms=601
-    - hand_000016_req_000011_flop は top_margin_range=[0.010, 0.012] の極端な僅差でactionが揺れている
-- Solver process再利用調査:
-  - PostflopSolverBridgeは常駐CLI設計
-  - ただし診断スクリプトでは毎回bridge生成/stopしていたため、起動コスト込みの可能性あり
-  - resident modeで start_ms / solve_ms を分離して確認する
-  - resident timing実行結果:
-    - samples=3 / repeat_count=5 / start_ms=6
-    - avg_resident_solve_ms=24328 / process_reuse_effective_count=0
-    - hand_000004_req_000004_flop: avg_solve_ms=21730 / action_stable=True
-    - hand_000006_req_000007_flop: avg_solve_ms=28664 / action_stable=True
-    - hand_000016_req_000011_flop: avg_solve_ms=22590 / action_stable=True
-  - residentでも20秒超えのため、遅さの主因はprocess起動ではなくsolve本体
-- HU deep-SPR flop teacherデータ作成方針:
-  - 本番速度用ではなく、LLM整合性検証用の高精度基準データ
-  - 現状primaryより候補BETサイズを増やし、iterationsを増やし、exploitability目標を厳しくする
-  - standard:
-    - max_iterations=500
-    - target_exploitability_pct=0.4
-    - timeout_ms=90000
-    - bet_sizes=33%,50%,60%,75%,a
-    - raise_sizes=2.5x
-  - high:
-    - max_iterations=800
-    - target_exploitability_pct=0.3
-    - timeout_ms=120000
-    - bet_sizes=25%,33%,50%,60%,75%,a
-    - raise_sizes=2.5x,3.5x
-  - 本番設定は変更しない
-  - standard teacher実行結果:
-    - samples=3 / success_count=0 / error_count=3
-    - hand_000004_req_000004_flop: 120秒timeout
-    - hand_000006_req_000007_flop: Solver process closed stdout
-    - hand_000016_req_000011_flop: Solver process closed stdout
-  - 現profileではteacherデータ作成に失敗。より狭い候補や長時間実行方針の再検討が必要
-
-## 2026-05-20: Phase 86-Fix8 Task 12-A — LLM診断margin補正
-
-- 目的: near_tie spotでLLMがconfidence=highやclear/dominant等の過剰表現を出す問題を検出する
-- 変更ファイル:
-  - `scripts/compare_solver_requests.py`
-  - `tests/test_compare_solver_requests.py`
-  - `docs/snapshot.md`
-- 触らない: core/game_loop.py, strategy/*, solver/*, config.yaml
-- 実装内容:
-  - `_margin_class()`: top_margin → clear(>=0.20) / moderate(>0.10) / near_tie / unknown に分類
-  - `build_llm_flop_prompt()`:
-    - Context JSONに primary_top_margin, primary_margin_class, primary_second_action, primary_second_probability を追加
-    - promptにmargin別ルールを追加（near_tieではconfidence=low/mediumのみ、clear/dominant等の表現禁止）
-  - `evaluate_llm_decision()`:
-    - primary_margin_class, confidence_overstated, reason_overclaim を追加
-    - confidence_overstated: near_tie かつ llm_confidence=high
-    - reason_overclaim: near_tie かつ reasonに clear / strongly prefers / dominant / obvious / 明確 / 強い / 優勢 を含む
-  - `build_llm_diagnostic_summary()`: confidence_overstated_count, reason_overclaim_count を集計
-  - `print_llm_summary()`: 新集計カウントを表示
-- テスト追加:
-  - test_llm_prompt_includes_margin_class
-  - test_evaluate_llm_near_tie_high_confidence_flags_overstatement
-  - test_evaluate_llm_near_tie_medium_confidence_no_overstatement
-
-## Phase 86-Fix8 Task 12-A2 — LLM診断CLIの.env優先化
-
-背景:
-- Task 12-Aの実装は tests/test_compare_solver_requests.py で 44 passed。
-- margin補正関連の primary_margin_class / confidence_overstated / reason_overclaim は実装済み。
-- しかし実データLLM再実行では、PowerShell側に残った古い OPENROUTER_API_KEY が優先され、HTTP 401 User not found になった。
-- 原因は load_env_file() が os.environ.setdefault() を使っており、既存環境変数を上書きしなかったため。
-
-対応:
-- load_env_file(env_path=None, *, override=False) に変更。
-- CLI main() 実行時は load_env_file(override=True) とし、診断スクリプトでは repo root の .env を強制優先する。
-- 直接関数利用時のデフォルトは override=False のまま維持。
-- 本番 GameLoop / RecommendationEngine / LLMPipeline は変更しない。
-
-## Phase 86-Fix8 Task 13-A — HU flop LLM診断のreason_overclaim誤検出抑制
-
-背景:
-- HU flop全12 sample診断は action_match_rate=100.0%、direction_match_rate=100.0%、dangerous_flip_count=0、legal_action_invalid_count=0。
-- 一方で reason_overclaim_count=2 が残った。
-- 対象2件はいずれも near_tie で confidence=low、LLM action は primary Solver と一致していた。
-
-精査:
-- hand_000016_req_000011_flop: "not because it clearly dominates" に含まれる clearly/dominates を誤検出。
-- hand_000020_req_000017_flop: "rather than treating it as dominant" および再実行時の "not a clear or dominant solver result" を誤検出。
-- どちらも過剰主張ではなく、near-tieを抑制的に説明する否定文だった。
-
-対応:
-- reason_overclaim 判定を _reason_overclaims_near_tie() に分離。
-- not clear / not clearly / not a clear or dominant / does not dominate / rather than treating it as dominant などの否定パターンを除外してから、clear / strongly prefers / dominant / obvious を検出する。
-- test_reason_overclaim_ignores_negated_clear_language を追加し、否定文はFalse、肯定的な "Fold clearly dominates this node." はTrueのまま確認。
-
-再確認:
-- tests/test_compare_solver_requests.py: 46 passed。
-- 全HU flop LLM診断: total_samples=12 / success_count=12 / under_15s_rate=100.0% / action_match_rate=100.0% / direction_match_rate=100.0% / dangerous_flip_count=0 / legal_action_invalid_count=0 / confidence_overstated_count=0 / reason_overclaim_count=0。
-- 本番 GameLoop / RecommendationEngine / LLMPipeline は変更しない。
-
-## Phase 86-Fix8 Task 14 — HU flop single-size Solver診断
-
-背景:
-- 現状deep-SPR primaryは主に60%,a候補で判断している。
-- 60%でCHECKでも、33%や50%ならBETできるspotがある可能性がある。
-- 複数サイズ同時Solverは重すぎて失敗している。
-- そのため、単一サイズごとにSolverを回し、サイズ別の増額可否を診断する。
-
-目的:
-- LLM sizing拡張前に、33/50/60/75/all-inそれぞれでSolverがBET/RAISE/ALL_IN方向を許容するか確認する。
-- 本番設定は変更しない。
-- HU flop限定。
-- multiway / turn / river には触らない。
-
-## Phase 86-Fix8 Task 14-C — HU flop sizing teacher label作成
-
-背景:
-- timeout 180秒のsingle-size Solver診断では全60runが成功。
-- 33/50/60/75/all-inでaction差が出た。
-- 現Solverの60%,aだけでは小さめBET/RAISEの可能性を取り逃がす。
-- LLM sizing診断前に、single-size結果からteacher labelを作る。
-
-目的:
-- LLMのsizing出力とteacher labelの相関を見る準備。
-- 本番実装はまだしない。
-- multiway / turn / river は対象外。
-
-## Phase 86-Fix8 Task 15 — HU flop LLM sizing診断
-
-背景:
-- single-size Solver 180秒診断で全60run成功。
-- 33/50/60/75/all-inでaction差が確認できた。
-- sizing teacher labelを作成済み。
-- 今回はLLMのsizing_typeがteacher labelと相関するかを診断する。
-
-目的:
-- LLMがteacher allowed_sizing_types内に収まるか確認。
-- all-in誤選択を検出。
-- passive_all_standardで勝手にBET/RAISEしないか確認。
-- 本番実装はまだしない。
-
-## Phase 86-Fix8 Task 15-A — HU flop LLM sizing診断のteacher優先prompt修正
-
-背景:
-- Task 15ではteacher_alignment_rate=83.3%。
-- 不一致2件は、LLMがsingle-size teacherではなくprimary CHECKを優先してnoneを選んだため。
-- sizing診断ではprimary Solverではなくsingle-size teacher dataをanchorにする必要がある。
-
-対応:
-- LLM sizing promptで single-size teacher data をprimary anchorと明記。
-- primary 60% Solver actionはreference情報に格下げ。
-- allowed_sizing_typesが空でない場合はnoneを禁止。
-- all_inはallin_aggressive=trueの場合のみ許可。
-
-## Phase 86-Fix8 Task 16 — HU flop Blind LLM診断
-
-背景:
-- これまでのLLM診断はSolver/teacher情報を渡していた。
-- 本番では未知局面でSolver/teacher情報を見られない。
-- そのため、実戦情報だけでLLMに判断させ、あとからSolver/teacherと照合するblind診断が必要。
-
-目的:
-- HU flopでLLMがSolver/teacherなしでも方向性・sizingをどこまで合わせられるか確認する。
-- 本番実装はまだしない。
-
-## Phase 86-Fix8 Task 16-A — HU flop Blind LLM prompt一般戦略ルール追加
-
-背景:
-- Task 16のBlind LLM診断ではdirection一致91.7%、dangerousな違反なし。
-- ただしteacher alignmentは66.7%で、主に小さめBET機会をCHECKに逃す傾向があった。
-- teacher情報を直接渡すのではなく、single-size Solver結果から得た傾向を一般戦略ルールとしてpromptに追加する。
-
-対応:
-- deep-SPR flopでALL_INを極めて稀にする
-- CHECKへ逃げすぎない
-- IP / dry board / small c-bet / 33% stab を明示
-- facing bet時は小〜中RAISEを候補にしつつ、無理な大型raise/all-inを避ける
-
-## Phase 86-Fix8 Task 16-B — HU flop Blind LLM prompt profile追加
-
-背景:
-- Task 16-A の一般戦略ルール追加は alignment を 66.7% から 58.3% に悪化させた。
-- passive_all_standardでBETを誘発したため、guided promptを標準にすべきではない。
-- 今後のprompt改善はprofileでA/B比較できる形にする。
-
-対応:
-- --blind-profile を追加。
-- default は baseline。
-- baseline は Task 16 の元prompt。
-- guided は Task 16-A の一般戦略promptを比較用として残す。
-- summary/itemに blind_profile を保存。
-
-## Phase 86-Fix8 Task 16-C — HU flop Blind LLM repeatability診断
-
-背景:
-- Blind LLMは再実行ごとに alignment / violation が揺れている。
-- 本番採用前に、同一spotでaction/sizing/alignmentが安定するか確認する必要がある。
-
-目的:
-- baseline / guided profileでrepeat-count=5を実行。
-- action安定性、sizing安定性、teacher alignment安定性、violation再現性を測る。
-- 本番実装はまだしない。
-
-## Phase 86-Fix8 Task 16-D — HU flop Blind LLM入力監査
-
-背景:
-- Blind LLM repeatability診断では、teacher alignmentが不足した。
-- ただし、LLMにSolver requestと同等情報が渡っていない可能性がある。
-- Solver/teacher情報なしで検証する場合でも、実戦で見える情報はSolverと同等にLLMへ渡す必要がある。
-
-目的:
-- Blind LLM prompt/contextの入力情報とSolver request情報を比較する。
-- hero_cards / facing_bet / call_amount / actions_played / position などの欠落を検出する。
-- 入力不足がある場合は、prompt改善やモデル比較より先に入力整備を行う。
-
-## Phase 86-Fix8 Task 17 — HU Solver parseのHero hand使用監査
-
-背景:
-- Solver教師データがaverage_strategyではなくHero実カードのhand rowを使っているか確認する必要がある。
-- average_strategy fallbackが多い場合、教師データはHeroカード別ではなくレンジ平均に寄る可能性がある。
-
-目的:
-- RecommendationEngineのSolver parseにstrategy_source_detail診断を追加。
-- hand_strategy / average_strategy_fallback / equal_probability_fallback / default_check_fallbackを区別する。
-- 実データ12件でHero hand row使用状況を監査する。
-
-## Phase 86-Fix8 Task 18 — Solver request/debug保存にHero実戦情報を追加
-
-背景:
-- Task 17で、過去のdebug request payloadはhero_cards欠落により全件average_strategy_fallbackだった。
-- Solver parse実装はHero hand rowを使えるが、オフライン再解析用payloadにHeroカードがないと教師データがHeroカード別にならない。
-- LLM Blind検証でも、Solverに渡る実戦情報と同等情報をLLMへ渡す必要がある。
-
-対応:
-- _save_solver_request_json の meta に hero_cards / facing_bet / call_amount / street / heads_up / num_players / position / actions を保存する。
-- 保存時にmeta欠落warningを出す。
-- 過去データは参考扱いにし、新規ライブデータで再検証する。
-
-## Phase 86-Fix8 Task 18-B — Hero hand matching順序差修正
-
-背景:
-- Task 18後の新規ライブ3件ではhero_cards保存は成功。
-- しかしSolver parse auditで 3件中2件が average_strategy_fallback。
-- 失敗した2件は hero_cards=["3c","Qc"] で、Solver hands表記との順序差が疑われる。
-- 本番HU Solver推奨でもHero hand rowを見失う可能性があるため、parse側を修正する。
-
-対応:
-- hero hand候補として元順・逆順・rank順を生成。
-- root_strategy.handsから候補一致する行を探す。
-- 診断JSONに hero_hand_candidates / matched_hand / matched_hand_index を出す。
-- Heroカードがあるのに見つからない場合はwarning logを出す。
-
-## Phase 86-Fix8 Task 18-C — Hero hand range membership監査
-
-背景:
-- Task 18-BでHero hand matching順序差は修正済み。
-- しかし新規ライブ3件中2件で、hero_cards=["3c","Qc"] が Solver hands に存在せず average_strategy_fallback。
-- 原因は、Hero側rangeにQ3sが含まれていない可能性が高い。
-- 本番Solver/教師データの信頼性には、Hero実カードがHero側rangeに含まれるかの監査が必須。
-
-対応:
-- Hero側rangeを hero_is_ip から判定。
-- hero_cards から combo / hand_class を作成。
-- hero-side range に含まれるか監査。
-- parse audit item/summary に range membership 情報を追加。

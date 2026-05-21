@@ -1,0 +1,24 @@
+{
+  "sample_id": "hand_000008_req_000009_flop",
+  "source_request": "debug\\solver_io\\20260520\\hand_000008_req_000009_flop.json",
+  "solver_success": true,
+  "solver_error": null,
+  "strategy_source_detail": "average_strategy_fallback",
+  "action": "FOLD",
+  "amount": 0,
+  "probabilities": {
+    "FOLD": 0.34655363814731455,
+    "CALL": 0.3117631132821349,
+    "RAISE 348": 0.34168325846843445
+  },
+  "hero_cards": [
+    "3c",
+    "Qc"
+  ],
+  "hero_cards_missing": false,
+  "matched_hand": null,
+  "matched_hand_index": null,
+  "matched_hand_missing": true,
+  "fallback_reason": "hero hand not found",
+  "meta_phase": "flop"
+}

@@ -111,3 +111,8 @@ preflop_delta:
 debug:
   save_solver_io: true
   solver_io_dir: "debug/solver_io"
+
+deep_cfr:
+  model_path: models/deep_cfr/best_checkpoint.pt
+  device: cuda
+  fallback_to_solver: true

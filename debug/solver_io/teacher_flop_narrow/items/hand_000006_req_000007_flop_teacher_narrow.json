@@ -1,0 +1,25 @@
+{
+  "sample_id": "hand_000006_req_000007_flop",
+  "teacher_profile": "narrow",
+  "source_request": "debug\\solver_io\\20260519\\hand_000006_req_000007_flop.json",
+  "request_config": {
+    "max_iterations": 500,
+    "target_exploitability_pct": 0.4,
+    "timeout_ms": 180000,
+    "bet_sizes": "60%,a",
+    "raise_sizes": "2.5x"
+  },
+  "success": false,
+  "elapsed_ms": 181910,
+  "action": null,
+  "amount": null,
+  "probabilities": {},
+  "top_action": null,
+  "top_probability": null,
+  "second_action": null,
+  "second_probability": null,
+  "top_margin": null,
+  "error": "Solver timeout (no response within 180.0s)",
+  "teacher_action": null,
+  "teacher_amount": null
+}

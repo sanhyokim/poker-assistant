@@ -1,0 +1,110 @@
+{
+  "sample_id": "hand_000020_req_000017_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000020_req_000017_flop.json",
+  "profiles": [
+    {
+      "profile_id": "single_33",
+      "bet_size": "33%",
+      "success": true,
+      "elapsed_ms": 31525,
+      "under_15s": false,
+      "action": "CALL",
+      "amount": 0,
+      "probabilities": {
+        "Call": 0.4902255906555639,
+        "Raise 193": 0.28692899803551974,
+        "Fold": 0.22284541078787226
+      },
+      "top_action": "CALL",
+      "top_probability": 0.49,
+      "second_action": "RAISE",
+      "second_probability": 0.287,
+      "top_margin": 0.203,
+      "aggressive_action": false,
+      "error": null
+    },
+    {
+      "profile_id": "single_50",
+      "bet_size": "50%",
+      "success": true,
+      "elapsed_ms": 30821,
+      "under_15s": false,
+      "action": "CALL",
+      "amount": 0,
+      "probabilities": {
+        "Call": 0.5642841022091214,
+        "Fold": 0.3145545055067412,
+        "Raise 290": 0.1211613909815761
+      },
+      "top_action": "CALL",
+      "top_probability": 0.564,
+      "second_action": "FOLD",
+      "second_probability": 0.315,
+      "top_margin": 0.25,
+      "aggressive_action": false,
+      "error": null
+    },
+    {
+      "profile_id": "single_60",
+      "bet_size": "60%",
+      "success": true,
+      "elapsed_ms": 31122,
+      "under_15s": false,
+      "action": "CALL",
+      "amount": 0,
+      "probabilities": {
+        "Call": 0.515422497346033,
+        "Raise 348": 0.0943735685701526,
+        "Fold": 0.39020393490655547
+      },
+      "top_action": "CALL",
+      "top_probability": 0.515,
+      "second_action": "FOLD",
+      "second_probability": 0.39,
+      "top_margin": 0.125,
+      "aggressive_action": false,
+      "error": null
+    },
+    {
+      "profile_id": "single_75",
+      "bet_size": "75%",
+      "success": true,
+      "elapsed_ms": 31148,
+      "under_15s": false,
+      "action": "CALL",
+      "amount": 0,
+      "probabilities": {
+        "Fold": 0.45722836961735325,
+        "Call": 0.48603159287376796,
+        "Raise 435": 0.05674004012783557
+      },
+      "top_action": "CALL",
+      "top_probability": 0.486,
+      "second_action": "FOLD",
+      "second_probability": 0.457,
+      "top_margin": 0.029,
+      "aggressive_action": false,
+      "error": null
+    },
+    {
+      "profile_id": "single_allin",
+      "bet_size": "a",
+      "success": true,
+      "elapsed_ms": 24046,
+      "under_15s": false,
+      "action": "CHECK",
+      "amount": 0,
+      "probabilities": {
+        "AllIn 8558": 0.0,
+        "Check": 1.0
+      },
+      "top_action": "CHECK",
+      "top_probability": 1.0,
+      "second_action": "ALLIN",
+      "second_probability": 0.0,
+      "top_margin": 1.0,
+      "aggressive_action": false,
+      "error": null
+    }
+  ]
+}

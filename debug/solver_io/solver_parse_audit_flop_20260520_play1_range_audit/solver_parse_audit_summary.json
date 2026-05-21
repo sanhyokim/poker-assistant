@@ -1,0 +1,94 @@
+{
+  "total_samples": 3,
+  "hand_strategy_count": 1,
+  "average_strategy_fallback_count": 2,
+  "equal_probability_fallback_count": 0,
+  "default_check_fallback_count": 0,
+  "hero_cards_missing_count": 0,
+  "matched_hand_missing_count": 2,
+  "solver_error_count": 0,
+  "hero_range_contains_count": 1,
+  "hero_range_missing_count": 2,
+  "hero_range_unknown_count": 0,
+  "items": [
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "strategy_source_detail": "hand_strategy",
+      "hero_cards": [
+        "As",
+        "Qh"
+      ],
+      "hero_hand_candidates": [
+        "AsQh",
+        "QhAs"
+      ],
+      "matched_hand": "AsQh",
+      "matched_hand_index": 250,
+      "fallback_reason": null,
+      "hero_cards_missing": false,
+      "matched_hand_missing": false,
+      "hero_is_ip": false,
+      "hero_side": "oop",
+      "hero_combo": "AsQh",
+      "hero_hand_class": "AQo",
+      "hero_range_source": "range_oop",
+      "hero_range_contains_hand": true,
+      "hero_range_missing_reason": null,
+      "solver_success": true,
+      "solver_error": null
+    },
+    {
+      "sample_id": "hand_000008_req_000007_flop",
+      "strategy_source_detail": "average_strategy_fallback",
+      "hero_cards": [
+        "3c",
+        "Qc"
+      ],
+      "hero_hand_candidates": [
+        "3cQc",
+        "Qc3c"
+      ],
+      "matched_hand": null,
+      "matched_hand_index": null,
+      "fallback_reason": "hero hand not found",
+      "hero_cards_missing": false,
+      "matched_hand_missing": true,
+      "hero_is_ip": false,
+      "hero_side": "oop",
+      "hero_combo": "Qc3c",
+      "hero_hand_class": "Q3s",
+      "hero_range_source": "range_oop",
+      "hero_range_contains_hand": false,
+      "hero_range_missing_reason": "hero hand class not in hero-side range",
+      "solver_success": true,
+      "solver_error": null
+    },
+    {
+      "sample_id": "hand_000008_req_000009_flop",
+      "strategy_source_detail": "average_strategy_fallback",
+      "hero_cards": [
+        "3c",
+        "Qc"
+      ],
+      "hero_hand_candidates": [
+        "3cQc",
+        "Qc3c"
+      ],
+      "matched_hand": null,
+      "matched_hand_index": null,
+      "fallback_reason": "hero hand not found",
+      "hero_cards_missing": false,
+      "matched_hand_missing": true,
+      "hero_is_ip": false,
+      "hero_side": "oop",
+      "hero_combo": "Qc3c",
+      "hero_hand_class": "Q3s",
+      "hero_range_source": "range_oop",
+      "hero_range_contains_hand": false,
+      "hero_range_missing_reason": "hero hand class not in hero-side range",
+      "solver_success": true,
+      "solver_error": null
+    }
+  ],
+  "output_path": "debug\\solver_io\\solver_parse_audit_flop_20260520_play1_range_audit\\solver_parse_audit_summary.json"
+}

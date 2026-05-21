@@ -1,0 +1,21 @@
+{
+  "sample_id": "hand_000004_req_000004_flop",
+  "source_request": "debug\\solver_io\\20260519\\hand_000004_req_000004_flop.json",
+  "solver_success": true,
+  "solver_error": null,
+  "strategy_source_detail": "average_strategy_fallback",
+  "action": "CHECK",
+  "amount": 0,
+  "probabilities": {
+    "BET 139": 0.2962758272830705,
+    "ALL_IN 8883": 0.0002667819464305439,
+    "CHECK": 0.7034573988275317
+  },
+  "hero_cards": [],
+  "hero_cards_missing": true,
+  "matched_hand": null,
+  "matched_hand_index": null,
+  "matched_hand_missing": true,
+  "fallback_reason": "hero cards missing",
+  "meta_phase": "flop"
+}

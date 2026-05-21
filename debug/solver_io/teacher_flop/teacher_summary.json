@@ -1,0 +1,44 @@
+{
+  "total_samples": 3,
+  "success_count": 0,
+  "error_count": 3,
+  "avg_elapsed_ms": 43489,
+  "max_elapsed_ms": 126223,
+  "profile": "standard",
+  "items": [
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "success": false,
+      "elapsed_ms": 126223,
+      "action": null,
+      "amount": null,
+      "top_action": null,
+      "top_probability": null,
+      "top_margin": null,
+      "error": "Solver timeout (no response within 120.0s)"
+    },
+    {
+      "sample_id": "hand_000006_req_000007_flop",
+      "success": false,
+      "elapsed_ms": 2755,
+      "action": null,
+      "amount": null,
+      "top_action": null,
+      "top_probability": null,
+      "top_margin": null,
+      "error": "Solver response read failed: Solver process closed stdout"
+    },
+    {
+      "sample_id": "hand_000016_req_000011_flop",
+      "success": false,
+      "elapsed_ms": 1489,
+      "action": null,
+      "amount": null,
+      "top_action": null,
+      "top_probability": null,
+      "top_margin": null,
+      "error": "Solver response read failed: Solver process closed stdout"
+    }
+  ],
+  "output_path": "debug\\solver_io\\teacher_flop\\teacher_summary.json"
+}

@@ -1,0 +1,75 @@
+{
+  "primary": {
+    "path": "debug\\solver_io\\20260519\\hand_000006_req_000007_flop.json",
+    "success": true,
+    "elapsed_ms": 28187,
+    "action": "BET",
+    "amount": 139,
+    "probabilities": {
+      "AllIn 16434": 0.042260186720683976,
+      "Check": 0.4145734179874948,
+      "Bet 139": 0.5431664044712097
+    },
+    "error": null
+  },
+  "compare": {
+    "path": "debug\\solver_io\\20260519\\hand_000006_req_000008_flop_compare_no_allin.json",
+    "success": false,
+    "elapsed_ms": 30336,
+    "action": null,
+    "amount": null,
+    "probabilities": {},
+    "error": "Solver timeout (no response within 30.0s)"
+  },
+  "light": {
+    "path": "generated_light_probe_from:debug\\solver_io\\20260519\\hand_000006_req_000007_flop.json",
+    "success": true,
+    "elapsed_ms": 16320,
+    "action": "BET",
+    "amount": 116,
+    "probabilities": {
+      "Bet 116": 0.6042267725614668,
+      "Check": 0.3957732013615011
+    },
+    "error": null
+  },
+  "middle": {
+    "path": "generated_middle_probe_from:debug\\solver_io\\20260519\\hand_000006_req_000007_flop.json",
+    "success": true,
+    "elapsed_ms": 21727,
+    "action": "BET",
+    "amount": 139,
+    "probabilities": {
+      "Check": 0.10840202155603366,
+      "Bet 139": 0.8915979778475785
+    },
+    "error": null
+  },
+  "fast_middle": {
+    "path": "generated_fast_middle_probe_from:debug\\solver_io\\20260519\\hand_000006_req_000007_flop.json",
+    "success": true,
+    "elapsed_ms": 23975,
+    "action": "BET",
+    "amount": 139,
+    "probabilities": {
+      "Check": 0.1485879162465732,
+      "Bet 139": 0.8514120911915889
+    },
+    "error": null
+  },
+  "summary": {
+    "compare_action_match": false,
+    "compare_amount_match": false,
+    "compare_speedup_ratio": 0.929,
+    "light_action_match": true,
+    "light_amount_match": false,
+    "light_speedup_ratio": 1.727,
+    "middle_action_match": true,
+    "middle_amount_match": true,
+    "middle_speedup_ratio": 1.297,
+    "fast_middle_action_match": true,
+    "fast_middle_amount_match": true,
+    "fast_middle_speedup_ratio": 1.176,
+    "fast_middle_under_15s": false
+  }
+}

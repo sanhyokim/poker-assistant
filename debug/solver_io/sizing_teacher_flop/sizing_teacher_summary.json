@@ -1,0 +1,122 @@
+{
+  "total_samples": 12,
+  "label_counts": {
+    "passive_all_standard": 7,
+    "small_only_aggressive": 1,
+    "all_standard_aggressive": 1,
+    "tiny_only_aggressive": 1,
+    "medium_or_small_aggressive": 1,
+    "mixed_non_monotonic": 1
+  },
+  "allin_aggressive_count": 0,
+  "allowed_sizing_type_counts": {
+    "bet_33": 5,
+    "bet_50": 3,
+    "bet_60": 2,
+    "bet_75": 2
+  },
+  "items": [
+    {
+      "sample_id": "hand_000001_req_000001_flop",
+      "teacher_label": "passive_all_standard",
+      "preferred_sizing_bucket": "none",
+      "allowed_sizing_types": [],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000003_req_000001_flop",
+      "teacher_label": "passive_all_standard",
+      "preferred_sizing_bucket": "none",
+      "allowed_sizing_types": [],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "teacher_label": "passive_all_standard",
+      "preferred_sizing_bucket": "none",
+      "allowed_sizing_types": [],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000005_req_000004_flop",
+      "teacher_label": "small_only_aggressive",
+      "preferred_sizing_bucket": "small",
+      "allowed_sizing_types": [
+        "bet_33",
+        "bet_50"
+      ],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000006_req_000007_flop",
+      "teacher_label": "all_standard_aggressive",
+      "preferred_sizing_bucket": "broad",
+      "allowed_sizing_types": [
+        "bet_33",
+        "bet_50",
+        "bet_60",
+        "bet_75"
+      ],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000015_req_000008_flop",
+      "teacher_label": "passive_all_standard",
+      "preferred_sizing_bucket": "none",
+      "allowed_sizing_types": [],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000016_req_000009_flop",
+      "teacher_label": "tiny_only_aggressive",
+      "preferred_sizing_bucket": "tiny",
+      "allowed_sizing_types": [
+        "bet_33"
+      ],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000016_req_000011_flop",
+      "teacher_label": "medium_or_small_aggressive",
+      "preferred_sizing_bucket": "small_to_medium",
+      "allowed_sizing_types": [
+        "bet_33",
+        "bet_50",
+        "bet_60"
+      ],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000020_req_000015_flop",
+      "teacher_label": "passive_all_standard",
+      "preferred_sizing_bucket": "none",
+      "allowed_sizing_types": [],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000020_req_000017_flop",
+      "teacher_label": "passive_all_standard",
+      "preferred_sizing_bucket": "none",
+      "allowed_sizing_types": [],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000028_req_000020_flop",
+      "teacher_label": "mixed_non_monotonic",
+      "preferred_sizing_bucket": "mixed",
+      "allowed_sizing_types": [
+        "bet_33",
+        "bet_75"
+      ],
+      "allin_aggressive": false
+    },
+    {
+      "sample_id": "hand_000030_req_000024_flop",
+      "teacher_label": "passive_all_standard",
+      "preferred_sizing_bucket": "none",
+      "allowed_sizing_types": [],
+      "allin_aggressive": false
+    }
+  ],
+  "output_path": "debug\\solver_io\\sizing_teacher_flop\\sizing_teacher_summary.json"
+}

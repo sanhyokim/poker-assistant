@@ -1,0 +1,86 @@
+{
+  "total_samples": 3,
+  "unstable_sample_count": 1,
+  "unstable_samples": [
+    "hand_000016_req_000011_flop"
+  ],
+  "avg_elapsed_spread_ms": 1119,
+  "items": [
+    {
+      "sample_id": "hand_000004_req_000004_flop",
+      "run_count": 5,
+      "action_set": [
+        "CHECK"
+      ],
+      "amount_set": [
+        0
+      ],
+      "action_stable": true,
+      "amount_stable": true,
+      "unstable": false,
+      "avg_elapsed_ms": 21806,
+      "min_elapsed_ms": 21477,
+      "max_elapsed_ms": 22192,
+      "elapsed_spread_ms": 715,
+      "probability_top_action_set": [
+        "CHECK"
+      ],
+      "probability_top_margin_range": [
+        0.376,
+        0.438
+      ]
+    },
+    {
+      "sample_id": "hand_000006_req_000007_flop",
+      "run_count": 5,
+      "action_set": [
+        "CHECK"
+      ],
+      "amount_set": [
+        0
+      ],
+      "action_stable": true,
+      "amount_stable": true,
+      "unstable": false,
+      "avg_elapsed_ms": 28753,
+      "min_elapsed_ms": 27486,
+      "max_elapsed_ms": 29527,
+      "elapsed_spread_ms": 2041,
+      "probability_top_action_set": [
+        "CHECK"
+      ],
+      "probability_top_margin_range": [
+        0.089,
+        0.241
+      ]
+    },
+    {
+      "sample_id": "hand_000016_req_000011_flop",
+      "run_count": 5,
+      "action_set": [
+        "FOLD",
+        "RAISE"
+      ],
+      "amount_set": [
+        0,
+        348
+      ],
+      "action_stable": false,
+      "amount_stable": false,
+      "unstable": true,
+      "avg_elapsed_ms": 22351,
+      "min_elapsed_ms": 21950,
+      "max_elapsed_ms": 22551,
+      "elapsed_spread_ms": 601,
+      "probability_top_action_set": [
+        "FOLD",
+        "RAISE"
+      ],
+      "probability_top_margin_range": [
+        0.01,
+        0.012
+      ]
+    }
+  ],
+  "output_path": "debug\\solver_io\\repeatability_flop\\repeatability_summary.json"
+}
