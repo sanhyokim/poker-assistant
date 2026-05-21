@@ -1769,6 +1769,23 @@ class GameLoop:
         except Exception:
             logger.warning("MultiwayEngine initialization failed")
 
+        deep_cfr_bridge = None
+        try:
+            from strategy.deep_cfr_bridge import DeepCFRBridge
+
+            deep_cfr_bridge = DeepCFRBridge(self._config)
+            if deep_cfr_bridge.available:
+                logger.info("Deep CFR bridge loaded successfully")
+            else:
+                logger.warning(
+                    "Deep CFR bridge created but model not available: %s",
+                    deep_cfr_bridge.load_error,
+                )
+        except Exception:
+            logger.warning(
+                "DeepCFRBridge initialization failed, Deep CFR will be disabled"
+            )
+
         self._recommendation_engine = RecommendationEngine(
             config=self._config,
             preflop_chart=preflop_chart,
@@ -1776,6 +1793,7 @@ class GameLoop:
             solver_request_builder=solver_request_builder,
             llm_pipeline=llm_pipeline,
             multiway_engine=multiway_engine,
+            deep_cfr_bridge=deep_cfr_bridge,
         )
 
     def _check_llm_connectivity(self, llm_pipeline: Any) -> None:

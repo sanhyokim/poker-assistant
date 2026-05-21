@@ -3018,9 +3018,6 @@ models/deep_cfr/
 訓練中の中間checkpointは本番推論に使わない。
 
 
-### SPEC.md — Section 10A の末尾に追加
-
-```markdown
 ### 10A.10 訓練原則
 
 Deep CFRモデルの訓練・再訓練時は以下の原則を遵守する。

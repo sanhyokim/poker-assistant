@@ -66,6 +66,7 @@ class RecommendationEngine:
         solver_request_builder: Any,
         llm_pipeline: Any | None,
         multiway_engine: Any,
+        deep_cfr_bridge: Any | None = None,
     ) -> None:
         """Initialize the recommendation engine.
 
@@ -76,6 +77,7 @@ class RecommendationEngine:
             solver_request_builder: SolverRequestBuilder instance.
             llm_pipeline: LLMPipeline instance, or None.
             multiway_engine: MultiwayEngine instance.
+            deep_cfr_bridge: Deep CFR bridge instance, or None.
         """
         self.config = config
         self.preflop_chart = preflop_chart
@@ -83,6 +85,7 @@ class RecommendationEngine:
         self.solver_request_builder = solver_request_builder
         self.llm_pipeline = llm_pipeline
         self.multiway_engine = multiway_engine
+        self.deep_cfr_bridge = deep_cfr_bridge
         self.delta_policy = PreflopDeltaPolicy(llm_pipeline=llm_pipeline, config=config)
         self.logger = logger
         solver_config = config.get("solver", {}) if isinstance(config, dict) else {}
@@ -131,24 +134,67 @@ class RecommendationEngine:
                     game_state.active_player_count,
                     game_state.phase,
                 )
-                if game_state.active_player_count >= 3:
-                    logger.info("-> Using multiway engine (active >= 3)")
-                    recommendation = self._generate_postflop_multiway(
-                        game_state,
-                        opponent_stats,
-                    )
-                elif game_state.active_player_count == 2:
-                    logger.info("-> Using solver (headsup, active == 2)")
-                    recommendation = self._generate_postflop_headsup(
-                        game_state,
-                        opponent_stats,
-                    )
+                if self.deep_cfr_bridge is not None and self.deep_cfr_bridge.available:
+                    logger.info("-> Attempting Deep CFR inference")
+                    deep_cfr_started = time.perf_counter()
+                    try:
+                        deep_cfr_rec = self.deep_cfr_bridge.generate_recommendation(
+                            game_state,
+                            blind_bb=int(
+                                self.config.get("game", {}).get("blind_bb", 100)
+                            ),
+                        )
+                        if deep_cfr_rec is not None:
+                            deep_cfr_rec.latency_breakdown[
+                                "deep_cfr_ms"
+                            ] = self._elapsed_ms(deep_cfr_started)
+                            logger.info(
+                                "Deep CFR recommendation: action=%s amount=%d "
+                                "confidence=%s probabilities=%s",
+                                deep_cfr_rec.action,
+                                deep_cfr_rec.amount,
+                                deep_cfr_rec.confidence,
+                                deep_cfr_rec.action_probabilities,
+                            )
+                            recommendation = deep_cfr_rec
+                        else:
+                            logger.warning(
+                                "Deep CFR returned None, falling back to legacy"
+                            )
+                            recommendation = self._postflop_legacy_route(
+                                game_state,
+                                opponent_stats,
+                            )
+                    except Exception as exc:
+                        logger.warning(
+                            "Deep CFR inference failed: %s, falling back to legacy",
+                            exc,
+                        )
+                        recommendation = self._postflop_legacy_route(
+                            game_state,
+                            opponent_stats,
+                        )
                 else:
-                    logger.info("-> Using fallback (active < 2)")
-                    recommendation = self._generate_fallback(
-                        game_state,
-                        "Not enough active players",
+                    fallback_to_solver = (
+                        self.config.get("deep_cfr", {}).get("fallback_to_solver", True)
+                        if (
+                            self.deep_cfr_bridge is None
+                            or not self.deep_cfr_bridge.available
+                        )
+                        else True
                     )
+                    if fallback_to_solver:
+                        logger.info("-> Deep CFR not available, using legacy route")
+                        recommendation = self._postflop_legacy_route(
+                            game_state,
+                            opponent_stats,
+                        )
+                    else:
+                        logger.info("-> Deep CFR not available and fallback disabled")
+                        recommendation = self._generate_fallback(
+                            game_state,
+                            "Deep CFR unavailable",
+                        )
             else:
                 recommendation = self._generate_fallback(
                     game_state,
@@ -173,6 +219,21 @@ class RecommendationEngine:
     ) -> Recommendation:
         """Apply visible-button constraints to a recommendation."""
         return self._apply_action_constraints(recommendation, game_state)
+
+    def _postflop_legacy_route(
+        self,
+        game_state: GameState,
+        opponent_stats: JsonDict | None,
+    ) -> Recommendation:
+        """Route postflop to solver for heads-up or multiway engine for 3+."""
+        if game_state.active_player_count >= 3:
+            logger.info("-> Using multiway engine (active >= 3)")
+            return self._generate_postflop_multiway(game_state, opponent_stats)
+        if game_state.active_player_count == 2:
+            logger.info("-> Using solver (headsup, active == 2)")
+            return self._generate_postflop_headsup(game_state, opponent_stats)
+        logger.info("-> Using fallback (active < 2)")
+        return self._generate_fallback(game_state, "Not enough active players")
 
     def _generate_preflop(
         self,
