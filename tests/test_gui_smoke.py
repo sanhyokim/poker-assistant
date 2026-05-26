@@ -61,7 +61,7 @@ def test_hud_overlay_show_pre_hand(qapp: QApplication) -> None:
     hud = HudOverlay()
     hud.show_pre_hand()
 
-    assert hud._status_label.text() == "安定待ち..."
+    assert hud._status_label.text() == "WAITING FOR STABLE STATE..."
 
     hud.close()
 

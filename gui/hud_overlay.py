@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 DISPLAYABLE_ACTIONS = {"CHECK", "CALL", "BET", "RAISE", "FOLD", "ALL_IN"}
 SOURCE_LABELS = {
     "solver": "Solver",
+    "deep_cfr": "Deep CFR",
+    "deep_cfr_exploit": "Deep CFR+",
     "llm_multiway": "AI",
     "llm_headsup_fallback": "AI",
     "preflop_chart": "Chart",
@@ -35,6 +37,7 @@ SOURCE_LABELS = {
 WAITING_MESSAGE = "WAITING..."
 STABLE_WAITING_MESSAGE = "WAITING FOR STABLE STATE..."
 SOLVER_THINKING_MESSAGE = "SOLVER THINKING..."
+DEEP_CFR_THINKING_MESSAGE = "DEEP CFR THINKING..."
 LLM_ANALYZING_MESSAGE = "LLM ANALYZING..."
 CHART_CHECKING_MESSAGE = "CHART CHECKING..."
 
@@ -164,9 +167,27 @@ class HudOverlay(QWidget):
         source_label = self._format_source_label(recommendation.strategy_source)
         if source_label is not None:
             self._source_label.setText(source_label)
+            self._set_label_color(self._source_label, QColor(255, 255, 255))
+            if recommendation.strategy_source == "deep_cfr_exploit":
+                self._set_label_color(self._source_label, QColor(0, 200, 255))
             self._source_label.show()
         else:
             self._source_label.hide()
+
+        if recommendation.strategy_source in {"deep_cfr", "deep_cfr_exploit"}:
+            if recommendation.action_probabilities:
+                self._probabilities_label.setText(
+                    self._format_deep_cfr_probabilities(
+                        recommendation.action_probabilities
+                    )
+                )
+                self._probabilities_label.show()
+                self._separator_1.show()
+            if recommendation.confidence:
+                self._confidence_label.setText(
+                    f"Confidence: {recommendation.confidence}"
+                )
+                self._confidence_label.show()
 
         if recommendation.reason:
             self._reason_label.setText(recommendation.reason)
@@ -312,6 +333,21 @@ class HudOverlay(QWidget):
         lines = ["Solver Mix:"]
         lines.extend(
             f"{HudOverlay._format_probability_action(action)} {probability:.0%}"
+            for action, probability in ordered
+        )
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_deep_cfr_probabilities(probabilities: dict[str, float]) -> str:
+        """Return Deep CFR probability distribution for HUD display."""
+        ordered = sorted(
+            probabilities.items(),
+            key=lambda item: item[1],
+            reverse=True,
+        )[:3]
+        lines = ["Deep CFR:"]
+        lines.extend(
+            f"  {HudOverlay._format_probability_action(action)} {probability:.0%}"
             for action, probability in ordered
         )
         return "\n".join(lines)

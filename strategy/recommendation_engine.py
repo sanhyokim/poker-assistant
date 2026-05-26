@@ -156,12 +156,17 @@ class RecommendationEngine:
                                 deep_cfr_rec.confidence,
                                 deep_cfr_rec.action_probabilities,
                             )
+                            deep_cfr_rec = self._apply_deep_cfr_exploit(
+                                deep_cfr_rec,
+                                game_state,
+                                opponent_stats,
+                            )
                             recommendation = deep_cfr_rec
                         else:
                             logger.warning(
                                 "Deep CFR returned None, falling back to legacy"
                             )
-                            recommendation = self._postflop_legacy_route(
+                            recommendation = self._deep_cfr_fallback(
                                 game_state,
                                 opponent_stats,
                             )
@@ -170,31 +175,46 @@ class RecommendationEngine:
                             "Deep CFR inference failed: %s, falling back to legacy",
                             exc,
                         )
-                        recommendation = self._postflop_legacy_route(
+                        recommendation = self._deep_cfr_fallback(
                             game_state,
                             opponent_stats,
                         )
                 else:
-                    fallback_to_solver = (
-                        self.config.get("deep_cfr", {}).get("fallback_to_solver", True)
-                        if (
-                            self.deep_cfr_bridge is None
-                            or not self.deep_cfr_bridge.available
+                    if "deep_cfr" not in self.config:
+                        logger.info(
+                            "-> Deep CFR config not present, using legacy route"
                         )
-                        else True
-                    )
-                    if fallback_to_solver:
-                        logger.info("-> Deep CFR not available, using legacy route")
                         recommendation = self._postflop_legacy_route(
                             game_state,
                             opponent_stats,
                         )
                     else:
-                        logger.info("-> Deep CFR not available and fallback disabled")
-                        recommendation = self._generate_fallback(
-                            game_state,
-                            "Deep CFR unavailable",
+                        fallback_to_solver = (
+                            self.config.get("deep_cfr", {}).get(
+                                "fallback_to_solver", True
+                            )
+                            if (
+                                self.deep_cfr_bridge is None
+                                or not self.deep_cfr_bridge.available
+                            )
+                            else True
                         )
+                        if fallback_to_solver:
+                            logger.info(
+                                "-> Deep CFR not available, using legacy route"
+                            )
+                            recommendation = self._deep_cfr_fallback(
+                                game_state,
+                                opponent_stats,
+                            )
+                        else:
+                            logger.info(
+                                "-> Deep CFR not available and fallback disabled"
+                            )
+                            recommendation = self._generate_fallback(
+                                game_state,
+                                "Deep CFR unavailable",
+                            )
             else:
                 recommendation = self._generate_fallback(
                     game_state,
@@ -234,6 +254,150 @@ class RecommendationEngine:
             return self._generate_postflop_headsup(game_state, opponent_stats)
         logger.info("-> Using fallback (active < 2)")
         return self._generate_fallback(game_state, "Not enough active players")
+
+    def _deep_cfr_fallback(
+        self,
+        game_state: GameState,
+        opponent_stats: JsonDict | None,
+    ) -> Recommendation:
+        """Route Deep CFR fallback based on phase and player count."""
+        phase = game_state.phase
+        active = game_state.active_player_count
+
+        if phase == "flop":
+            logger.info("Deep CFR fallback: flop, attempting LLM (active=%d)", active)
+            return self._deep_cfr_llm_fallback(game_state, opponent_stats)
+
+        if active == 2:
+            logger.info("Deep CFR fallback: %s HU, using solver", phase)
+            return self._generate_postflop_headsup(game_state, opponent_stats)
+        if active >= 3:
+            logger.info("Deep CFR fallback: %s multiway, attempting LLM", phase)
+            return self._deep_cfr_llm_fallback(game_state, opponent_stats)
+
+        logger.info("Deep CFR fallback: %s active < 2, skip", phase)
+        return self._generate_deep_cfr_skip(game_state, "Not enough active players")
+
+    def _deep_cfr_llm_fallback(
+        self,
+        game_state: GameState,
+        opponent_stats: JsonDict | None,
+    ) -> Recommendation:
+        """Attempt LLM multiway as Deep CFR fallback, or skip if unavailable."""
+        if self.multiway_engine is None or self.llm_pipeline is None:
+            logger.warning(
+                "Deep CFR LLM fallback unavailable: multiway_engine=%s "
+                "llm_pipeline=%s",
+                self.multiway_engine is not None,
+                self.llm_pipeline is not None,
+            )
+            return self._generate_deep_cfr_skip(
+                game_state,
+                "Deep CFR failed and LLM unavailable",
+            )
+        try:
+            recommendation = self._generate_postflop_multiway(
+                game_state,
+                opponent_stats,
+            )
+            recommendation.strategy_source = "deep_cfr_fallback_llm"
+            logger.info(
+                "Deep CFR LLM fallback success: action=%s amount=%d",
+                recommendation.action,
+                recommendation.amount,
+            )
+            return recommendation
+        except Exception as exc:
+            logger.warning("Deep CFR LLM fallback failed: %s", exc)
+            return self._generate_deep_cfr_skip(
+                game_state,
+                f"Deep CFR and LLM both failed: {exc}",
+            )
+
+    def _generate_deep_cfr_skip(
+        self,
+        game_state: GameState,
+        reason: str,
+    ) -> Recommendation:
+        """Return a non-strategic Recommendation when Deep CFR fallback fails."""
+        logger.info(
+            "Deep CFR skip: phase=%s active=%d reason=%s hand_id=%s",
+            game_state.phase,
+            game_state.active_player_count,
+            reason,
+            game_state.hand_id,
+        )
+        return Recommendation(
+            action="DEEP_CFR_UNAVAILABLE",
+            amount=0,
+            reason=f"Deep CFR unavailable: {reason}",
+            confidence="low",
+            strategy_source="deep_cfr_skip",
+            action_probabilities={},
+        )
+
+    def _apply_deep_cfr_exploit(
+        self,
+        recommendation: Recommendation,
+        game_state: GameState,
+        opponent_stats: JsonDict | None,
+    ) -> Recommendation:
+        """Apply LLM exploit adjustment to a Deep CFR recommendation."""
+        if self.llm_pipeline is None:
+            logger.info("Deep CFR exploit skipped: llm_pipeline=None")
+            return recommendation
+
+        first_stats = self._first_stats(opponent_stats)
+        if not self._has_usable_stats(first_stats):
+            logger.info(
+                "Deep CFR exploit skipped: usable_stats=False total_hands=%s",
+                first_stats.get("total_hands") if first_stats else None,
+            )
+            return recommendation
+
+        exploit_started = time.perf_counter()
+        try:
+            rec_dict = {
+                "action": recommendation.action,
+                "amount": recommendation.amount,
+                "action_probabilities": recommendation.action_probabilities,
+            }
+            exploit = self.llm_pipeline.suggest_exploit_for_deep_cfr(
+                rec_dict,
+                game_state,
+                first_stats,
+            )
+            recommendation.latency_breakdown[
+                "exploit_adjustment_ms"
+            ] = self._elapsed_ms(exploit_started)
+            adjusted_action = self._normalize_adjusted_action(
+                exploit.get("adjusted_action")
+            )
+            if adjusted_action is not None and adjusted_action != recommendation.action:
+                logger.info(
+                    "Deep CFR exploit adjusted: %s -> %s",
+                    recommendation.action,
+                    adjusted_action,
+                )
+                recommendation.action = adjusted_action
+                recommendation.amount = self._parse_amount(
+                    exploit.get("adjusted_size"),
+                    recommendation.amount,
+                )
+                recommendation.strategy_source = "deep_cfr_exploit"
+
+            exploit_reasoning = exploit.get("reasoning")
+            if exploit_reasoning:
+                recommendation.reason = (
+                    f"{recommendation.reason}\nExploit: {exploit_reasoning}"
+                )
+        except Exception as exc:
+            recommendation.latency_breakdown[
+                "exploit_adjustment_ms"
+            ] = self._elapsed_ms(exploit_started)
+            logger.warning("Deep CFR exploit adjustment failed: %s", exc)
+
+        return recommendation
 
     def _generate_preflop(
         self,

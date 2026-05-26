@@ -94,12 +94,12 @@ def test_postflop_routes_to_deep_cfr_when_available() -> None:
 
 
 def test_postflop_falls_back_to_solver_when_deep_cfr_returns_none() -> None:
-    """Deep CFR returning None should fall back to the legacy route."""
+    """Deep CFR returning None should call the Deep CFR fallback route."""
     bridge = _make_bridge(recommendation=None)
     engine = _make_engine(bridge)
-    legacy_rec = _make_recommendation("solver")
+    fallback_rec = _make_recommendation("solver")
 
-    with patch.object(engine, "_postflop_legacy_route", return_value=legacy_rec) as route:
+    with patch.object(engine, "_deep_cfr_fallback", return_value=fallback_rec) as route:
         rec = engine.generate(_make_game_state(active_player_count=2))
 
     assert rec.strategy_source == "solver"
@@ -107,12 +107,12 @@ def test_postflop_falls_back_to_solver_when_deep_cfr_returns_none() -> None:
 
 
 def test_postflop_falls_back_to_solver_when_deep_cfr_raises() -> None:
-    """Deep CFR exceptions should fall back to the legacy route."""
+    """Deep CFR exceptions should call the Deep CFR fallback route."""
     bridge = _make_bridge(side_effect=RuntimeError("boom"))
     engine = _make_engine(bridge)
-    legacy_rec = _make_recommendation("solver")
+    fallback_rec = _make_recommendation("solver")
 
-    with patch.object(engine, "_postflop_legacy_route", return_value=legacy_rec) as route:
+    with patch.object(engine, "_deep_cfr_fallback", return_value=fallback_rec) as route:
         rec = engine.generate(_make_game_state(active_player_count=2))
 
     assert rec.strategy_source == "solver"
@@ -120,11 +120,11 @@ def test_postflop_falls_back_to_solver_when_deep_cfr_raises() -> None:
 
 
 def test_postflop_uses_legacy_when_bridge_none() -> None:
-    """Missing bridge should use the legacy route."""
+    """Missing bridge should call the Deep CFR fallback route."""
     engine = _make_engine(deep_cfr_bridge=None)
-    legacy_rec = _make_recommendation("solver")
+    fallback_rec = _make_recommendation("solver")
 
-    with patch.object(engine, "_postflop_legacy_route", return_value=legacy_rec) as route:
+    with patch.object(engine, "_deep_cfr_fallback", return_value=fallback_rec) as route:
         rec = engine.generate(_make_game_state(active_player_count=2))
 
     assert rec.strategy_source == "solver"
@@ -132,12 +132,12 @@ def test_postflop_uses_legacy_when_bridge_none() -> None:
 
 
 def test_postflop_uses_legacy_when_bridge_not_available() -> None:
-    """Unavailable bridge should use the legacy route."""
+    """Unavailable bridge should call the Deep CFR fallback route."""
     bridge = _make_bridge(available=False)
     engine = _make_engine(bridge)
-    legacy_rec = _make_recommendation("solver")
+    fallback_rec = _make_recommendation("solver")
 
-    with patch.object(engine, "_postflop_legacy_route", return_value=legacy_rec) as route:
+    with patch.object(engine, "_deep_cfr_fallback", return_value=fallback_rec) as route:
         rec = engine.generate(_make_game_state(active_player_count=2))
 
     assert rec.strategy_source == "solver"

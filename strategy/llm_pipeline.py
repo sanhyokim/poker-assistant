@@ -158,6 +158,42 @@ Respond with JSON only:
 {{"adjusted_action": "<action>", "adjusted_size": "<size or null>",
 "confidence": "<high/medium/low>", "reasoning": "<1-2 sentences>"}}"""
 
+EXPLOIT_DEEP_CFR_PROMPT = """You are a poker exploitation advisor for 6-max NLHE.
+
+The Deep CFR neural network has produced the following strategy.
+Suggest minor adjustments to exploit the opponent's tendencies.
+
+## Deep CFR Output
+- Top Action: {top_action}
+- Action Probabilities: Fold={fold_prob:.1f}%, Call={call_prob:.1f}%, Raise={raise_prob:.1f}%
+- Recommended Amount: {amount} chips
+
+## Opponent Stats
+- VPIP: {vpip}%, PFR: {pfr}%
+- Fold to C-Bet: {fold_to_cbet}%
+- Went to Showdown: {wtsd}%
+- Style: {long_term_style}
+{freshness_warning}
+
+## Game Context
+- Board: {board}
+- Street: {street}
+- Hero Hand: {hero_hand}
+- Pot: {pot} chips
+- Effective Stack: {effective_stack} chips
+
+## Instructions
+1. The Deep CFR output is the baseline. Do NOT deviate drastically.
+2. Suggest frequency shifts of at most +/-15% from Deep CFR frequencies.
+3. If opponent folds too much -> increase bluff frequency slightly.
+4. If opponent calls too much -> increase value bet frequency, reduce bluffs.
+5. If stats sample size < 10 hands -> make minimal adjustments.
+6. {reason_jp_instruction}
+
+Respond with JSON only:
+{{"adjusted_action": "<FOLD/CHECK/CALL/BET/RAISE>", "adjusted_size": "<size or null>",
+"confidence": "<high/medium/low>", "reasoning": "<1-2 sentences>"}}"""
+
 MULTIWAY_DECISION_PROMPT = """You are a poker advisor for multiway pots in 6-max NLHE.
 Solver cannot be used (3+ players). Use the equity data and opponent stats to recommend an action.
 
@@ -439,6 +475,90 @@ class LLMPipeline:
         total_ms = int((time.perf_counter() - method_start) * 1000)
         self._logger.info(
             "LLM task complete: task=exploit_adjustment total_ms=%d "
+            "parsed=true validated=%s fallback=false",
+            total_ms,
+            str(validated is not None).lower(),
+        )
+        return {
+            "adjusted_action": parsed.get("adjusted_action"),
+            "adjusted_size": parsed.get("adjusted_size"),
+            "confidence": parsed.get("confidence", "low"),
+            "reasoning": sanitize_llm_reason(str(parsed.get("reasoning", ""))),
+        }
+
+    def suggest_exploit_for_deep_cfr(
+        self,
+        recommendation: JsonDict,
+        game_state: GameState,
+        opponent_stats: JsonDict | None,
+    ) -> JsonDict:
+        """Suggest an exploitative adjustment for a Deep CFR recommendation.
+
+        Args:
+            recommendation: Recommendation-like dictionary containing action,
+                amount, and action_probabilities.
+            game_state: Current game state.
+            opponent_stats: Opponent statistics, or None.
+
+        Returns:
+            Adjustment dictionary for downstream action selection.
+        """
+        if not opponent_stats:
+            return self._no_solver_output_response()
+
+        action_probs = recommendation.get("action_probabilities", {})
+        if not action_probs:
+            return self._no_solver_output_response()
+
+        method_start = time.perf_counter()
+        safe_stats = self._anonymize_stats(opponent_stats)
+        stats = self._format_opponent_stats(safe_stats)
+        prompt = EXPLOIT_DEEP_CFR_PROMPT.format(
+            top_action=recommendation.get("action", "UNKNOWN"),
+            fold_prob=float(action_probs.get("fold", 0)) * 100,
+            call_prob=float(action_probs.get("call", 0)) * 100,
+            raise_prob=float(action_probs.get("raise", 0)) * 100,
+            amount=recommendation.get("amount", 0),
+            board=self._board_to_str(game_state),
+            street=game_state.phase,
+            hero_hand=self._hero_hand(game_state),
+            pot=game_state.pot,
+            effective_stack=self._effective_stack(game_state),
+            reason_jp_instruction=REASON_JP_INSTRUCTION,
+            **stats,
+        )
+        text = self._call_api(
+            prompt,
+            max_tokens=250,
+            model=self._select_model(game_state),
+            task_name="exploit_deep_cfr",
+        )
+        parsed = self._parse_json_response(text) if text is not None else None
+        if parsed is None:
+            total_ms = int((time.perf_counter() - method_start) * 1000)
+            self._logger.info(
+                "LLM task complete: task=exploit_deep_cfr total_ms=%d "
+                "parsed=false validated=false fallback=true",
+                total_ms,
+            )
+            return self._no_solver_output_response()
+
+        validated = self._validate_llm_response(
+            "exploit_deep_cfr",
+            ExploitAdjustmentResponse,
+            parsed,
+        )
+        if validated is not None:
+            parsed = {
+                "adjusted_action": validated.adjusted_action,
+                "adjusted_size": validated.adjusted_size,
+                "confidence": validated.confidence,
+                "reasoning": validated.reasoning,
+            }
+
+        total_ms = int((time.perf_counter() - method_start) * 1000)
+        self._logger.info(
+            "LLM task complete: task=exploit_deep_cfr total_ms=%d "
             "parsed=true validated=%s fallback=false",
             total_ms,
             str(validated is not None).lower(),

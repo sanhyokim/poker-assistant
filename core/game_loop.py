@@ -26,6 +26,7 @@ from recognition.fold_badge_detector import FoldBadgeDetector
 from recognition.name_recognizer import NameRecognizer
 from recognition.number_recognizer import NumberRecognizer
 from recognition.seat_card_detector import SeatCardDetector
+from gui.hud_overlay import DEEP_CFR_THINKING_MESSAGE
 from strategy.recommendation_engine import Recommendation, RecommendationEngine
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,7 @@ INTERNAL_HUD_STRATEGY_SOURCES = {
 }
 HUD_STATUS_STABLE_WAIT = "WAITING FOR STABLE STATE..."
 HUD_STATUS_SOLVER_THINKING = "SOLVER THINKING..."
+HUD_STATUS_DEEP_CFR_THINKING = DEEP_CFR_THINKING_MESSAGE
 HUD_STATUS_LLM_THINKING = "LLM ANALYZING..."
 HUD_STATUS_CHART_CHECKING = "CHART CHECKING..."
 
@@ -156,6 +158,7 @@ class GameLoop:
             tuple[tuple[int, str], ...],
         ] | None = None
         self._recommendation_engine: RecommendationEngine | None = None
+        self.deep_cfr_bridge: Any | None = None
 
         self._consecutive_capture_failures = 0
         self._capture_failed = False
@@ -1785,6 +1788,7 @@ class GameLoop:
             logger.warning(
                 "DeepCFRBridge initialization failed, Deep CFR will be disabled"
             )
+        self.deep_cfr_bridge = deep_cfr_bridge
 
         self._recommendation_engine = RecommendationEngine(
             config=self._config,
@@ -2246,9 +2250,10 @@ class GameLoop:
                                 self._previous_recommendation_context = None
                                 self._notify_hud_computing(HUD_STATUS_STABLE_WAIT)
                             else:
-                                self._notify_hud_computing(
-                                    HUD_STATUS_SOLVER_THINKING
-                                )
+                                thinking_message = HUD_STATUS_SOLVER_THINKING
+                                if self._is_deep_cfr_bridge_available():
+                                    thinking_message = HUD_STATUS_DEEP_CFR_THINKING
+                                self._notify_hud_computing(thinking_message)
                                 self._start_async_postflop_recommendation(
                                     game_state, snapshot,
                                 )
@@ -2289,7 +2294,10 @@ class GameLoop:
 
                 elif game_state.active_player_count >= 3:
                     # --- Multiway: synchronous LLM (unchanged) ---
-                    self._notify_hud_computing(HUD_STATUS_LLM_THINKING)
+                    thinking_message = HUD_STATUS_LLM_THINKING
+                    if self._is_deep_cfr_bridge_available():
+                        thinking_message = HUD_STATUS_DEEP_CFR_THINKING
+                    self._notify_hud_computing(thinking_message)
                     snapshot = self._build_recommendation_context_snapshot(
                         game_state,
                     )
@@ -2766,6 +2774,13 @@ class GameLoop:
         except Exception:
             logger.warning("HUD computing callback failed", exc_info=True)
 
+    def _is_deep_cfr_bridge_available(self) -> bool:
+        """Return whether Deep CFR is available for postflop inference."""
+        bridge = getattr(self, "deep_cfr_bridge", None)
+        if bridge is None and self._recommendation_engine is not None:
+            bridge = getattr(self._recommendation_engine, "deep_cfr_bridge", None)
+        return bridge is not None and getattr(bridge, "available", False) is True
+
     @staticmethod
     def _is_hud_displayable_recommendation(recommendation: Recommendation) -> bool:
         """Return whether a recommendation may be shown as a final HUD action."""
@@ -2790,11 +2805,14 @@ class GameLoop:
         if message in {
             HUD_STATUS_STABLE_WAIT,
             HUD_STATUS_SOLVER_THINKING,
+            HUD_STATUS_DEEP_CFR_THINKING,
             HUD_STATUS_LLM_THINKING,
             HUD_STATUS_CHART_CHECKING,
         }:
             return message
         message_upper = message.upper()
+        if "DEEP CFR" in message_upper:
+            return HUD_STATUS_DEEP_CFR_THINKING
         if "CHART" in message_upper:
             return HUD_STATUS_CHART_CHECKING
         if "LLM" in message_upper:
