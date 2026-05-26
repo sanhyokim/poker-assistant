@@ -1,7 +1,8 @@
 # ポーカーAIアシスタントシステム — SPEC.md
-**Version:** 3.4  
-**Updated:** 2026-05-20 JST  
+**Version:** 3.5  
+**Updated:** 2026-05-22 JST  
 **Purpose:** 現在の正仕様のみを記載する。過去の経緯・判断理由・採用しなかった案は `DESIGN_NOTES.md`、現在地点と次タスクは `snapshot.md` に分離する。
+
 
 ---
 
@@ -186,7 +187,7 @@ pytest tests/test_solver_bridge.py -q
 現在の期待テスト結果:
 
 ```text
-1282 passed, 7 warnings
+1441 passed, 0 failed
 ```
 
 ---
@@ -382,6 +383,7 @@ HU Solverは局面により10〜22秒以上かかる可能性がある。
 CHART CHECKING...
 SOLVER THINKING...
 LLM ANALYZING...
+DEEP CFR THINKING...
 WAITING FOR STABLE POT...
 HERO CARDS UNSTABLE
 Computing...
@@ -391,6 +393,8 @@ DEEP SPR FLOP SOLVING
 SOLVER STILL RUNNING
 SOLVER INPUT UNSTABLE
 ```
+
+
 `WAITING FOR STABLE HAND` は、新hand開始直後・participant observation中・preflop入力不安定時に推奨を出さない状態を表す。  
 `DEEP SPR FLOP SOLVING` は、deep-SPR flopでSolverが計算中であり、まだ信頼できる推奨がない状態を表す。  
 `SOLVER INPUT UNSTABLE` は、Solverへ渡すGameState / action / position / stack / potが不安定なためSolverを起動しない状態を表す。
@@ -2176,8 +2180,10 @@ HU postflopはDeep CFR推論を主軸に判断する。
 
 基本:
 
+```text
 active_player_count == 2
 phase in {flop, turn, river}
+```
 
 Deep CFR推論はローカルGPU上で実行する。
 応答は1ミリ秒以下のため、同期呼び出しで問題ない。
@@ -2185,18 +2191,33 @@ Deep CFR推論はローカルGPU上で実行する。
 
 処理中表示:
 
+```text
 DEEP CFR THINKING...
+```
 
 Deep CFR結果はcontext一致時のみ採用する。
 
+Deep CFR推論失敗時のフォールバック:
+
+```text
+Flop HU: LLM → スキップ（Solverは呼ばない。deep-SPRタイムアウト再発防止）
+Turn/River HU: Solver → LLM（Solverのツリーが小さくタイムアウトしにくい）
+全失敗時: 推奨なし（暫定推奨は出さない）
+```
+
 exploit_adjustment:
 
+```text
 DB統計が十分な相手（total_hands >= sample_threshold_low）に対しては、
-Deep CFR出力をLLM exploit_adjustmentで補正する。
+Deep CFR出力をLLM suggest_exploit_for_deep_cfr で補正する。
 補正はDeep CFR推論完了後に同期的に行う。
+補正後のstrategy_sourceは "deep_cfr_exploit" となる。
+補正失敗時はDeep CFR元推薦をそのまま返す。
+```
 
 出力形式:
 
+```text
 Deep CFRは以下を返す。
 - fold_prob: float
 - call_prob: float
@@ -2205,12 +2226,15 @@ Deep CFRは以下を返す。
 
 推奨アクションは最も確率が高いアクションとする。
 raise_amountはraise_size_ratioからチップ額に変換する。
+```
 
 confidence判定:
+
+```text
 - top_prob >= 0.70 → high
 - top_prob >= 0.45 → medium
 - top_prob < 0.45 → low
-
+```
 
 ---
 
@@ -2220,8 +2244,10 @@ Multiway postflopはDeep CFR推論を主軸に判断する。
 
 基本:
 
+```text
 active_player_count >= 3
 phase in {flop, turn, river}
+```
 
 Deep CFR推論はHU postflopと同じモデル・同じブリッジを使用する。
 Deep CFR 6-playerモデルは6人テーブルを前提に訓練されているため、
@@ -2232,7 +2258,17 @@ eval7はequity補助情報として維持する。
 
 処理中表示:
 
+```text
 DEEP CFR THINKING...
+```
+
+Deep CFR推論失敗時のフォールバック:
+
+```text
+Flop Multiway: LLM → スキップ
+Turn/River Multiway: LLM → スキップ
+全失敗時: 推奨なし（暫定推奨は出さない）
+```
 
 LLMはMultiway判断の主軸としては使用しない。
 exploit_adjustmentとしてのLLM利用は、HUと同様にDB統計十分な相手に対してのみ行う。
@@ -2901,8 +2937,14 @@ Deep CFR推論ブリッジは、GameStateをDeep CFRモデルの入力形式に�
 リポジトリ: https://github.com/dberweger2017/deepcfr-texas-no-limit-holdem-6-players
 ライセンス: MIT
 形式: PyTorch .pt チェックポイント
-アーキテクチャ: 5層フィードフォワード（入力500次元、隠れ層256ユニット×5、出力3アクション＋1サイジング）
+アーキテクチャ: 3層フィードフォワード（入力156次元、隠れ層256ユニット×3、出力3アクション＋1サイジング）
 推論速度: 0.5〜1ミリ秒（RTX 3080）
+
+注記: SPEC初版では「5層FF、入力500次元」と記載していたが、
+実際のdberweger2017リポジトリのmodel.pyは3層×256ユニット、入力156次元である。
+poker-system側の _deep_cfr_network.py もこの実アーキテクチャに合わせて実装済み。
+
+
 
 ### 10A.3 モデルロード
 
@@ -2919,29 +2961,52 @@ deep_cfr:
 
 ### 10A.4 入力変換
 
-GameStateから以下を取得し、500次元入力ベクトルに変換する。
+GameStateから以下を取得し、156次元入力ベクトルに変換する。
 
+```text
 hero_cards: list[str]
 board: list[str]
 phase: str
 pot: int
 hero_stack: int
 hero_bet: int
-hero_position: int
-hero_is_ip: bool
+hero_position: int (button seat)
 active_player_count: int
 players: dict（各seatのstack/bet/in_hand/is_seated）
 current_street_actions: list[ActionRecord]
-preflop_actions: list[ActionRecord]
 min_bet: int
 legal_actions: list[str]
+```
 
-変換関数: encode_game_state(game_state: GameState) -> torch.Tensor
+変換関数: encode_game_state(game_state: GameState) → numpy.ndarray (156,)
+
+156次元の内訳:
+```text
+hero hand one-hot:       52次元（カード2枚をone-hot）
+board one-hot:           52次元（カード最大5枚をone-hot）
+stage one-hot:            5次元（preflop/flop/turn/river/showdown）
+pot ratio:                1次元（pot / initial_chips）
+button position one-hot:  6次元
+current player one-hot:   6次元
+per-player state:        24次元（6人 × 4: active/bet/pot_contribution/stack）
+max bet ratio:            1次元
+legal actions:            4次元（fold/check-call/raise/all-in）
+previous action encoding: 5次元
+合計: 156次元
+```
 
 カード表記変換:
+```text
 "Qd" → 52次元one-hotの該当インデックス
 スート: ♠=0, ♥=1, ♦=2, ♣=3
 ランク: 2=0, 3=1, ..., A=12
+インデックス = rank * 4 + suit
+```
+
+注記: SPEC初版では「500次元」と記載していたが、
+実際のdberweger2017リポジトリの状態エンコーディングは156次元である。
+poker-system側の deep_cfr_bridge.py の _compute_input_size() も156を返す。
+
 
 ### 10A.5 出力変換
 
@@ -3017,6 +3082,13 @@ models/deep_cfr/
 本番推論用モデルの切り替えはconfig.yamlで行う。
 訓練中の中間checkpointは本番推論に使わない。
 
+注意事項:
+- flagship_models/ は旧アーキテクチャ（fc1-fc6, 4アクション固定）であり、
+  現行コード（base/action_head/sizing_head, 3アクション+連続サイジング）と非互換。
+  ロード不可。使用禁止。
+- 訓練情報源の優先順位: README (readme.md) > description.md > Medium記事。
+  READMEが唯一の正規情報源。description.mdは旧実験記録として参考のみ。
+
 
 ### 10A.10 訓練原則
 
@@ -3028,14 +3100,34 @@ Deep CFRモデルの訓練・再訓練時は以下の原則を遵守する。
 - Linear CFR重み付けを適用する（イテレーション番号tに比例した重み）
 - 全リグレットが負のとき、均等戦略ではなく最大リグレットアクションを確率1で選ぶ
 - メモリバッファサイズはRAMが許す限り大きくする（最低数百万サンプル）
-- 訓練は最低3シードで並行実行し、最良シードを選定する
 
 禁止:
-- 1シードだけで本番モデルを決定すること
 - Phase 2（自己対戦）を5000イテレーション以上引っ張ること
 - Phase 3でメモリバッファサイズを縮小すること
 - TensorBoardを監視せず訓練を放置すること
 - 1つの指標（例：ランダム相手勝率）だけで品質を判断すること
+
+訓練情報源:
+- README (readme.md) が唯一の正規情報源
+- Medium記事はREADMEと矛盾する箇所があり、根拠としない
+- train_selfplay_v2 等の独自追加コードは使用しない
+
+訓練手順（README準拠）:
+- Phase 1: --iterations 1000 --traversals 200
+- Phase 2: --self-play --iterations 2000 --traversals 400
+- Phase 3: --mixed --refresh-interval 1000 --num-opponents 5 --iterations 10000 --traversals 400
+
+Phase 3 対戦相手プール構成:
+- Phase 2のcheckpointを専用フォルダ（例: models/phase3_pool_v3/）にコピーする
+- --checkpoint-dir で専用フォルダを指定し、--model-prefix で対象ファイルを限定する
+- Phase 3自身の保存先は --save-dir で別フォルダにする（自己混入防止）
+- 旧訓練ファイル（Phase 1各シード、旧Phase 2等）をプールに混入させない
+
+Phase 3 初期loss発散の扱い:
+- Phase 3開始直後にAdvantage network lossが散発的にスパイク（10^11〜10^12）することがある
+- 数百イテレーションで自然収束する（encode_stateの正規化分母が原因候補、未修正で許容）
+- 異常検知基準に該当しない限り訓練を中断しない
+- 異常検知基準: プロセス消失 / loss全iterで10^11以上 / profit 100iter連続負 / エラー停止
 
 品質検証方法:
 - checkpoint間トーナメント（visualize_tournament.py）
@@ -3048,12 +3140,19 @@ Deep CFRモデルの訓練・再訓練時は以下の原則を遵守する。
 - 原論文Figure 3: ネットワークサイズとtraversal数の影響
 - 原論文Figure 4: 再訓練・Reservoir Sampling・Linear CFRの効果
 - dberweger2017版の訓練経験則（3段階訓練、学習率半減、混合訓練）
+- dberweger2017リポジトリ readme.md（2026年3月更新版）
+
 
 ### 10A.11 モデル品質の評価基準
 
 Phase 1合格基準:
 - advantage lossが安定的に低下
 - ランダム相手への利益 >= 10チップ/ゲーム
+
+Phase 2判断基準:
+- profit vs random が正の値なら最良checkpointでPhase 3開始
+- profit vs random がPhase 1以下でもPhase 3へ進む（Phase 3で回復設計）
+- 異常停止なら最後の正常checkpointでPhase 3開始
 
 最終合格基準:
 - ランダム相手への利益 >= 15チップ/ゲーム
@@ -3507,10 +3606,30 @@ HUDはプレイ画面上に推奨を表示する。
 action
 amount
 confidence
-source
+source（Solver / AI / Chart / Deep CFR / Deep CFR+）
 reason
 processing status
+action_probabilities（Deep CFR / Deep CFR+ ソース時のみ）
 ```
+
+Deep CFRソース表示:
+
+```text
+strategy_source="deep_cfr" → Source: Deep CFR
+strategy_source="deep_cfr_exploit" → Source: Deep CFR+（cyan色）
+```
+
+Deep CFR確率分布表示:
+
+```text
+Deep CFR:
+  RAISE 72%
+  CALL 25%
+  FOLD 3%
+```
+
+確率分布はDeep CFR / Deep CFR+ソース時のみ表示する。
+Solver / Chart / AI ソース時は従来通り非表示。
 
 ---
 
@@ -3524,6 +3643,7 @@ processing status
 CHART CHECKING...
 SOLVER THINKING...
 LLM ANALYZING...
+DEEP CFR THINKING...
 Computing...
 ```
 
@@ -3971,6 +4091,15 @@ hero_cards_missing
 matched_hand_missing
 hero_range_contains_hand=false
 hero_range_missing_reason
+Deep CFR routing:
+deep_cfr_bridge initialized
+Deep CFR recommendation generated
+Deep CFR recommendation failed, falling back
+Deep CFR fallback: phase={phase} active={count} route={route}
+Deep CFR fallback skipped: no available fallback
+exploit_adjustment applied: original={action} adjusted={action}
+exploit_adjustment skipped: reason={reason}
+exploit_adjustment failed: {error}
 ```
 
 ---
@@ -4253,8 +4382,10 @@ teacherとして使わない:
 
 ```text
 pytest -q
-1282 passed, 7 warnings
+1441 passed, 0 failed
 ```
+
+
 ---
 
 ### 16.8 追加重点テスト

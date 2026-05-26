@@ -2393,14 +2393,19 @@ Rust postflop CLIを即座に削除せず、Deep CFR統合完了後に廃止す�
 訓練リポジトリ: https://github.com/dberweger2017/deepcfr-texas-no-limit-holdem-6-players
 ライセンス: MIT
 
-訓練スケジュール:
+訓練スケジュール（実測値に基づく更新）:
   Step 0: 環境構築（20分）
-  Step 1: Phase 1 基礎訓練 ×3シード（3〜6日）
-  Step 2: Phase 1 品質確認（数時間）
-  Step 3: Phase 2 自己対戦（2〜3日）
-  Step 4: Phase 3 混合訓練（1〜2週間）
-  Step 5: 最終品質検証（1日）
-  合計: 約1ヶ月
+  Step 1: Phase 1 基礎訓練 ×3シード（各~1.5時間、合計~5時間。~3秒/イテレーション）
+  Step 2: Phase 1 品質確認（数時間。評価スクリプト + TensorBoard確認）
+  Step 3: Phase 2 自己対戦（~24-28時間。~44-52秒/イテレーション × 2000回）
+  Step 4: Phase 3 混合訓練（~9日見込み。~50秒/イテレーション × 15000回。途中打ち切り可）
+  Step 5: 最終品質検証（数時間）
+  合計: Phase 1-2で約2日、Phase 3を含めると約10-12日
+
+注記: 当初は「約1ヶ月」と見積もっていたが、RTX 3080での実測では
+Phase 1が想定よりはるかに速かった（1シード~1.5時間 vs 当初見積もり2-3日）。
+Phase 2はニューラルネット対戦のため約15倍遅くなるが、それでも~24時間で完了する。
+Phase 3が最も時間を要するが、途中チェックポイントで品質評価し十分なら打ち切り可能。
 
 訓練とシステム改修は並行して進められる。
 訓練中にdeep_cfr_bridge.pyの実装・テストを行う。
@@ -2527,9 +2532,355 @@ Linear CFR重み付けを適用する:
 
 ネットワークサイズ:
   原論文Figure 3で、hidden layer 256次元を超えてもFHPでは改善なし。
-  dberweger2017版の5層×256ユニットはこの知見に基づく。
+  dberweger2017版の3層×256ユニットはこの知見に基づく。
   無駄に大きくすると学習が不安定になる。
+
+  注記: SPEC初版およびDESIGN_NOTES初版では「5層×256ユニット」と記載していたが、
+  実際のdberweger2017リポジトリのmodel.pyは3層×256ユニット、入力156次元である。
+  poker-system側の _deep_cfr_network.py もこの実アーキテクチャで実装済み。
+
 
 これらの原則は2人の小〜中規模ゲームで実証されたものであり、
 6人NLHEで厳密に最適化されたレシピは2026年5月時点で存在しない。
 dberweger2017版の3段階訓練は開発者の経験則であり、原論文の手法とは異なる。
+
+実際の訓練では以下の追加知見を得た:
+- 評価関数（evaluate_against_random）でニューラルネット同士のRaise無限ループが発生する
+  → MAX_ACTIONS_PER_GAME = 300 で対処
+- PrioritizedMemoryの_max_priorityが際限なく増大し勾配爆発を起こす
+  → max_priority_cap = 100.0 で対処
+- checkpoint再開時にメモリバッファが復元されず発散する
+  → 各シードをフル実行し、checkpoint再開を使わない運用で対処
+- Phase 2はニューラルネット対戦により~15倍遅くなる（~3秒→~50秒/イテレーション）
+これらの修正はC:\dev\deepcfr-training側のコードに適用済みであり、
+poker-system側のコードには影響しない。
+
+
+## 35. Deep CFRフォールバック経路を細分化した理由
+
+### 35.1 一律フォールバックの問題
+
+Phase B Task 2では、Deep CFR失敗時に一律で `_postflop_legacy_route` へフォールバックしていた。
+これはFlop HUでもSolverを呼ぶことを意味する。
+
+しかしユーザー方針として、FlopではSolverを使わず、LLMを第1フォールバックにすることが決まった。
+
+理由:
+- Deep-SPR flopでSolverがタイムアウトする既知問題がそのまま残る
+- Deep CFRで解決したはずの問題がフォールバックで再発する
+
+### 35.2 フェーズ・人数別フォールバックを採用した理由
+
+以下のルールを採用した。
+
+Flop HU/Multiway: LLM → スキップ
+Turn/River HU: Solver → LLM
+Turn/River Multiway: LLM → スキップ
+
+理由:
+- Turn/RiverはSolverのツリーが小さく、タイムアウトしにくい
+- FlopはDeep CFRの主な価値がある局面であり、Solver fallbackは不要
+- LLMも失敗した場合、不正確な推奨より「推奨なし」が安全
+
+### 35.3 _postflop_legacy_route を残した理由
+
+_postflop_legacy_route は削除せず残した。
+
+理由:
+- config.yaml に deep_cfr セクションがない環境では旧経路が必要
+- fallback_to_solver=true の将来的な用途に備える
+- 既存テストの互換性を維持する
+
+---
+
+## 36. Deep CFR出力にexploit_adjustmentを適用する設計判断
+
+### 36.1 既存suggest_exploitを再利用しなかった理由
+
+既存の `suggest_exploit` はSolver出力形式（root_strategy, actions, average_strategy, equity, ev）を
+前提としたプロンプトを使っている。
+
+Deep CFRの出力形式（fold_prob, call_prob, raise_prob, raise_size_ratio）は異なるため、
+専用のプロンプトとメソッド `suggest_exploit_for_deep_cfr` を新設した。
+
+### 36.2 exploit失敗時に元推薦を保持する理由
+
+exploit_adjustmentはGTO近似戦略の上に載せる補正層であり、
+補正が失敗してもGTO近似としてのDeep CFR推薦自体は有効である。
+
+そのため、LLM例外・タイムアウト・統計不足時はDeep CFR元推薦をそのまま返す。
+暫定推奨は出さない。
+
+### 36.3 strategy_sourceで追跡する理由
+
+exploit調整の有無を追跡するために strategy_source を使い分ける。
+
+- "deep_cfr": 未調整のDeep CFR推薦
+- "deep_cfr_exploit": exploit調整後
+
+HUDでは "Deep CFR+" をcyan色で表示し、ユーザーが調整済みかを一目で判別できるようにした。
+
+同一actionが返された場合は strategy_source を変更しない（無意味な表示変更を防ぐ）。
+
+---
+
+## 37. HUD表示をDeep CFR対応にした設計判断
+
+### 37.1 確率分布をDeep CFRソース時のみ表示する理由
+
+既存のSolverソースでは `_probabilities_label` を常に非表示にしていた。
+Solverの確率分布はレンジ全体の混合戦略であり、1ハンドの推奨としては直感的でない。
+
+Deep CFRの確率分布は具体的なゲーム状態に対する直接的な判断であるため、
+ユーザーにとって有用な情報として表示する。
+
+### 37.2 既存ソース表示との互換性
+
+SOURCE_LABELS辞書に "deep_cfr" と "deep_cfr_exploit" を追加した。
+既存の "solver", "preflop_chart", "llm_multiway" 等のラベルは変更していない。
+
+Deep CFRが無い環境では従来通りのHUD表示が維持される。
+
+### 37.3 GUI既知テスト失敗の解消
+
+test_gui_smoke.py の test_hud_overlay_show_pre_hand が
+"安定待ち..." を期待していたが、実際のコードは "WAITING FOR STABLE STATE..." を返していた。
+
+Task 4でテスト側の期待値を実コードに合わせて修正し、
+1441 passed, 0 failed を達成した。
+
+---
+
+## 38. Deep CFR訓練で発見された技術的問題と対処
+
+### 38.1 評価関数の無限ループ
+
+evaluate_against_random / evaluate_against_checkpoint_agents で、
+ニューラルネット同士の対戦時にRaise→Raiseの無限ループが発生し、
+訓練がハングする問題が発覚した。
+
+Phase 1 Seed Cのiteration 520と1010で発生。Phase 2でも再現。
+
+対処: MAX_ACTIONS_PER_GAME = 300 を導入。
+300アクション超過でゲームを打ち切り、WARNINGログを出す。
+典型的な6人NLHEのハンドは20-40アクションであるため、300は十分に余裕がある。
+
+### 38.2 Priority正帰還ループ
+
+PrioritizedMemory の _max_priority が際限なく増大し、
+新規経験が常に最高優先度で追加される正帰還ループが発生した。
+
+Phase 2開始直後にPriority maxが10^12を超え、勾配爆発を引き起こした。
+
+対処: max_priority_cap = 100.0 を導入。
+理論的なリグレット範囲（約-100〜+100）に合わせたクランプ値。
+add / update_priority の両方でクランプを適用。
+
+### 38.3 checkpoint再開時のメモリバッファ損失
+
+continue_training関数はネットワーク重みのみを復元し、
+advantage_memory / strategy_memory を復元しない。
+
+これにより、checkpoint再開後にバッファが空から再構築され、
+初期の不安定なサンプルで訓練が発散する問題があった。
+
+Seed Aの初回実行（1000イテレーション→再開）で発生。
+
+対処: checkpoint再開を使わず、各シードを1500イテレーションのフル実行にした。
+Phase 2ではcheckpointを対戦相手として使用するため、
+学習エージェントのメモリは新規構築で問題ない。
+
+### 38.4 Phase 2のイテレーション速度
+
+Phase 1: ~3秒/イテレーション（ランダム対戦）
+Phase 2: ~44-52秒/イテレーション（ニューラルネット対戦）
+
+ニューラルネット6エージェントの推論コストにより約15倍遅くなる。
+traversals 400で2000イテレーション = 約24-28時間。
+
+SPEC 10A snapshotの仕様通り traversals 400 を維持した。
+
+## 39. 訓練手順をREADME準拠に修正した理由
+
+### 39.1 旧訓練手順で起きていた問題
+
+2026-05-22〜05-24のセッションで、以下の手順ミスが判明した。
+
+1. Phase 1 の traversals を 300 に設定していた。
+   README は 200 を指定している。Medium 記事の 100/200/400 は比較実験であり、
+   最終的に開発者は 200 に収束させた。
+
+2. Phase 1 の iterations を 1500 に設定していた。
+   README は 1000 を指定している。
+
+3. Seed A/B/C 方式を採用していた。
+   開発者は traversals の異なる 3 モデル比較を行っており、
+   同一 traversals での Seed 比較は独自判断だった。
+
+4. Phase 2 で独自関数 train_selfplay_v2 を作成し使用していた。
+   重み引き継ぎ（zero-start ではない）、混合対戦相手、--random-seats 等の
+   非標準設計を導入していた。README の train_against_checkpoint とは異なる。
+
+5. Phase 3（混合訓練）を実施していなかった。
+   開発者は Phase 2 で性能低下を経験しており、Phase 3 で回復させる設計である。
+   Phase 2 の性能低下を見て「弱すぎる」と判断し Phase 3 に進まなかったのは誤り。
+
+### 39.2 Medium 記事と README の矛盾
+
+2026年3月にリポジトリが大幅更新され、Issue #22（Phase 2/3 のバグ修正）が解決された。
+この更新でREADMEが書き直されたが、Medium 記事は更新されていない。
+
+README には以下の注記がある:
+"prioritize the repo over the Medium article"
+
+Medium 記事との主要な矛盾:
+- Phase 1 traversals: Medium は 100/200/400（3モデル比較）、README は 200（1モデル）
+- Phase 2 checkpoint元: Medium は models/400/checkpoint_iter_2000.pt、
+  README は models/phase1/checkpoint_iter_1000.pt
+- Phase 3 iterations: Medium は 20000、README は 10000
+- アクション空間: Medium は 4 固定離散、実コードは 3 + 連続サイジング
+
+これらの矛盾に気づかず Medium 記事を参考にしていたため、
+旧訓練は非標準パラメータで実行されていた。
+
+### 39.3 README準拠手順に切り替えた理由
+
+README が唯一の正規情報源であることが確認されたため、
+すべての訓練パラメータを README に合わせて再実行する方針にした。
+
+既存の訓練結果（旧 Phase 1 Seed A/B/C、旧 Phase 2、旧 Phase 2 v2）は
+参考データとして保持するが、本番モデル訓練には使用しない。
+
+### 39.4 Phase 2 の性能低下で中断しない理由
+
+旧 Phase 2 / Phase 2 v2 では、iter 300 付近をピークに profit vs random が低下した。
+開発者も Phase 2 で同様の経験をしており、"Self-play led to interesting cyclic patterns
+but plateaued in performance" と記載している。
+
+Phase 3（混合訓練）で回復させる設計であるため、
+Phase 2 の profit 低下で訓練を中断してはならない。
+
+### 39.5 独自コードを使用禁止にした理由
+
+train_selfplay_v2 は以下の非標準設計を含んでいた:
+- Phase 1 の重みを引き継ぐ（README の train_against_checkpoint は zero-start）
+- 混合対戦相手（Phase 1 の複数シードから選択 + ランダムエージェント）
+- --random-seats による席シャッフル
+
+これらは Deep CFR 原論文にも開発者の README にも根拠がなく、
+性能低下の一因だった可能性がある。
+
+今後の訓練では README のコマンドのみを使用し、
+独自フラグ（--self-play-v2, --random-seats, --opponent-checkpoints）は使用しない。
+
+### 39.6 --model-prefix t_ の注意点
+
+Phase 3 の --model-prefix t_ は models/ 内の t_*.pt を検索する。
+Phase 2 のチェックポイントは selfplay_checkpoint_iter_*.pt という名前で保存される。
+
+Phase 2 完了後に以下のいずれかが必要:
+- ファイルを t_*.pt にリネーム
+- --model-prefix selfplay に変更
+
+この確認を忘れると Phase 3 が対戦相手を見つけられず失敗する。
+
+## 40. flagship modelが現行コードと非互換である記録
+
+### 40.1 問題
+
+flagship_models/first/ に格納されているモデルは2025年3月作成の旧アーキテクチャである。
+
+旧アーキテクチャ:
+  ネットワーク層: fc1, fc2, fc3, fc4, fc5, fc6
+  出力: 4アクション固定（離散）
+
+現行アーキテクチャ:
+  ネットワーク層: base, action_head, sizing_head
+  出力: 3アクション + 連続サイジング（0.1〜3.0× pot）
+
+ロード時に RuntimeError: Missing key(s) / Unexpected key(s) が発生する。
+
+### 40.2 対処
+
+flagship modelは使用しない。
+現行コードで訓練したcheckpointのみを使用する。
+flagship_models/ ディレクトリは訓練リポジトリに残存するが、poker-systemからは参照しない。
+
+## 41. description.md vs readme.md の情報源優先順位を定めた理由
+
+### 41.1 背景
+
+訓練リポジトリには以下の情報源が存在する。
+
+readme.md: 2026年3月更新。Issue #22修正後の正規手順。
+description.md: 2025年3月作成。旧アーキテクチャ時代の実験記録。
+Medium記事: 更新されていない。READMEと矛盾する箇所がある。
+
+### 41.2 矛盾の例
+
+Phase 1 traversals: Medium は 100/200/400（3モデル比較）、README は 200（1モデル）
+Phase 2 checkpoint元: Medium は models/400/checkpoint_iter_2000.pt、README は models/phase1/checkpoint_iter_1000.pt
+Phase 3 iterations: Medium は 20000、README は 10000
+アクション空間: Medium/description は 4固定離散、実コードは 3 + 連続サイジング
+
+### 41.3 方針
+
+README (readme.md) を唯一の正規情報源とする。
+description.md は旧実験記録として参考のみ。
+Medium記事はREADMEと矛盾する場合、READMEを優先する。
+READMEに "prioritize the repo over the Medium article" と明記されている。
+
+## 42. Phase 3 対戦相手プール構成の設計判断
+
+### 42.1 問題
+
+READMEのPhase 3コマンドは --model-prefix t_ を使用するが、
+models/ 直下に t_*.pt は存在しない。
+Phase 2のcheckpointは selfplay_checkpoint_iter_*.pt という名前で保存される。
+
+### 42.2 採用した構成
+
+Phase 2の20 checkpoint（selfplay_checkpoint_iter_100.pt 〜 selfplay_checkpoint_iter_2000.pt）を
+models/phase3_pool_v3/ にコピーした。
+
+--checkpoint-dir models/phase3_pool_v3 で直下のみ検索（非再帰）。
+--model-prefix "selfplay_checkpoint_iter_[0-9]" で glob 文字クラスを使用し、
+旧訓練ファイル（phase1_seedA/B/C, phase2, phase2_v2）の混入を防止する。
+
+### 42.3 Phase 3自身の保存先を分けた理由
+
+train_with_mixed_checkpoints の検索は glob.glob(os.path.join(checkpoint_dir, f"{prefix}*.pt")) で
+非再帰・直下のみ。
+
+Phase 3自身のcheckpointを同じフォルダに保存すると、
+対戦相手プールに自分自身の中間checkpointが混入する危険がある。
+
+そのため --save-dir models/phase3_v3b で別フォルダに保存する。
+
+## 43. Phase 3 loss発散が自然収束する理由と中断しない判断
+
+### 43.1 現象
+
+Phase 3開始直後、Advantage network loss が 10^11〜10^12 に散発的にスパイクする。
+Phase 3 初回 (v3): iter 5〜27 で約44%のイテレーションで発生。
+Phase 3 再実行 (v3b): 同じ現象が初期に発生。
+
+### 43.2 原因候補
+
+encode_state の正規化分母が極小 stake で爆発する可能性がある（未修正）。
+PrioritizedMemory の max_priority_cap = 100.0 で勾配爆発は抑制済みだが、
+入力正規化の問題は残存している。
+
+### 43.3 自然収束の観察
+
+Phase 3 v3b では、数百イテレーション後にスパイク頻度が減少した。
+iter 2000付近では散発1件のみ（前後は正常値5〜14）。
+profit vs random は初期 +3.29 から +10〜+36 の範囲で安定推移。
+
+### 43.4 中断しない判断の根拠
+
+異常検知基準（snapshot Section 4.10）に該当しない限り中断しない。
+lossスパイクが「全イテレーション」ではなく散発であれば許容。
+profit vs randomが100 iter連続で負にならない限り許容。
+Phase 1 v3 (12.00) を大幅に上回るprofitが維持されている。
+
