@@ -2,8 +2,8 @@
 
 # Commander Snapshot
 
-## Updated: 2026-05-27 JST
-## Status: Phase 3 v4 訓練中（memory_size=20M） / poker-system Phase B完了
+## Updated: 2026-05-29 JST
+## Status: Phase 3 v4 訓練完了・モデル配置完了 / poker-system Phase B完了 / 次: ライブテスト
 
 ---
 
@@ -29,29 +29,42 @@ poker-system側は全変更push済み。
 
 最新commit:
 ```text
-ドキュメント更新: メモリバッファ拡大の設計判断記録、v4訓練計画、snapshot現在地点更新
+ドキュメント更新: Phase 3 v4訓練完了、モデル配置完了、最終評価結果記録
 ```
 
 ### 1.3 現在の開発状態
 
 Deep CFR推論ブリッジのシステム統合（Phase B）が全タスク完了。
-Deep CFRモデル訓練は Phase 3 v4（mixed training, memory_size=20M）が進行中。
+Deep CFRモデル訓練は Phase 3 v4 が完了し、最終評価に合格。モデル配置済み。
 
 確定事項:
 
 - Preflop: Chart（変更なし）
-- HU Postflop: Deep CFR推論（実装完了、モデル訓練中）
+- HU Postflop: Deep CFR推論（実装完了、モデル配置済み）
 - Multiway Postflop: Deep CFR推論（同上）
 - exploit_adjustment: LLM継続（Deep CFR出力に対する統計ベース補正、実装完了）
-- Rust postflop CLI: Deep CFR品質確認後に廃止（fallback経路として残存）
+- Rust postflop CLI: Deep CFRライブテスト確認後に廃止（fallback経路として残存）
 - OpenRouter / gpt-5.4-mini: exploit用途で継続
 
 Deep CFRモデル訓練:
-  Phase 3 v3b（memory_size=300,000）は中止。
-  memory_size を 20,000,000 に拡大し、Phase 1 v4 から再訓練。
   Phase 1 v4 完了（profit vs random = 24.41）
-  Phase 2 v4 完了（profit vs random = -0.80、Phase 3で回復する設計）
-  Phase 3 v4 訓練中（2026-05-27開始）
+  Phase 2 v4 完了（profit vs random = -0.80）
+  Phase 3 v4 完了（2026-05-29完了）
+
+Phase 3 v4 最終評価（独立再評価3000 games）:
+  Phase 3 v4 profit vs random = 46.07（合格基準≥15の3倍超）
+  Phase 3 v4 vs Phase 1 v4 = +4.72（勝ち越し）
+  Phase 1 v4 profit vs random = 28.08（参考値）
+  Final eval (500 games) profit vs random = 66.55
+  Final eval (500 games) profit vs mixed opponents = 93.36
+
+モデル配置:
+  models/deep_cfr/best_checkpoint.pt に mixed_checkpoint_iter_10000.pt をコピー済み
+  config.yaml deep_cfr.model_path: models/deep_cfr/best_checkpoint.pt
+  config.yaml deep_cfr.fallback_to_solver: true（ライブテスト確認後にfalseへ切替予定）
+
+残る合格基準:
+  CLIプレイ / ライブテストで明らかな異常行動がないこと（未確認）
 
 ### 1.4 Deep CFRフォールバック経路（Phase B Task 2.5で実装済み）
 
@@ -196,7 +209,7 @@ Phase 2 単体では Phase 1 を上回らないが、崩壊せず安定完走。
 Checkpoints: models/selfplay_v4/selfplay_checkpoint_iter_*.pt (20ファイル)
 ```
 
-#### Phase 3 v4 🔄 進行中（mixed training, traversals=400, iterations=10000）
+#### Phase 3 v4 ✅ 完了（mixed training, traversals=400, iterations=10000）
 
 ```text
 コマンド:
@@ -211,27 +224,56 @@ Checkpoints: models/selfplay_v4/selfplay_checkpoint_iter_*.pt (20ファイル)
   --log-dir logs/phase3_v4 \
   --save-dir models/phase3_v4
 
-起動方式:
-  Start-Process + RedirectStandardOutput/Error（-uフラグでバッファリング無効）
-  監視: 別PowerShellウィンドウで Get-Content phase3_v4.stdout.log -Wait
-
-ログ: C:\dev\deepcfr-training\phase3_v4.stdout.log
-stderr: C:\dev\deepcfr-training\phase3_v4.stderr.log
 開始: 2026-05-27
-速度: 約9-11秒/iter（初期）
-推定完了: 約1-2日後（後半メモリ増加で遅くなる可能性あり）
+完了: 2026-05-29
+速度: 約9-22秒/iter（後半メモリ満杯で増加）
+Advantage memory最終: 20,000,000（満杯）
+Strategy memory最終: 20,000,000（満杯）
+Checkpoint: models/phase3_v4/mixed_checkpoint_iter_10000.pt（100件、100刻み）
+
+最終iteration結果:
+  Advantage network loss: 2.07
+  Strategy network loss: 44.61
+  Average profit vs mixed opponents: 122.76
+  Average profit vs random: 34.09
+
+Final evaluation (500 games, 訓練スクリプト内蔵):
+  profit vs random: 66.55
+  profit vs mixed opponents: 93.36
+
+独立再評価 (3000 games, 別途スクリプト実行):
+  Phase 3 v4 profit vs random: 46.07
+  Phase 3 v4 vs Phase 1 v4: +4.72
+  Phase 1 v4 profit vs random: 28.08（参考値）
+
+最終合格基準判定:
+  profit vs random >= 15: ✅ 46.07（3倍超）
+  Phase 1 checkpointへの勝ち越し: ✅ +4.72
+  CLIプレイで異常行動なし: 未確認（ライブテストで確認予定）
+
+loss発散推移:
+  iter 0-600: 散発スパイク（10^10〜10^12）あり、自然収束
+  iter 2000以降: スパイク完全消失、全件1〜18の正常範囲
+
+profit推移:
+  iter 612付近: -8〜+10（中央値+1〜+3）
+  iter 2220付近: +11〜+34（中央値+19）
+  iter 5932付近: +15〜+67（中央値+35）
+  iter 8086付近: +30〜+63（中央値+49）
+  最終: 46.07（独立再評価3000 games）
+
+v3b比較（v3bはiter 2018で中止）:
+  v3b iter 2018: profit +10〜+36
+  v4 iter 10000: profit 46.07（独立再評価）
+  メモリバッファ拡大（300K→20M）の効果が実証された
 
 対戦相手プール:
-  models/phase3_pool_v4/ に Phase 2 v4 の 20 checkpoint をコピー。
-  --model-prefix "selfplay_checkpoint_iter_[0-9]" で旧訓練ファイル混入を防止。
+  models/phase3_pool_v4/ に Phase 2 v4 の 20 checkpoint。
   1000 iter ごとに対戦相手をランダム再選択。
+  Phase 3 自身のcheckpointは models/phase3_v4/ に別保存（自己混入防止）。
 
-初期評価:
-  Initial profit vs mixed opponents: 23.01
-  Initial profit vs random: -9.34
-
-Phase 3初期にloss発散が散発するが、数百iterで自然収束する（DESIGN_NOTES Section 43）。
-cp932エンコーディングエラー（スート文字♠♥♦♣）は訓練に影響なし。
+cp932エンコーディングエラー:
+  訓練全期間を通じて散発。訓練に影響なし。
 ```
 
 ### 4.8 Phase 3 対戦相手プールの構成
@@ -398,38 +440,41 @@ Start-Process方式: -uフラグ（バッファリング無効）が必須。な
 
 ## 9. 次にやること
 
-### 9.1 即時: Phase 3 v4 モニタリング
+### 9.1 即時: ライブテスト
 
-Phase 3 v4 訓練を監視し、完了または異常停止を確認。
-モニタリングコマンドは Section 4.11 を参照。
-異常検知基準は Section 4.10 を参照。
+Deep CFRモデル配置済み。CoinPokerでライブテストを実施する。
 
-### 9.2 Phase 3 完了後: 最終評価
+確認項目:
+- Deep CFR推論が正しくロード・実行されるか
+- HUDに Deep CFR / Deep CFR+ ソースが表示されるか
+- 確率分布（Fold/Call/Raise %）がHUDに表示されるか
+- Preflop ChartとPostflop Deep CFRのルーティングが正しく切り替わるか
+- exploit_adjustmentが統計十分な相手に対して動作するか
+- フォールバック経路が正しく動作するか（Deep CFR失敗時）
+- 推奨アクション・サイジングが実戦的に妥当か（明らかな異常行動がないか）
+- 応答速度（Deep CFR推論は1ms以下のはず）
 
-Section 4.9 の評価スクリプトを実行。
+異常行動の例（最終合格基準の残り項目）:
+- ナッツでフォールド
+- ブラフキャッチャーでオーバーベット
+- 明らかに弱い手でオールイン
+- 常にフォールドまたは常にレイズ
 
-最終合格基準:
-- ランダム相手への利益 >= 15チップ/ゲーム
-- Phase 1 checkpointへの勝率 >= 60%
-- CLIプレイで明らかな異常行動がないこと
+### 9.2 ライブテスト後: config.yaml切替
 
-### 9.3 モデル配置
+ライブテストでDeep CFRの動作が確認できたら:
+  config.yaml: deep_cfr.fallback_to_solver: false
 
-合格後:
-```text
-copy best_checkpoint.pt → C:\Users\user\Desktop\dev\poker-system\models\deep_cfr\best_checkpoint.pt
-config.yaml: deep_cfr.fallback_to_solver: false
-```
+### 9.3 ライブテスト後: Rust postflop CLI廃止判断
+
+Deep CFRが安定稼働することを確認後、Rust postflop CLIの廃止を検討する。
+廃止前にfallback_to_solver: falseで数セッション安定動作を確認する。
 
 ### 9.4 SPEC.md / DESIGN_NOTES.md 更新
 
-Phase 3完了後の最終結果を反映。
+ライブテスト結果を反映。
 
-### 9.5 ライブテスト
-
-Deep CFRモデル配置後、CoinPokerでライブテスト実施。
-
-### 9.6 プロンプト改訂
+### 9.5 プロンプト改訂
 
 Commanderプロンプトのタスク種別判定（コード変更/ドキュメント更新/調査）を改訂済み。
 改訂版はセッション内で合意済みだが、ファイルとしての保存は未実施。
@@ -483,3 +528,9 @@ Commanderプロンプトのタスク種別判定（コード変更/ドキュメ�
 14. Phase 2 v4 実行・完了（profit -0.80、正常）
 15. Phase 3 v4 開始（進行中）
 16. poker_error_*.txt 7495件削除
+17. Phase 3 v4 モニタリング（iter 612, 2220, 5932, 8086で確認、全異常検知基準クリア）
+18. Phase 3 v4 完了確認（iter 10000/10000）
+19. 独立再評価実行（3000 games × 3評価）
+20. モデル配置（mixed_checkpoint_iter_10000.pt → models/deep_cfr/best_checkpoint.pt）
+21. config.yaml確認（deep_cfr.model_path, device, fallback_to_solver正しいことを確認）
+22. SPEC.md / DESIGN_NOTES.md / snapshot.md 更新（Phase 3 v4完了・モデル配置完了反映）

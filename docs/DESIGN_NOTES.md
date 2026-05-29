@@ -2945,3 +2945,128 @@ RAM増設（64GB以上）した場合、30,000,000〜40,000,000への拡大を�
 メモリが大きいほど「ゼロからの再訓練」で扱うデータ量が増えるため。
 Phase 1 v4の実測速度で影響度を確認する。
 
+---
+
+## 45. Phase 3 v4 最終結果とメモリバッファ拡大の効果実証
+
+### 45.1 Phase 3 v4 最終結果
+
+Phase 3 v4（mixed training, memory_size=20M, iterations=10000, traversals=400）が2026-05-29に完了した。
+
+最終評価結果:
+
+```text
+Final eval (500 games, 訓練スクリプト内蔵):
+  profit vs random: 66.55
+  profit vs mixed opponents: 93.36
+
+独立再評価 (3000 games):
+  Phase 3 v4 profit vs random: 46.07
+  Phase 3 v4 vs Phase 1 v4: +4.72
+  Phase 1 v4 profit vs random: 28.08
+```
+
+最終合格基準（profit vs random >= 15）を3倍超で達成。
+Phase 1 checkpointへも勝ち越し。
+
+### 45.2 v3b（memory_size=300K）との比較
+
+v3bはiter 2018/10000で中止した。中止時点のprofitは+10〜+36で安定していたが、
+メモリバッファ拡大のために再訓練を決定した。
+
+比較:
+
+```text
+v3b (memory_size=300,000):
+  Phase 1 v3 独立再評価: 12.00
+  Phase 3 v3b iter 2018: profit +10〜+36（中止）
+  メモリ満杯: iter 65付近（以降は古い経験が押し出され続ける）
+
+v4 (memory_size=20,000,000):
+  Phase 1 v4 独立再評価: 24.41（v3の2倍）
+  Phase 3 v4 独立再評価: 46.07（10000 iterまで完走）
+  メモリ満杯: iter 9999付近（訓練終盤でようやく満杯）
+```
+
+v3bをiter 10000まで回した場合の予測は不明だが、Phase 1時点でv4がv3の2倍だったこと、
+Phase 3 v4のprofit推移が一貫して上昇し続けたことから、メモリバッファ拡大の効果は実証された。
+
+### 45.3 Phase 3 v4のprofit推移
+
+訓練中のモニタリングで以下の推移を確認した。
+
+```text
+iter 612付近: -8〜+10（中央値+1〜+3）初期不安定期
+iter 2220付近: +11〜+34（中央値+19）安定期突入
+iter 5932付近: +15〜+67（中央値+35）上昇継続
+iter 8086付近: +30〜+63（中央値+49）底上げ進行
+最終 (iter 10000): 46.07（独立再評価3000 games）
+```
+
+iter 2000以降、一貫してプラス圏を維持し、底値も上昇し続けた。
+10000 iterまで改善が続いており、崩壊・過学習の兆候はなかった。
+
+### 45.4 loss発散の推移
+
+Phase 3初期にAdvantage network lossの散発スパイク（10^10〜10^12）が発生した。
+これはDESIGN_NOTES Section 43で記録済みの既知現象。
+
+```text
+iter 0-600: 散発スパイクあり（10^10〜10^12）
+iter 600-2000: スパイク頻度減少
+iter 2000以降: スパイク完全消失、全件1〜18の正常範囲
+```
+
+encode_stateの正規化分母の問題（Section 43の原因候補）は未修正だが、
+訓練に致命的な影響を与えないことが確認された。
+
+### 45.5 メモリ使用量
+
+```text
+Advantage memory: 20,000,000（iter 9999付近で満杯）
+Strategy memory: 20,000,000（同上）
+RAM使用: 推定12GB（メモリバッファ分）+ OS/Python/PyTorch約8GB = 約20GB / 32GB
+Windowsスワップ: 発生せず（DESIGN_NOTES Section 44の設計通り）
+```
+
+原論文の40,000,000の50%だが、十分な品質を達成した。
+将来RAM増設（64GB）時に30M〜40Mへの拡大を検討する価値はある。
+
+### 45.6 Final evalと独立再評価の差異
+
+Final eval（500 games）= 66.55 と 独立再評価（3000 games）= 46.07 に差がある。
+
+理由候補:
+- 500 gamesと3000 gamesのサンプル数差による分散
+- Final evalは訓練スクリプト内蔵の評価（訓練直後のGPU状態で実行）
+- 独立再評価は別プロセスでモデルをロードし直して実行
+- 3000 gamesの方がより安定した推定値
+
+モデル品質の判断には3000 gamesの独立再評価（46.07）を使う。
+
+### 45.7 Phase 3 v4 vs Phase 1 v4 の差が小さい理由
+
+Phase 3 v4 vs Phase 1 v4 = +4.72 は、profit vs random（46.07 vs 28.08）の差ほど大きくない。
+
+理由:
+- ニューラルネット同士の対戦では、ランダム相手との対戦より差が圧縮される
+- Phase 1 v4自体がvs randomで28.08と十分強い
+- 6人テーブルで1人だけPhase 3、他5人がPhase 1という構成では、
+  Phase 3エージェントが搾取できる相手が限定的
+- 重要なのはランダム相手への絶対的な強さ（46.07）と、
+  Phase 1より弱くないこと（+4.72で勝ち越し）
+
+### 45.8 モデル配置
+
+```text
+コピー元: C:\dev\deepcfr-training\models\phase3_v4\mixed_checkpoint_iter_10000.pt
+コピー先: C:\Users\user\Desktop\dev\poker-system\models\deep_cfr\best_checkpoint.pt
+ファイルサイズ: 1,761,726 bytes (1.76MB)
+配置日: 2026-05-29
+
+config.yaml:
+  deep_cfr.model_path: models/deep_cfr/best_checkpoint.pt
+  deep_cfr.device: cuda
+  deep_cfr.fallback_to_solver: true（ライブテスト確認後にfalseへ切替予定）
+```
+

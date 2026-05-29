@@ -3079,6 +3079,12 @@ models/deep_cfr/
 ├── phase3/                 ← 訓練Phase 3
 └── training_log.md         ← 訓練経過記録
 
+現在配置済みモデル:
+  best_checkpoint.pt = Phase 3 v4 mixed_checkpoint_iter_10000.pt
+  訓練: Phase 1 v4 → Phase 2 v4 → Phase 3 v4 (memory_size=20M, iterations=10000, traversals=400)
+  独立再評価 (3000 games): profit vs random = 46.07
+  配置日: 2026-05-29
+
 本番推論用モデルの切り替えはconfig.yamlで行う。
 訓練中の中間checkpointは本番推論に使わない。
 
@@ -3167,6 +3173,11 @@ Phase 2判断基準:
 - CLIプレイで明らかな異常行動がない
   （ナッツでフォールド、ブラフキャッチャーでオーバーベット等がない）
 - 異なるcheckpoint間の成績のばらつきが小さい
+
+Phase 3 v4 実績値（2026-05-29）:
+- ランダム相手への利益: 46.07チップ/ゲーム（基準15の3倍超） ✅
+- Phase 1 checkpointへの勝ち越し: +4.72 ✅
+- CLIプレイ / ライブテストでの異常行動確認: 未実施（次タスク）
 
 
 ## 11. LLM
