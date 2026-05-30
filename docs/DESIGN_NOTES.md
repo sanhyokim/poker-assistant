@@ -3125,3 +3125,199 @@ sizing_headの出力が0付近（＝デフォルト値1.55）に張り付いて�
 推論ログ（入力サマリ・出力確率・サイジング）を常時出力し、
 固定パターンの検出を容易にすべきである。
 
+---
+
+## 47. Deep CFRモデル品質不合格の事後分析
+
+### 47.1 発覚経緯
+
+Phase C修正後ライブテスト（2026-05-30）で、Deep CFRの推奨が
+ほぼ全ハンド・全ストリートでraise 70-80%、サイジング1.5x pot付近に偏ることを確認した。
+
+ライブテスト（2026-05-30、4ハンド観察）での全Deep CFR推奨:
+
+| Hand | Phase | Hero | Board | 状況 | F/C/R | 推奨 | 判定 |
+|---|---|---|---|---|---|---|---|
+| 1 | Flop | JsQs | 3hTh8h | 4way, ノードロー | 0.5/24/76 | BET 751 (151%pot) | ❌ おかしい |
+| 1 | Turn | JsQs | 3hTh8hTd | 3way, フラッシュボード | 0.7/20/79 | BET 2568 (151%pot) | ❌ おかしい |
+| 1 | River | JsQs | 3hTh8hTd4s | 3way | 0.5/22/77 | BET 2566 (151%pot) | ❌ おかしい |
+| 2 | Flop | 9sKh | 9h3h3c | 5way, トップペア弱K | 0.3/25/74 | BET 903 (152%pot) | ❌ 過剰 |
+| 2 | Turn | 9sKh | 9h3h3c2h | HU, フラッシュ完成ボード | 1.2/12/86 | BET 3633 (152%pot) | ❌ おかしい |
+| 3 | Flop | 3dAh | Jh6s9d | 3way facing BET 2320 | 0.7/23/76 | RAISE 12878 (5.6X) | ❌❌ 最悪 |
+| 3 | River | 3dAh | Jh6s9d2h3c | HU facing ALL_IN | 6/94/0 | CALL 10760 | △ 唯一まとも |
+| 4 | Flop | KsQh | Qs6s5c | 4way facing BET+CALL | 0.3/28/72 | RAISE 3276 (7.1X) | △ 過剰 |
+| 4 | Turn | KsQh | Qs6s5cTc | HU, TPTK, SPR 0.5 | 0.4/18/81 | ALL_IN 3948 | ✅ 合理的 |
+
+9局面中、明確に合理的と言えるのは1局面のみだった。
+一部のall-in局面ではcall/all-inが自然に見えるが、全体傾向としては
+ハンド強度・ボードテクスチャ・相手アクションへの感度が不足していた。
+
+### 47.2 エンコーディング検証
+
+C6でスートマッピング不一致を発見・修正した。
+
+```text
+訓練側: Clubs=0, Diamonds=1, Hearts=2, Spades=3
+poker-assistant旧: Spades=0, Hearts=1, Diamonds=2, Clubs=3
+```
+
+修正後、verify_encode.pyで "Encodings are IDENTICAL" を確認した。
+さらに、訓練側の正しいエンコーディングを直接使っても同じ偏った出力が返ることを確認した。
+
+これにより、推論側encode_game_stateの不一致ではなく、モデル自体の品質問題であることが確定した。
+
+### 47.3 根本原因
+
+Phase 3 v4モデルはランダム相手に最適化されていた。
+
+profit vs random = 46.07は、「ランダム相手にひたすらレイズすれば勝てる」戦略でも達成し得る。
+そのため、数値上は合格に見えても、GTO近似として必要な以下の感度が不足していた。
+
+- ハンド強度
+- ボードテクスチャ
+- ポジション
+- 相手アクション
+- SPR
+- multiway人数
+
+dberweger2017リポジトリ作者自身もREADMEで訓練の不安定性を認めており、
+今回の結果はそのリスクが実運用で顕在化したものと判断する。
+
+### 47.4 「profit vs random」の罠
+
+ランダム相手への最適戦略は「常にレイズ」に近くなり得る。
+この指標が高くても、GTO近似や実戦品質が高いとは限らない。
+
+今後は「profit vs random」を単独評価指標として使用しない。
+代わりに以下を組み合わせて評価する。
+
+- Spot Checks
+- Entropy
+- Sensitivity Tests
+- 対GTOデータセットaccuracy
+- Slumbot等の外部ベンチマーク
+
+### 47.5 教訓
+
+訓練側と推論側のencode一致検証は最初に行うべきだった。
+C1-C6で問題が段階的に発覚したことで、モデル品質問題の切り分けが遅れた。
+
+モデル品質評価は、単一のprofit指標ではなく、特定局面での行動分布で行うべきである。
+1ヶ月規模の訓練投資の前に、小規模テストで品質の兆候を確認する必要があった。
+
+---
+
+## 48. PokerRL+GRPO採用判断
+
+### 48.1 Deep Research調査（2026-05-30）
+
+5要件を全て満たす既製エンジンは存在しないことを確認した。
+
+調査範囲:
+- CFR系
+- ニューラルネット系
+- ハイブリッド
+- LLM系
+- 商用ソルバー
+
+DESIGN_NOTES Section 34.8で除外した候補に加え、Deep CFRも本番主推論には不採用とした。
+既製の6-max NLHE向け、ローカル高速、postflop対応、実戦投入可能なエンジンは見つからなかった。
+
+### 48.2 dcaustin33/poker_rl + PokerBenchの発見
+
+dcaustin33/poker_rlは、小型LLM + 補助ヘッド + SFT + GRPO自己対戦のアプローチを採用している。
+
+利用可能な公開データ:
+
+```text
+PokerBench: 6-max NLHE専用560k行のGTO訓練データ
+Pluribus: 10,000ハンド×6人=60kトラジェクトリ
+```
+
+作者実験では、Qwen-0.6B-Embedding + GRPOで最良結果を出しており、
+全実験コストは50ドル未満だった。
+
+### 48.3 Deep CFRとの設計差異
+
+```text
+Deep CFR:
+  156次元数値ベクトル → 小規模FF → 近似戦略
+
+PokerRL+GRPO:
+  テキストプロンプト → 小型LLM+補助ヘッド → 分類+サイジング
+```
+
+根本的な違いは、LLMが事前学習でポーカーや戦略言語に関する知識を持っている点である。
+Deep CFRの小規模FFネットワークにはその事前知識がない。
+
+### 48.4 採用理由
+
+- GTO解付き大規模データセットでSFTできる
+- 小型LLM（0.6B-4B）ならRTX 3080で数十ms〜数百ms推論が現実的
+- GRPO自己対戦で実戦品質を強化できる
+- エントロピー崩壊への対策（DAPO, OPEFO）を最初から設計に組み込める
+- Deep CFRの失敗教訓（評価基準、Spot Checks）を初期計画に反映できる
+
+Deep CFRには教師データがなく、ランダム相手profitに寄った評価になった。
+PokerRL+GRPOでは、SFT段階からGTOラベル付きデータを使用する。
+
+### 48.5 既知リスク
+
+- 訓練済みモデルは未公開であり、自前訓練が必要
+- PokerBench postflopは全てHUであり、Pluribusで6人局面を補完する必要がある
+- poker_rl作者のモデルもultra tight-aggressiveに偏った
+- エントロピー崩壊は4Bモデルで顕著になり得る
+- 12週間のタイムボックスと撤退基準が必要
+
+撤退基準を設ける理由は、Deep CFRと同じく「長期訓練後に品質不合格が判明する」
+失敗を繰り返さないためである。
+
+### 48.6 Rust postflop CLI廃止方針の確定
+
+ユーザーがRust postflop CLIを「タイムオーバー的に使えないもの」と判断した。
+
+Deep-SPRフロップで22秒タイムアウトする既知問題があり、ライブ支援の主経路にはできない。
+新エンジン統合完了まではフォールバックとして残すが、代替手段とは見なさない。
+
+---
+
+## 49. 補助ヘッド設計と<50ms目標
+
+### 49.1 なぜautoregressive生成ではなく補助ヘッドか
+
+autoregressive生成では50ms目標は現実的ではない。
+200 tokens前後のencodingに加えて数tokens生成が必要になり、200ms以上になりやすい。
+
+最終hidden stateをMLP補助ヘッドへ渡す方式なら、encoding後は1ms程度で出力できる。
+poker_rl作者（dcaustin33）も同じ設計判断を行い、成功している。
+
+### 49.2 Action Head: 4クラス分類
+
+Action Headは以下の4クラス分類とする。
+
+```text
+Fold / Check-Call / Raise / All-in
+```
+
+Deep CFRの3クラス（Fold / Call / Raise）からAll-inを追加する。
+All-inを独立クラスにする理由は、sizing headの0.1x-3.0x pot範囲では
+all-inを安定して表現しきれないためである。
+
+### 49.3 Sizing Head: sigmoid連続値
+
+Sizing Headは0.1x-3.0x potの連続値を出力する。
+
+```text
+raise_size_ratio = 0.1 + 2.9 * sigmoid(x)
+```
+
+Deep CFRと同じ方式であり、Recommendation変換も既存実装を流用しやすい。
+代替案としてcategorical 8-binがあり、実装指令書のStep 1aで切替可能にする。
+
+### 49.4 prefix cache戦略
+
+システムプロンプト（固定部分）をKV cacheに事前格納する。
+毎回re-encodeするのは状態依存部分（約50 tokens）のみに抑える。
+
+これにより、80ms程度の推論を20-30ms程度まで短縮できる可能性がある。
+

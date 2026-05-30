@@ -142,7 +142,7 @@ Windows 10/11
 | エクイティ計算 | eval7 |
 | GUI | PyQt6 |
 | DB | SQLite |
-| HU/Multiway推論 | Deep CFR (PyTorch) |
+| HU/Multiway推論 | PokerRL+GRPO（Deep CFRはLegacy fallback） |
 | Solver連携 | Rust postflop CLI（廃止予定） |
 | LLM | OpenRouter API（exploit補正用途のみ） |
 | テスト | pytest |
@@ -155,13 +155,14 @@ Windows 10/11
 外部依存:
 
 - OpenRouter API（exploit_adjustment用途のみ）
-- Deep CFR訓練済みモデル（ローカル .pt ファイル）
+- PokerRL+GRPO訓練済みモデル（ローカル量子化モデル）
+- Legacy Deep CFR訓練済みモデル（Stage D完了までのfallback）
 - CoinPokerデスクトップクライアント
 - キャプチャカードまたは画面キャプチャ
 
 廃止予定:
 
-- postflop-solver Rust CLI（Deep CFR統合完了後に廃止）
+- postflop-solver Rust CLI（PokerRL+GRPO統合完了後に廃止）
 
 
 LLM APIキー等の秘匿情報は `.env` で管理する。  
@@ -283,7 +284,7 @@ GameState構築
 ↓
 ┌──────────────┬────────────────────┬────────────────────┐
 │ Preflop      │ HU Postflop        │ Multiway Postflop   │
-│ Chart        │ Deep CFR推論       │ Deep CFR推論        │
+│ Chart        │ PokerRL+GRPO推論   │ PokerRL+GRPO推論    │
 │ + DB補正     │ + exploit補正      │ + eval7補助         │
 └──────────────┴────────────────────┴────────────────────┘
 ↓
@@ -383,7 +384,7 @@ HU Solverは局面により10〜22秒以上かかる可能性がある。
 CHART CHECKING...
 SOLVER THINKING...
 LLM ANALYZING...
-DEEP CFR THINKING...
+POKERRL THINKING...
 WAITING FOR STABLE POT...
 HERO CARDS UNSTABLE
 Computing...
@@ -2133,10 +2134,10 @@ phase == preflop
 → Chart
 
 phase in {flop, turn, river} and active_player_count == 2
-→ Deep CFR推論
+→ PokerRL+GRPO推論
 
 phase in {flop, turn, river} and active_player_count >= 3
-→ Deep CFR推論 + eval7補助
+→ PokerRL+GRPO推論 + eval7補助
 
 その他
 → skip / fallback
@@ -2176,7 +2177,8 @@ CHART CHECKING...
 
 ### 9.3 HU Postflop
 
-HU postflopはDeep CFR推論を主軸に判断する。
+HU postflopはPokerRL+GRPO推論を主軸に判断する。
+Deep CFR推論はフォールバックとして残す（Stage D完了まで）。
 
 基本:
 
@@ -2185,23 +2187,23 @@ active_player_count == 2
 phase in {flop, turn, river}
 ```
 
-Deep CFR推論はローカルGPU上で実行する。
-応答は1ミリ秒以下のため、同期呼び出しで問題ない。
-ただし既存の非同期worker構造は維持してよい。
+PokerRL+GRPO推論はローカルGPU上の常駐推論プロセスで実行する。
+応答速度はT1 Tierとして50-300msを目標とする。
+全Postflop推論はAsyncで実行し、GameLoopを止めない。
 
 処理中表示:
 
 ```text
-DEEP CFR THINKING...
+POKERRL THINKING...
 ```
 
-Deep CFR結果はcontext一致時のみ採用する。
+PokerRL+GRPO結果はcontext一致時のみ採用する。
 
-Deep CFR推論失敗時のフォールバック:
+PokerRL+GRPO推論失敗時のフォールバック:
 
 ```text
-Flop HU: LLM → スキップ（Solverは呼ばない。deep-SPRタイムアウト再発防止）
-Turn/River HU: Solver → LLM（Solverのツリーが小さくタイムアウトしにくい）
+Flop HU: LLM → スキップ（変更なし）
+Turn/River HU: LLM → スキップ（Solverフォールバック廃止）
 全失敗時: 推奨なし（暫定推奨は出さない）
 ```
 
@@ -2209,19 +2211,20 @@ exploit_adjustment:
 
 ```text
 DB統計が十分な相手（total_hands >= sample_threshold_low）に対しては、
-Deep CFR出力をLLM suggest_exploit_for_deep_cfr で補正する。
-補正はDeep CFR推論完了後に同期的に行う。
-補正後のstrategy_sourceは "deep_cfr_exploit" となる。
-補正失敗時はDeep CFR元推薦をそのまま返す。
+PokerRL+GRPO出力を既存LLM exploit_adjustmentで補正する。
+補正はPokerRL+GRPO推論完了後に同期的に行う。
+補正後のstrategy_sourceは "pokerrl_exploit" となる。
+補正失敗時はPokerRL+GRPO元推奨をそのまま返す。
 ```
 
 出力形式:
 
 ```text
-Deep CFRは以下を返す。
+PokerRL+GRPOは以下を返す。
 - fold_prob: float
 - call_prob: float
 - raise_prob: float
+- allin_prob: float
 - raise_size_ratio: float（ポット比）
 
 推奨アクションは最も確率が高いアクションとする。
@@ -2240,7 +2243,8 @@ confidence判定:
 
 ### 9.4 Multiway Postflop
 
-Multiway postflopはDeep CFR推論を主軸に判断する。
+Multiway postflopはPokerRL+GRPO推論を主軸に判断する。
+Deep CFR推論はフォールバックとして残す（Stage D完了まで）。
 
 基本:
 
@@ -2249,8 +2253,8 @@ active_player_count >= 3
 phase in {flop, turn, river}
 ```
 
-Deep CFR推論はHU postflopと同じモデル・同じブリッジを使用する。
-Deep CFR 6-playerモデルは6人テーブルを前提に訓練されているため、
+PokerRL+GRPO推論はHU postflopと同じモデル・同じブリッジを使用する。
+PokerRL+GRPOは6-max NLHEを前提に訓練するため、
 HU/Multiwayで別モデルを使い分ける必要はない。
 
 eval7はequity補助情報として維持する。
@@ -2259,10 +2263,10 @@ eval7はequity補助情報として維持する。
 処理中表示:
 
 ```text
-DEEP CFR THINKING...
+POKERRL THINKING...
 ```
 
-Deep CFR推論失敗時のフォールバック:
+PokerRL+GRPO推論失敗時のフォールバック:
 
 ```text
 Flop Multiway: LLM → スキップ
@@ -2414,11 +2418,11 @@ GameLoopは以下を行う。
 
 ## 10. HU Postflop Solver（廃止予定）
 
-本セクションの内容は、Deep CFR統合完了後に廃止する。
-Deep CFR統合が完了するまでは、既存のRust postflop CLI連携を維持する。
-Deep CFR統合完了後は、本セクションをDESIGN_NOTES.mdへ移動する。
+本セクションの内容は、PokerRL+GRPO統合完了後（Stage D）に廃止する。
+PokerRL+GRPO統合が完了するまでは、既存のRust postflop CLI連携を維持する。
+PokerRL+GRPO統合完了後は、本セクションをDESIGN_NOTES.mdへ移動する。
 
-Deep CFR統合後の判断経路は Section 9.3 を参照。
+PokerRL+GRPO統合後の判断経路は Section 9.3 を参照。
 
 ----
 
@@ -2920,9 +2924,138 @@ SOLVER STILL RUNNING
 ```
 
 
-## 10A. Deep CFR推論ブリッジ
+## 10A. PokerRL+GRPO推論ブリッジ
 
 ### 10A.1 概要
+
+PokerRL+GRPO推論ブリッジは、GameStateをテキストプロンプトに変換し、
+小型LLM（Phi-4-mini 3.8B or Qwen3-4B）+ 補助ヘッドで推論し、
+Recommendation形式に変換する中間層である。
+
+ファイル: strategy/pokerrl_bridge.py
+
+位置づけ: deep_cfr_bridge.pyと同等のDecision Engine層コンポーネント。
+
+### 10A.2 モデル
+
+ベース: Phi-4-mini 3.8B（第1選択） / Qwen3-4B（第2選択）
+訓練: SFT on PokerBench 560k + Pluribus 60k → GRPO self-play
+補助ヘッド: Action Head（4-class: Fold/Check-Call/Raise/All-in）+
+Sizing Head（sigmoid 0.1x-3.0x pot）
+量子化: AWQ 4-bit or GGUF Q4_K_M
+推論速度: T1 50-300ms（RTX 3080）
+
+### 10A.3 モデルロード
+
+アプリ起動時にモデルをGPUにロードする（1回のみ）。
+vLLM or llama.cppの常駐推論プロセスを使用する。
+KV cache warm-startを行い、システムプロンプトをprefix cacheする。
+
+ロード失敗時はWARNINGログを出し、fallback経路（既存Deep CFR → LLM）へ進む。
+
+### 10A.4 入力変換
+
+GameStateからテキストプロンプトを構築する。
+
+変換関数: pokerrl_prompt_builder.py
+
+推論時は圧縮フォーマット（約100-200 tokens）を使用する。
+Context Engineラベルとして、board_texture, hand_class, spr_bucket を事前計算する。
+autoregressive生成は行わない。
+最終hidden stateを補助ヘッドに渡す。
+
+### 10A.5 出力変換
+
+Action Head:
+
+```text
+softmax → fold_prob, call_prob, raise_prob, allin_prob
+```
+
+Sizing Head:
+
+```text
+sigmoid → 0.1x-3.0x pot ratio
+```
+
+推奨アクションはargmax(probabilities)とする。
+
+raise_amount:
+
+```text
+raise_amount = facing_bet + call_amount + int(pot * raise_size_ratio)
+```
+
+### 10A.6 Recommendation生成
+
+既存Deep CFRと同じRecommendation形式を使用する。
+
+```text
+source: "pokerrl" / "pokerrl_exploit"（LLM exploit適用後）
+confidence:
+  top_prob >= 0.70 → high
+  top_prob >= 0.45 → medium
+  top_prob < 0.45 → low
+```
+
+action_probabilitiesを含め、HUD表示に使用する。
+
+### 10A.7 exploit補正
+
+既存LLM exploit_adjustment（GPT-5.4-mini）をそのまま適用する。
+
+適用条件:
+
+```text
+opponent_stats.total_hands >= sample_threshold_low (50)
+```
+
+### 10A.8 エラーハンドリング
+
+```text
+モデルロード失敗: WARNING、fallback経路へ
+推論タイムアウト: WARNING、Noneを返す
+入力変換失敗: WARNING、Noneを返す
+```
+
+暫定推奨は出さない。
+
+### 10A.9 レイテンシTier
+
+```text
+T0 (Cache): Preflop標準、5-50ms
+T1 (Quick): Postflop通常、50-300ms
+T2 (Tool): Postflop難、1-5秒
+T3 (Search): 極難、5-12秒
+```
+
+全TierはAsyncで実行し、GameLoopは止めない。
+
+### 10A.10 訓練済みモデル管理
+
+```text
+models/pokerrl/
+├── final_quantized/    ← 本番推論用
+└── training_log.md     ← 訓練経過記録
+```
+
+### 10A.11 品質評価基準
+
+- Spot Checks 50シナリオで95%合格
+- Entropy健全（top-1確率中央値 ≤ 0.85）
+- PokerBench Postflop accuracy ≥ 60%
+- Slumbot HU ≥ -15 bb/100
+- 「profit vs random」は単独評価指標として使用禁止
+
+---
+
+## 10B. Legacy Deep CFR (Deprecated)
+
+本セクションの内容は非推奨（Deprecated）である。
+PokerRL+GRPO統合完了後（Stage D）に削除する。
+新主推論エンジンはSection 10Aを参照。
+
+### 10B.1 概要
 
 Deep CFR推論ブリッジは、GameStateをDeep CFRモデルの入力形式に変換し、
 推論結果をRecommendation形式に変換する中間層である。
@@ -2931,7 +3064,7 @@ Deep CFR推論ブリッジは、GameStateをDeep CFRモデルの入力形式に�
 
 位置づけ: solver_bridge.py と同等のDecision Engine層コンポーネント。
 
-### 10A.2 モデル
+### 10B.2 モデル
 
 モデル: Deep CFR 6-player NLHE
 リポジトリ: https://github.com/dberweger2017/deepcfr-texas-no-limit-holdem-6-players
@@ -2946,7 +3079,7 @@ poker-system側の _deep_cfr_network.py もこの実アーキテクチャに合�
 
 
 
-### 10A.3 モデルロード
+### 10B.3 モデルロード
 
 アプリ起動時にモデルをGPUにロードする（1回のみ）。
 ロード失敗時はWARNINGログを出し、fallback経路へ進む。
@@ -2959,7 +3092,7 @@ deep_cfr:
   device: cuda
   fallback_to_solver: true
 
-### 10A.4 入力変換
+### 10B.4 入力変換
 
 GameStateから以下を取得し、156次元入力ベクトルに変換する。
 
@@ -3010,7 +3143,7 @@ hand_start_stackが不明なプレイヤーはpot_chips=0。
 ```
 
 
-### 10A.5 出力変換
+### 10B.5 出力変換
 
 モデル出力を以下に変換する。
 
@@ -3028,7 +3161,7 @@ raise_amount = facing_bet + call_amount + int(pot * raise_size_ratio)
 推奨アクション:
 top_action = argmax(fold_prob, call_prob, raise_prob)
 
-### 10A.6 Recommendation生成
+### 10B.6 Recommendation生成
 
 Recommendation(
     action=top_action,
@@ -3049,7 +3182,7 @@ Recommendation(
     }
 )
 
-### 10A.7 exploit補正後
+### 10B.7 exploit補正後
 
 exploit_adjustment適用後:
 
@@ -3058,7 +3191,7 @@ metadata["exploit_source"] = "llm"
 metadata["original_action"] = original_top_action
 metadata["adjusted_action"] = adjusted_action
 
-### 10A.8 エラーハンドリング
+### 10B.8 エラーハンドリング
 
 モデルロード失敗: WARNINGログ、fallback_to_solver=trueなら既存Solver経路へ
 推論例外: WARNINGログ、そのフレームの推奨をスキップ
@@ -3068,7 +3201,7 @@ metadata["adjusted_action"] = adjusted_action
 エラー時にfallback推奨を出さない。
 既存の安全原則を維持する。
 
-### 10A.9 訓練済みモデル管理
+### 10B.9 訓練済みモデル管理
 
 訓練済みモデルは以下に配置する。
 
@@ -3098,7 +3231,7 @@ models/deep_cfr/
   READMEが唯一の正規情報源。description.mdは旧実験記録として参考のみ。
 
 
-### 10A.10 訓練原則
+### 10B.10 訓練原則
 
 Deep CFRモデルの訓練・再訓練時は以下の原則を遵守する。
 
@@ -3158,7 +3291,7 @@ Phase 3 初期loss発散の扱い:
 - dberweger2017リポジトリ readme.md（2026年3月更新版）
 
 
-### 10A.11 モデル品質の評価基準
+### 10B.11 モデル品質の評価基準
 
 Phase 1合格基準:
 - advantage lossが安定的に低下
@@ -3192,12 +3325,12 @@ LLM単体の出力を無検証で採用しない。
 
 用途:
 
-- HU exploit adjustment（Deep CFR出力に対する統計ベース補正）
+- HU exploit adjustment（PokerRL+GRPO出力に対する統計ベース補正）
 - Multiway exploit adjustment（同上）
 
 廃止した用途:
 
-- Multiway postflop判断の主軸（Deep CFRに置き換え）
+- Multiway postflop判断の主軸（PokerRL+GRPOに置き換え）
 
 ---
 
@@ -3626,29 +3759,31 @@ HUDはプレイ画面上に推奨を表示する。
 action
 amount
 confidence
-source（Solver / AI / Chart / Deep CFR / Deep CFR+）
+source（Solver / AI / Chart / Deep CFR / Deep CFR+ / PokerRL / PokerRL+）
 reason
 processing status
-action_probabilities（Deep CFR / Deep CFR+ ソース時のみ）
+action_probabilities（Deep CFR / Deep CFR+ / PokerRL / PokerRL+ ソース時のみ）
 ```
 
-Deep CFRソース表示:
+Deep CFR / PokerRLソース表示:
 
 ```text
 strategy_source="deep_cfr" → Source: Deep CFR
 strategy_source="deep_cfr_exploit" → Source: Deep CFR+（cyan色）
+strategy_source="pokerrl" → Source: PokerRL
+strategy_source="pokerrl_exploit" → Source: PokerRL+（cyan色）
 ```
 
-Deep CFR確率分布表示:
+Deep CFR / PokerRL確率分布表示:
 
 ```text
-Deep CFR:
+PokerRL:
   RAISE 72%
   CALL 25%
   FOLD 3%
 ```
 
-確率分布はDeep CFR / Deep CFR+ソース時のみ表示する。
+確率分布はDeep CFR / Deep CFR+ / PokerRL / PokerRL+ソース時のみ表示する。
 Solver / Chart / AI ソース時は従来通り非表示。
 
 ---
@@ -3663,7 +3798,9 @@ Solver / Chart / AI ソース時は従来通り非表示。
 CHART CHECKING...
 SOLVER THINKING...
 LLM ANALYZING...
-DEEP CFR THINKING...
+POKERRL THINKING...
+POKERRL DEEP THINKING...
+POKERRL FALLBACK...
 Computing...
 ```
 
@@ -4042,6 +4179,29 @@ deep_cfr:
 | deep_cfr.fallback_to_solver | Deep CFR利用不可時にRust postflop CLIへfallbackするか |
 ```
 
+### 14.13 pokerrl
+
+PokerRL+GRPO推論設定。
+
+```yaml
+pokerrl:
+  model_path: models/pokerrl/final_quantized/
+  device: cuda
+  inference_engine: llama_cpp  # or vllm
+  inference_timeout_ms: 5000
+  prefix_cache_enabled: true
+  fallback_to_deep_cfr: true
+```
+
+| パラメータ | 用途 |
+|---|---|
+| pokerrl.model_path | 本番推論用量子化モデルのディレクトリ |
+| pokerrl.device | 推論デバイス（cuda / cpu） |
+| pokerrl.inference_engine | 常駐推論エンジン（llama_cpp / vllm） |
+| pokerrl.inference_timeout_ms | 推論タイムアウト |
+| pokerrl.prefix_cache_enabled | システムプロンプトのprefix cacheを有効化するか |
+| pokerrl.fallback_to_deep_cfr | PokerRL利用不可時にLegacy Deep CFRへfallbackするか |
+
 ---
 
 ## 15. ログ
@@ -4117,6 +4277,13 @@ Deep CFR recommendation generated
 Deep CFR recommendation failed, falling back
 Deep CFR fallback: phase={phase} active={count} route={route}
 Deep CFR fallback skipped: no available fallback
+PokerRL model loaded
+PokerRL recommendation generated
+PokerRL recommendation failed, falling back
+PokerRL encode summary
+POKERRL THINKING...
+POKERRL DEEP THINKING...
+POKERRL FALLBACK...
 exploit_adjustment applied: original={action} adjusted={action}
 exploit_adjustment skipped: reason={reason}
 exploit_adjustment failed: {error}
@@ -4512,6 +4679,10 @@ Cards列の表示補正では player.cards_visible を変更しない。
 - frame由来Hero通常actionを無条件でstreet actionへ保存すること
 - interrupted / abandoned handを通常hand_endとして保存すること
 - OpenRouter APIキーやprompt全文を通常ログに出すこと
+- PokerRL訓練済みモデルの品質検証前にDeep CFR/Rust Solverを削除しない
+- 「profit vs random」のみでモデル品質を判断しない
+- Spot Checks 50シナリオを削除・緩和しない
+- verify_pokerrl_encode.pyの検証をスキップしない
 ```
 
 ---
