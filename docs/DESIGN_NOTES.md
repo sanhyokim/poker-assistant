@@ -3070,3 +3070,58 @@ config.yaml:
   deep_cfr.fallback_to_solver: true（ライブテスト確認後にfalseへ切替予定）
 ```
 
+---
+
+## 46. encode_game_stateが訓練側encode_stateと乖離していた問題と修正
+
+### 46.1 発覚経緯
+
+Phase 3 v4モデル配置後の初回ライブテスト（2026-05-29）で、Deep CFRの推奨が
+全ハンド・全ストリートで一貫してraise 70-80%、サイジング1.5x pot付近を返した。
+状況に応じた変動が極めて小さく、異常行動が疑われた。
+
+調査の結果、poker-assistant側のencode_game_state()が
+訓練リポジトリのencode_state()（src/core/model.py）と
+複数箇所で乖離していることが判明した。
+
+### 46.2 発見された乖離と修正内容
+
+C1: initial_stake（正規化分母）
+  訓練側: state.players_state[0].stake（残りチップのみ）
+  本番側: hero.stack + hero.bet（残りチップ＋現在ベット）
+  影響: pot, bet, stack, min_bet, previous action amountの全正規化値がズレ
+  修正: hero.stackのみに変更
+
+C2: pot_chips（プレイヤー累積ポット貢献額）
+  訓練側: player_state.pot_chips / initial_stake
+  本番側: 常に0.0
+  影響: 6人×24次元中6次元が全て0
+  修正: hand_start_stack - current_stack - current_betで計算
+  GameStateにhand_start_stacksフィールドを追加
+
+C3: current_player / button位置
+  current_player: Hero=index 0固定。推論はHeroターンのみなので正しい。
+  button位置: (dealer_seat - 1) % 6 の変換は正しい。dealer_seat=None時のWARNING追加。
+
+C4: legal_actions / previous_action
+  legal_actions: Raiseを常にONにしていた。hero_stack > call_amountの場合のみONに修正。
+  previous_action: ストリート開始直後にcurrent_street_actionsが空の場合、
+  preflop_actionsからフォールバックするよう修正。
+
+C5: INFOレベル推論ログ追加
+  ライブテストで入力値の違和感に気づけるよう、推論時に主要入力値をINFOログ出力。
+
+### 46.3 サイジングが1.5x付近に固定されていた原因
+
+ネットワークのsizing_headは Sigmoid 出力に 0.1 + 2.9 * sigmoid(x) を適用する。
+sigmoid(0) = 0.5 → 0.1 + 2.9 * 0.5 = 1.55。
+入力が壊れているためネットワークが意味のある判断をできず、
+sizing_headの出力が0付近（＝デフォルト値1.55）に張り付いていた。
+
+### 46.4 教訓
+
+訓練リポジトリのencode_state()を正とし、
+本番側のencode_game_state()は1対1で対応を検証すべきである。
+推論ログ（入力サマリ・出力確率・サイジング）を常時出力し、
+固定パターンの検出を容易にすべきである。
+

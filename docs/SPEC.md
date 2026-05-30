@@ -2963,49 +2963,51 @@ deep_cfr:
 
 GameStateから以下を取得し、156次元入力ベクトルに変換する。
 
-```text
-hero_cards: list[str]
-board: list[str]
-phase: str
-pot: int
-hero_stack: int
-hero_bet: int
-hero_position: int (button seat)
-active_player_count: int
-players: dict（各seatのstack/bet/in_hand/is_seated）
-current_street_actions: list[ActionRecord]
-min_bet: int
-legal_actions: list[str]
-```
-
 変換関数: encode_game_state(game_state: GameState) → numpy.ndarray (156,)
+
+正規化分母: initial_stake = hero.stack（残りチップ）。0以下の場合は1.0にフォールバック。
+訓練側（src/core/model.py encode_state()）と同一の定義。
 
 156次元の内訳:
 ```text
-hero hand one-hot:       52次元（カード2枚をone-hot）
-board one-hot:           52次元（カード最大5枚をone-hot）
-stage one-hot:            5次元（preflop/flop/turn/river/showdown）
-pot ratio:                1次元（pot / initial_chips）
-button position one-hot:  6次元
-current player one-hot:   6次元
-per-player state:        24次元（6人 × 4: active/bet/pot_contribution/stack）
-max bet ratio:            1次元
-legal actions:            4次元（fold/check-call/raise/all-in）
-previous action encoding: 5次元
+[0:52]    hero hand one-hot:           52次元（カード2枚をone-hot）
+[52:104]  board one-hot:               52次元（カード最大5枚をone-hot）
+[104:109] stage one-hot:                5次元（preflop/flop/turn/river/showdown）
+[109]     pot / initial_stake:          1次元
+[110:116] button position one-hot:      6次元（dealer_seat→0始まりインデックス変換）
+[116:122] current player one-hot:       6次元（Hero=index 0固定、推論はHeroターンのみ）
+[122:146] per-player state:            24次元（6人 × 4値）
+            active:     1.0 if in_current_hand else 0.0
+            bet:        current_street_bet / initial_stake
+            pot_chips:  (hand_start_stack - current_stack - current_bet) / initial_stake
+            stack:      current_stack / initial_stake
+[146]     min_bet / initial_stake:      1次元（テーブル上の最大ベット額）
+[147:151] legal actions:                4次元（Fold=0, Check=1, Call=2, Raise=3）
+            Fold: 常に1
+            Check: max_bet <= hero_betのとき1
+            Call: max_bet > hero_betのとき1
+            Raise: hero_stack > call_amountのとき1
+[151:156] previous action:             5次元（4 action type one-hot + 1 amount）
+            current_street_actionsの最後のアクション
+            ストリート開始直後はpreflop_actionsからフォールバック
+            両方空なら全て0
 合計: 156次元
 ```
 
 カード表記変換:
 ```text
-"Qd" → 52次元one-hotの該当インデックス
-スート: ♠=0, ♥=1, ♦=2, ♣=3
+スート: Clubs=0, Diamonds=1, Hearts=2, Spades=3
 ランク: 2=0, 3=1, ..., A=12
-インデックス = rank * 4 + suit
+インデックス = suit * 13 + rank
 ```
 
-注記: SPEC初版では「500次元」と記載していたが、
-実際のdberweger2017リポジトリの状態エンコーディングは156次元である。
-poker-system側の deep_cfr_bridge.py の _compute_input_size() も156を返す。
+pot_chips計算:
+```text
+pot_chips = max(0, hand_start_stack - current_stack - current_street_bet)
+hand_start_stackはHandManagerがハンド開始時に記録。
+観察窓（1.5秒）の間にOCR補完。
+hand_start_stackが不明なプレイヤーはpot_chips=0。
+```
 
 
 ### 10A.5 出力変換
