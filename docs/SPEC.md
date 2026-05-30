@@ -2202,10 +2202,13 @@ PokerRL+GRPO結果はcontext一致時のみ採用する。
 PokerRL+GRPO推論失敗時のフォールバック:
 
 ```text
-Flop HU: LLM → スキップ（変更なし）
-Turn/River HU: LLM → スキップ（Solverフォールバック廃止）
+Flop HU: Deep CFR → LLM → スキップ（Stage D完了まで保持）
+Turn/River HU: Deep CFR → LLM → スキップ（Stage D完了まで保持）
 全失敗時: 推奨なし（暫定推奨は出さない）
 ```
+
+注記: Rust postflop CLI（Solver）はフォールバック経路から除外する。
+Deep CFRはStage D（PokerRL+GRPO統合完了）後に廃止する。
 
 exploit_adjustment:
 
@@ -2269,10 +2272,13 @@ POKERRL THINKING...
 PokerRL+GRPO推論失敗時のフォールバック:
 
 ```text
-Flop Multiway: LLM → スキップ
-Turn/River Multiway: LLM → スキップ
+Flop Multiway: Deep CFR → LLM → スキップ（Stage D完了まで保持）
+Turn/River Multiway: Deep CFR → LLM → スキップ（Stage D完了まで保持）
 全失敗時: 推奨なし（暫定推奨は出さない）
 ```
+
+注記: Rust postflop CLI（Solver）はフォールバック経路から除外する。
+Deep CFRはStage D（PokerRL+GRPO統合完了）後に廃止する。
 
 LLMはMultiway判断の主軸としては使用しない。
 exploit_adjustmentとしてのLLM利用は、HUと同様にDB統計十分な相手に対してのみ行う。

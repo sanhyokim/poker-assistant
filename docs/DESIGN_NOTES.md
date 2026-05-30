@@ -2573,14 +2573,15 @@ Phase B Task 2では、Deep CFR失敗時に一律で `_postflop_legacy_route` �
 
 以下のルールを採用した。
 
-Flop HU/Multiway: LLM → スキップ
-Turn/River HU: Solver → LLM
-Turn/River Multiway: LLM → スキップ
+Flop HU/Multiway: Deep CFR → LLM → スキップ（Stage D完了まで保持）
+Turn/River HU: Deep CFR → LLM → スキップ（Stage D完了まで保持）
+Turn/River Multiway: Deep CFR → LLM → スキップ（Stage D完了まで保持）
 
-理由:
-- Turn/RiverはSolverのツリーが小さく、タイムアウトしにくい
-- FlopはDeep CFRの主な価値がある局面であり、Solver fallbackは不要
-- LLMも失敗した場合、不正確な推奨より「推奨なし」が安全
+注記: 旧経路では Turn/River HU に Solver → LLM を使っていたが、
+Rust postflop CLIの永久廃止決定により、Solverをフォールバックから除外した。
+Deep CFRは品質不合格だが、PokerRL+GRPO統合完了（Stage D）までは
+「何も出さないより品質が低くても何か出す」経路として残す。
+Stage D完了後にDeep CFRフォールバックも廃止する。
 
 ### 35.3 _postflop_legacy_route を残した理由
 
