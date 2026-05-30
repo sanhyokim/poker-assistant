@@ -32,7 +32,7 @@ _RANK_MAP: dict[str, int] = {
     "K": 11,
     "A": 12,
 }
-_SUIT_MAP: dict[str, int] = {"s": 0, "h": 1, "d": 2, "c": 3}
+_SUIT_MAP: dict[str, int] = {"c": 0, "d": 1, "h": 2, "s": 3}
 _ACTION_NAMES = ["FOLD", "CALL", "RAISE"]
 
 _PHASE_TO_STAGE: dict[str, int] = {

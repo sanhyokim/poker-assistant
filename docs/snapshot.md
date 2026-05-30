@@ -1,9 +1,8 @@
 
-
 # Commander Snapshot
 
-## Updated: 2026-05-29 JST
-## Status: Phase 3 v4 訓練完了・モデル配置完了 / poker-system Phase B完了 / 次: ライブテスト
+## Updated: 2026-05-30
+## Status: Phase C完了（encode_game_state修正 C1-C5）/ 次: ライブテスト
 
 ---
 
@@ -11,6 +10,8 @@
 
 このsnapshotは、次セッションでポーカーAIアシスタント開発を再開するための現在地点メモである。
 体系的な仕様は SPEC.md、設計判断の理由は DESIGN_NOTES.md を参照。
+
+リポジトリ: https://github.com/sanhyokim/poker-assistant
 
 ---
 
@@ -25,22 +26,23 @@ pytest -q
 
 ### 1.2 GitHub push状況
 
-poker-system側は全変更push済み。
+全変更push済み。
 
 最新commit:
 ```text
-ドキュメント更新: Phase 3 v4訓練完了、モデル配置完了、最終評価結果記録
+ドキュメント更新: Phase C encode_game_state修正をSPEC.md/DESIGN_NOTES.mdに反映
 ```
 
 ### 1.3 現在の開発状態
 
 Deep CFR推論ブリッジのシステム統合（Phase B）が全タスク完了。
-Deep CFRモデル訓練は Phase 3 v4 が完了し、最終評価に合格。モデル配置済み。
+Phase C（encode_game_state修正 C1-C5）が全タスク完了。
+Deep CFRモデル訓練は Phase 3 v4 が完了し、モデル配置済み。
 
 確定事項:
 
 - Preflop: Chart（変更なし）
-- HU Postflop: Deep CFR推論（実装完了、モデル配置済み）
+- HU Postflop: Deep CFR推論（encode修正済み、モデル配置済み）
 - Multiway Postflop: Deep CFR推論（同上）
 - exploit_adjustment: LLM継続（Deep CFR出力に対する統計ベース補正、実装完了）
 - Rust postflop CLI: Deep CFRライブテスト確認後に廃止（fallback経路として残存）
@@ -54,9 +56,6 @@ Deep CFRモデル訓練:
 Phase 3 v4 最終評価（独立再評価3000 games）:
   Phase 3 v4 profit vs random = 46.07（合格基準≥15の3倍超）
   Phase 3 v4 vs Phase 1 v4 = +4.72（勝ち越し）
-  Phase 1 v4 profit vs random = 28.08（参考値）
-  Final eval (500 games) profit vs random = 66.55
-  Final eval (500 games) profit vs mixed opponents = 93.36
 
 モデル配置:
   models/deep_cfr/best_checkpoint.pt に mixed_checkpoint_iter_10000.pt をコピー済み
@@ -66,7 +65,22 @@ Phase 3 v4 最終評価（独立再評価3000 games）:
 残る合格基準:
   CLIプレイ / ライブテストで明らかな異常行動がないこと（未確認）
 
-### 1.4 Deep CFRフォールバック経路（Phase B Task 2.5で実装済み）
+### 1.4 Phase C修正内容（encode_game_state → encode_state一致）
+
+初回ライブテスト（2026-05-29）でDeep CFRが全ハンドでraise 70-80%・サイジング1.5x固定を返す異常を確認。
+調査の結果、encode_game_stateが訓練側encode_stateと複数箇所で乖離していることが判明。
+
+| Task | 修正内容 | 修正ファイル |
+|---|---|---|
+| C1 | initial_stake: `stack+bet` → `stack`のみ + DEBUGログ追加 | deep_cfr_bridge.py |
+| C2 | pot_chips: 常に0 → `hand_start_stack - current_stack - current_bet` | game_state.py, hand_manager.py, deep_cfr_bridge.py |
+| C3 | current_player/button: コメント追加 + dealer_seat=None WARNING | deep_cfr_bridge.py |
+| C4 | legal_actions: Raise常時ON → stack>call_amount時のみ。previous_action: ストリート境界フォールバック追加 | deep_cfr_bridge.py |
+| C5 | INFOレベル推論入力サマリログ追加 | deep_cfr_bridge.py |
+
+サイジング1.5x固定の原因: sizing_headのsigmoid(0)=0.5 → 0.1+2.9*0.5=1.55。入力が壊れていたためデフォルト出力に張り付いていた。
+
+### 1.5 Deep CFRフォールバック経路（Phase B Task 2.5で実装済み）
 
 | Deep CFR失敗時 | Flop HU | Flop Multiway | Turn/River HU | Turn/River Multiway |
 |---|---|---|---|---|
@@ -75,7 +89,56 @@ Phase 3 v4 最終評価（独立再評価3000 games）:
 
 ---
 
-## 2. Phase B（システム統合）完了状況
+## 2. 156次元エンコーディング対応表（確定版）
+
+| 区間 | 次元数 | 内容 | 状態 |
+|---|---|---|---|
+| [0:52] | 52 | Hero手札 one-hot | ✅ |
+| [52:104] | 52 | ボード one-hot | ✅ |
+| [104:109] | 5 | ステージ one-hot | ✅ |
+| [109] | 1 | pot / initial_stake | ✅ C1で修正 |
+| [110:116] | 6 | ボタン位置 one-hot | ✅ C3で検証 |
+| [116:122] | 6 | 現在プレイヤー one-hot | ✅ C3で検証（Hero=0固定） |
+| [122:146] | 24 | 6人×4(active,bet,pot_chips,stack) | ✅ C1+C2で修正 |
+| [146] | 1 | min_bet / initial_stake | ✅ C1で正規化修正 |
+| [147:151] | 4 | legal_actions(Fold,Check,Call,Raise) | ✅ C4で修正 |
+| [151:156] | 5 | previous_action(4 type + 1 amount) | ✅ C4で修正 |
+
+正規化分母: initial_stake = hero.stack（残りチップのみ）。0以下なら1.0。
+pot_chips計算: max(0, hand_start_stack - current_stack - current_bet)
+hand_start_stackはHandManagerがハンド開始時に記録、観察窓1.5秒で補完。
+
+---
+
+## 3. seat番号とテーブル配置
+
+```text
+座標プロファイル: profiles/coinpoker_6max.json
+
+seat 1 = Hero = 下中央
+seat 2 = 右下
+seat 3 = 右上
+seat 4 = 上中央
+seat 5 = 左上
+seat 6 = 左下
+
+アクション順: seat 1→2→3→4→5→6→1
+BTN=seat 6の場合: SB=seat 1, BB=seat 2
+
+Deep CFRインデックス対応:
+  index 0 = Hero (seat 1)
+  index 1 = seat 2
+  index 2 = seat 3
+  index 3 = seat 4
+  index 4 = seat 5
+  index 5 = seat 6
+
+button変換: button_idx = (dealer_seat - 1) % 6
+```
+
+---
+
+## 4. Phase B（システム統合）完了状況
 
 | Task | 内容 | 状態 | テスト追加 |
 |---|---|---|---|
@@ -85,22 +148,14 @@ Phase 3 v4 最終評価（独立再評価3000 games）:
 | B-3 | exploit_adjustment（Deep CFR出力へのLLM補正） | 完了 | +10 |
 | B-4 | HUD表示 Deep CFR対応 | 完了 | +8 |
 
-テスト推移: 1411 passed / 1 failed → 1441 passed / 0 failed
-
 ---
 
-## 3. 主要コード設計概要
+## 5. Deep CFR訓練情報
 
-（前回 snapshot と同一のため省略。変更なし。）
-
----
-
-## 4. Deep CFR訓練進捗
-
-### 4.1 訓練環境
+### 5.1 訓練環境
 
 ```text
-リポジトリ: C:\dev\deepcfr-training
+訓練リポジトリ: C:\dev\deepcfr-training
 （git clone https://github.com/dberweger2017/deepcfr-texas-no-limit-holdem-6-players）
 最終更新: 2026年3月（Issue #22修正済、Phase 2/3バグ修正含む）
 仮想環境: C:\dev\deepcfr-training\.venv
@@ -108,11 +163,9 @@ GPU: NVIDIA GeForce RTX 3080 (VRAM 10GB) / RAM 32GB / Python 3.10 (Conda) / PyTo
 
 pokers ライブラリ: patched fork
   pip install git+https://github.com/dberweger2017/pokers.git@b1a48bd
-
-flagship_models フォルダ: リポジトリに存在（旧アーキテクチャ。現行コードと非互換）
 ```
 
-### 4.2 独自パッチ（3件、upstream にはない。元に戻さないこと）
+### 5.2 独自パッチ（3件、upstream にはない。元に戻さないこと）
 
 1. MAX_ACTIONS_PER_GAME = 300
    ファイル: src/training/train.py L21, L39, L42, L887, L920, L923
@@ -125,16 +178,8 @@ flagship_models フォルダ: リポジトリに存在（旧アーキテクチ�
 3. memory_size = 20_000_000（学習エージェントのみ）
    ファイル: src/training/train.py L281, L429, L592, L1029
    目的: メモリバッファ拡大（デフォルト300,000 → 20,000,000）
-   原論文は40,000,000を使用。RAM 32GBの制約下で20,000,000を採用。
-   将来RAM増設時にさらに拡大を検討する。
 
-### 4.3 独自追加コード（使用禁止）
-
-- train_selfplay_v2 関数 (train.py L715〜)
-- --self-play-v2, --random-seats, --opponent-checkpoints フラグ
-- これらは README に存在せず、使用しない
-
-### 4.4 ネットワーク構造（確定値）
+### 5.3 ネットワーク構造（確定値）
 
 ```text
 入力次元: 156 (52+52+5+1+6+6+6*4+1+4+5)
@@ -142,11 +187,10 @@ flagship_models フォルダ: リポジトリに存在（旧アーキテクチ�
 出力ヘッド: 2つ
   action_head: 3 アクション (Fold, Check/Call, Raise)
   sizing_head: 連続ベットサイズ 0.1 + 2.9 * sigmoid(x) → 0.1〜3.0× pot
-encode_state(): 156次元 NumPy ベクトルを生成
 学習率: advantage optimizer lr=1e-6, strategy optimizer lr=0.00005
 ```
 
-### 4.5 訓練情報源
+### 5.4 訓練情報源
 
 ```text
 README (readme.md, 2026年3月) が正規情報源。
@@ -157,308 +201,100 @@ flagship model (2025年3月) は旧アーキテクチャ (fc1-fc6, 4アクショ
   ロード不可。使用しない。
 ```
 
-### 4.6 旧訓練結果（参考のみ）
+### 5.5 独自追加コード（使用禁止）
 
-#### 旧 Phase 1 (Seed A/B/C, traversals=300, iterations=1500)
+- train_selfplay_v2 関数 (train.py L715〜)
+- --self-play-v2, --random-seats, --opponent-checkpoints フラグ
+- これらは README に存在せず、使用しない
 
-| Seed | Profit vs Random (500 games) |
-|---|---|
-| A | 22.65 |
-| B | 23.85 |
-| C | 42.43 |
-
-#### 旧 Phase 2 v2 (train_selfplay_v2, 独自関数。使用禁止)
-
-iter 300 がピーク（vs random 32.78）、以降低下。
-
-#### Phase 1-3 v3 / v3b（memory_size=300,000）
-
-Phase 1 v3: profit vs random 12.00（独立再評価3000 games）
-Phase 2 v3: profit vs random -0.45（独立再評価3000 games）
-Phase 3 v3b: 中止（iter 2018/10000時点、profit +10〜+36で安定していたがメモリバッファ拡大のため再訓練）
-
-### 4.7 現行訓練（v4, memory_size=20M, README準拠）
-
-#### Phase 1 v4 ✅ 完了（traversals=200, iterations=1000）
+### 5.6 Phase 3 v4 最終結果
 
 ```text
-Final eval (500 games): 47.53
-独立再評価 (3000 games): 24.41
-Phase 1合格基準 (≥10): 大幅超過
-速度: 1.6〜3.5秒/iter（メモリ増加に伴い後半やや増加）
-Advantage memory最終: 約480万（2000万の24%、満杯にならず）
-Checkpoint: models/phase1_v4/checkpoint_iter_1000.pt
-
-v3比較:
-  v3 独立再評価: 12.00
-  v4 独立再評価: 24.41（2倍に改善）
-```
-
-#### Phase 2 v4 ✅ 完了（self-play, traversals=400, iterations=2000）
-
-```text
-Final profit vs checkpoint: -3.51
-Final profit vs random: -0.80
-Strategy loss: 53.14
-速度: 約10-11秒/iter
-Advantage memory最終: 約539万（2000万の27%）
-
-Phase 2 単体では Phase 1 を上回らないが、崩壊せず安定完走。
-開発者も同じ経験を報告しており、Phase 3 で回復する設計。
-
-Checkpoints: models/selfplay_v4/selfplay_checkpoint_iter_*.pt (20ファイル)
-```
-
-#### Phase 3 v4 ✅ 完了（mixed training, traversals=400, iterations=10000）
-
-```text
-コマンド:
-.venv\Scripts\python.exe -u -m src.training.train \
-  --mixed \
-  --checkpoint-dir models/phase3_pool_v4 \
-  --model-prefix "selfplay_checkpoint_iter_[0-9]" \
-  --refresh-interval 1000 \
-  --num-opponents 5 \
-  --iterations 10000 \
-  --traversals 400 \
-  --log-dir logs/phase3_v4 \
-  --save-dir models/phase3_v4
-
-開始: 2026-05-27
 完了: 2026-05-29
-速度: 約9-22秒/iter（後半メモリ満杯で増加）
+速度: 約9-22秒/iter
 Advantage memory最終: 20,000,000（満杯）
 Strategy memory最終: 20,000,000（満杯）
-Checkpoint: models/phase3_v4/mixed_checkpoint_iter_10000.pt（100件、100刻み）
 
-最終iteration結果:
-  Advantage network loss: 2.07
-  Strategy network loss: 44.61
-  Average profit vs mixed opponents: 122.76
-  Average profit vs random: 34.09
+Final eval (500 games): profit vs random = 66.55, profit vs mixed = 93.36
+独立再評価 (3000 games): profit vs random = 46.07
+Phase 3 v4 vs Phase 1 v4 = +4.72（勝ち越し）
 
-Final evaluation (500 games, 訓練スクリプト内蔵):
-  profit vs random: 66.55
-  profit vs mixed opponents: 93.36
-
-独立再評価 (3000 games, 別途スクリプト実行):
-  Phase 3 v4 profit vs random: 46.07
-  Phase 3 v4 vs Phase 1 v4: +4.72
-  Phase 1 v4 profit vs random: 28.08（参考値）
-
-最終合格基準判定:
-  profit vs random >= 15: ✅ 46.07（3倍超）
-  Phase 1 checkpointへの勝ち越し: ✅ +4.72
-  CLIプレイで異常行動なし: 未確認（ライブテストで確認予定）
-
-loss発散推移:
-  iter 0-600: 散発スパイク（10^10〜10^12）あり、自然収束
-  iter 2000以降: スパイク完全消失、全件1〜18の正常範囲
-
-profit推移:
-  iter 612付近: -8〜+10（中央値+1〜+3）
-  iter 2220付近: +11〜+34（中央値+19）
-  iter 5932付近: +15〜+67（中央値+35）
-  iter 8086付近: +30〜+63（中央値+49）
-  最終: 46.07（独立再評価3000 games）
-
-v3b比較（v3bはiter 2018で中止）:
-  v3b iter 2018: profit +10〜+36
-  v4 iter 10000: profit 46.07（独立再評価）
-  メモリバッファ拡大（300K→20M）の効果が実証された
-
-対戦相手プール:
-  models/phase3_pool_v4/ に Phase 2 v4 の 20 checkpoint。
-  1000 iter ごとに対戦相手をランダム再選択。
-  Phase 3 自身のcheckpointは models/phase3_v4/ に別保存（自己混入防止）。
-
-cp932エンコーディングエラー:
-  訓練全期間を通じて散発。訓練に影響なし。
-```
-
-### 4.8 Phase 3 対戦相手プールの構成
-
-```text
-models/phase3_pool_v4/ に以下を格納（models/selfplay_v4/ からコピー）:
-  selfplay_checkpoint_iter_100.pt 〜 selfplay_checkpoint_iter_2000.pt（20ファイル）
-
---checkpoint-dir models/phase3_pool_v4 で直下のみ検索（非再帰）。
---model-prefix "selfplay_checkpoint_iter_[0-9]" で glob 文字クラス使用。
-Phase 3 自身の保存ファイルは models/phase3_v4/ に別フォルダ保存。
-旧訓練 (phase1_seedA/B/C, phase2, phase2_v2, v3系) は混入しない。
-```
-
-### 4.9 Phase 3 完了後の評価スクリプト
-
-```powershell
-cd C:\dev\deepcfr-training
-.venv\Scripts\activate
-python -c "
-from src.training.train import evaluate_against_random, evaluate_against_checkpoint_agents
-from src.core.deep_cfr import DeepCFRAgent
-import torch, glob, os
-
-# Phase 1 v4
-agent1 = DeepCFRAgent(player_id=0, device='cuda')
-cp1 = torch.load('models/phase1_v4/checkpoint_iter_1000.pt', map_location='cuda')
-agent1.strategy_net.load_state_dict(cp1['strategy_net'])
-agent1.advantage_net.load_state_dict(cp1['advantage_net'])
-p1 = evaluate_against_random(agent1, num_games=3000)
-print(f'Phase 1 v4 profit vs random (3000) = {p1:.2f}')
-
-# Phase 3 v4 checkpoints
-checkpoints = sorted(glob.glob('models/phase3_v4/*mixed*.pt'))
-if checkpoints:
-    latest = checkpoints[-1]
-    agent3 = DeepCFRAgent(player_id=0, device='cuda')
-    cp3 = torch.load(latest, map_location='cuda')
-    agent3.strategy_net.load_state_dict(cp3['strategy_net'])
-    agent3.advantage_net.load_state_dict(cp3['advantage_net'])
-    p3 = evaluate_against_random(agent3, num_games=3000)
-    print(f'Phase 3 v4 ({os.path.basename(latest)}) profit vs random (3000) = {p3:.2f}')
-
-    # vs Phase 1 checkpoint
-    opponents = {}
-    for i in range(1, 6):
-        opp = DeepCFRAgent(player_id=i, device='cuda')
-        opp.strategy_net.load_state_dict(cp1['strategy_net'])
-        opp.advantage_net.load_state_dict(cp1['advantage_net'])
-        opponents[i] = opp
-    p3_vs_p1 = evaluate_against_checkpoint_agents(agent3, opponents, num_games=3000)
-    print(f'Phase 3 v4 vs Phase 1 v4 (3000) = {p3_vs_p1:.2f}')
-else:
-    print('No Phase 3 v4 checkpoints found')
-"
-```
-
-### 4.10 Phase 3 異常検知基準
-
-以下のいずれかが発生したら訓練を停止し報告:
-- プロセスが消えている
-- Advantage network loss が全イテレーションで 10^11 以上（初期散発は許容）
-- Average profit vs random が 100 iter 連続で負
-- エラーメッセージで停止
-
-### 4.11 Phase 3 モニタリングコマンド
-
-```powershell
-# profit 推移確認
-Select-String -Path C:\dev\deepcfr-training\phase3_v4.stdout.log -Pattern "Average profit vs random" | Select-Object -Last 10 -ExpandProperty Line
-
-# 現在 iter 確認
-Get-Content C:\dev\deepcfr-training\phase3_v4.stdout.log -Tail 5
-
-# loss 発散確認
-Select-String -Path C:\dev\deepcfr-training\phase3_v4.stdout.log -Pattern "Advantage network loss" | Select-Object -Last 10 -ExpandProperty Line
-
-# リアルタイム監視（別ウィンドウで）
-Get-Content C:\dev\deepcfr-training\phase3_v4.stdout.log -Wait
+モデル配置: mixed_checkpoint_iter_10000.pt → models/deep_cfr/best_checkpoint.pt
 ```
 
 ---
 
-## 5. 訓練リポジトリの重要な発見事項
-
-### 5.1 flagship model は現行コードと非互換
+## 6. 主要コードファイル
 
 ```text
-flagship_models/first/1-model.pt: 2025年3月作成。旧アーキテクチャ (fc1-fc6, 4アクション)。
-現行コード: base/action_head/sizing_head, 3アクション+連続サイジング。
-ロード時に RuntimeError: Missing/Unexpected keys。使用不可。
-```
-
-### 5.2 README の Phase 3 コマンドはそのままでは動作しない
-
-```text
-README: --model-prefix t_
-実際: models/ 直下に t_*.pt は存在しない。
-対処: Phase 2 checkpoint を専用フォルダにコピーし、
-  --model-prefix "selfplay_checkpoint_iter_[0-9]" を使用。
-```
-
-### 5.3 train_with_mixed_checkpoints の検索仕様
-
-```text
-glob.glob(os.path.join(checkpoint_dir, f"{training_model_prefix}*.pt"))
-非再帰。checkpoint_dir 直下のみ検索。
-Phase 3 自身の保存先は --save-dir で別フォルダにすること。
-```
-
-### 5.4 Phase 3 初期の loss 発散は自然収束する
-
-```text
-Phase 3 v3b/v4 ともに初期にloss 10^11〜10^12の散発スパイクが発生。
-数百iterで自然収束する。
-原因候補: encode_stateの正規化分母が極小stakeで爆発する可能性（未修正）。
-DESIGN_NOTES Section 43 に詳細記録。
-```
-
-### 5.5 メモリバッファのデフォルト300,000は不十分
-
-```text
-原論文は40,000,000を使用。デフォルト300,000は原論文の0.75%。
-v3系ではiter 65でメモリが満杯になり、古い経験が早期に失われていた。
-v4で20,000,000に拡大。Phase 1 v4の独立再評価がv3の2倍に改善（12.00→24.41）。
-DESIGN_NOTES Section 44 に詳細記録。
-```
-
-### 5.6 cp932エンコーディングエラーは訓練に影響なし
-
-```text
-Windows日本語環境でスート文字（♠♥♦♣）をログファイルに書けない。
-log_game_error関数のtxtファイル作成が失敗するだけ。
-訓練の計算・学習・チェックポイント保存には一切影響なし。
-```
-
-### 5.7 Phase 3起動方法の注意
-
-```text
-Tee-Object方式: stdoutは流れるがstderrの警告がエラー表示される。Phase 3では止まる場合あり。
-Start-Process方式: -uフラグ（バッファリング無効）が必須。ないとstdoutがファイルに書かれない。
-推奨: Start-Process + -u + 別ウィンドウで Get-Content -Wait で監視。
+core/game_state.py          GameState/PlayerState/HeroState/ActionRecord定義
+                            hand_start_stacks フィールド追加済み（C2）
+core/hand_manager.py        ハンドライフサイクル管理、DB保存、参加者観察
+                            hand_start_stacks記録・補完ロジック追加済み（C2）
+core/game_loop.py           メインループ、戦略ルーティング、非同期推奨管理
+strategy/deep_cfr_bridge.py Deep CFR推論ブリッジ（encode_game_state、infer、generate_recommendation）
+                            Phase C (C1-C5) で大幅修正済み
+strategy/_deep_cfr_network.py PokerNetwork定義（訓練リポジトリのmodel.pyと同一構造）
+strategy/recommendation_engine.py 戦略ルーティング（preflop chart / Deep CFR / LLM / fallback）
+strategy/llm_pipeline.py    OpenRouter API呼び出し（exploit_adjustment用）
+solver/solver_bridge.py     Rust postflop CLI連携（廃止予定）
+gui/main_window.py          PyQt6メインウィンドウ
+gui/hud_overlay.py          HUDオーバーレイ（Deep CFR / Deep CFR+ ソース表示対応済み）
+profiles/coinpoker_6max.json 座標プロファイル
+config.yaml                 設定ファイル
 ```
 
 ---
 
-## 6. 訓練コード修正記録
+## 7. HUD出力形式
 
-（前回 snapshot と同一。変更なし。）
+Deep CFRソース時:
+```text
+Action: BET 2000
+Confidence: high
+Source: Deep CFR（または Deep CFR+：exploit調整後）
+Probabilities:
+  RAISE 74%
+  CALL 25%
+  FOLD 1%
+Reason: Deep CFR: F=1% C=25% R=74% size=1.5x pot
+```
+
+確率分布はDeep CFR / Deep CFR+ ソース時のみ表示。
+Solver / Chart / AI ソース時は従来通り非表示。
 
 ---
 
-## 7. HUD出力形式（実装済み）
+## 8. LLM設定
 
-（前回 snapshot と同一。変更なし。）
-
----
-
-## 8. 旧課題の扱い
-
-（前回 snapshot と同一。変更なし。）
+```text
+モデル: openai/gpt-5.4-mini（OpenRouter経由）
+用途: exploit_adjustment のみ（Multiway判断の主軸としては使用しない）
+呼び出し条件: opponent_stats.total_hands >= sample_threshold_low (50)
+provider: OpenAI固定、fallback無効
+strict JSON Schema: ON（multiway_decision, exploit_adjustment, range_estimation, preflop_delta）
+startup check: max_tokens=16以上、失敗時WARNING（アプリ起動継続）
+```
 
 ---
 
 ## 9. 次にやること
 
-### 9.1 即時: ライブテスト
+### 9.1 即時: ライブテスト（Phase C修正後）
 
-Deep CFRモデル配置済み。CoinPokerでライブテストを実施する。
+Phase C修正により、encode_game_stateが訓練側と一致した状態での初回ライブテスト。
 
 確認項目:
-- Deep CFR推論が正しくロード・実行されるか
-- HUDに Deep CFR / Deep CFR+ ソースが表示されるか
-- 確率分布（Fold/Call/Raise %）がHUDに表示されるか
-- Preflop ChartとPostflop Deep CFRのルーティングが正しく切り替わるか
-- exploit_adjustmentが統計十分な相手に対して動作するか
-- フォールバック経路が正しく動作するか（Deep CFR失敗時）
-- 推奨アクション・サイジングが実戦的に妥当か（明らかな異常行動がないか）
-- 応答速度（Deep CFR推論は1ms以下のはず）
-
-異常行動の例（最終合格基準の残り項目）:
-- ナッツでフォールド
-- ブラフキャッチャーでオーバーベット
-- 明らかに弱い手でオールイン
-- 常にフォールドまたは常にレイズ
+- Deep CFRの推奨がハンド・ストリート・ボードに応じて変動するか（1.5x固定が解消されたか）
+- fold/call/raise確率が状況に応じて変化するか
+- INFOログ「Deep CFR encode summary」の数値に違和感がないか
+- INFOログ「Deep CFR recommendation」のサイジングが固定値でないか
+- hand_start_stacksが正しく記録されているか
+- pot_chipsが正しく計算されているか
+- legal_actionsのRaise判定がスタック不足時に正しく0になるか
+- previous_actionがストリート境界で途切れないか
+- 推奨アクション・サイジングが実戦的に妥当か
+- 応答速度（1-3ms想定）
 
 ### 9.2 ライブテスト後: config.yaml切替
 
@@ -468,16 +304,6 @@ Deep CFRモデル配置済み。CoinPokerでライブテストを実施する。
 ### 9.3 ライブテスト後: Rust postflop CLI廃止判断
 
 Deep CFRが安定稼働することを確認後、Rust postflop CLIの廃止を検討する。
-廃止前にfallback_to_solver: falseで数セッション安定動作を確認する。
-
-### 9.4 SPEC.md / DESIGN_NOTES.md 更新
-
-ライブテスト結果を反映。
-
-### 9.5 プロンプト改訂
-
-Commanderプロンプトのタスク種別判定（コード変更/ドキュメント更新/調査）を改訂済み。
-改訂版はセッション内で合意済みだが、ファイルとしての保存は未実施。
 
 ---
 
@@ -486,51 +312,60 @@ Commanderプロンプトのタスク種別判定（コード変更/ドキュメ�
 既存の全禁止事項を維持する（SPEC Section 17参照）。
 
 追加:
+- encode_game_stateを変更する場合、訓練リポジトリのencode_state()と必ず1対1で照合する
+- 推論ログ（INFOレベル入力サマリ、推奨結果）を削除しない
+- hand_start_stacksの記録・補完ロジックを削除しない
+- pot_chipsの計算式を変更する場合は訓練側と照合する
 - 訓練手順は README を基本とし、description.md は参考のみ
 - train_selfplay_v2 / --self-play-v2 / --random-seats は使用しない
-- Phase 3 の loss 発散で中断しない（自然収束する）
 - MAX_ACTIONS_PER_GAME と max_priority_cap パッチは保持
-- memory_size = 20_000_000 パッチは保持（学習エージェントのみ）
-- 中間 checkpoint を本番推論に使用しない
+- memory_size = 20_000_000 パッチは保持
 - Deep CFR品質検証前にRust postflop CLIを削除しない
 - LLM exploit_adjustmentを廃止しない
 - flagship model (旧アーキテクチャ) を現行コードで使用しない
-- Phase 3 対戦相手プールに旧訓練ファイルを混入しない
 
 ---
 
-## 11. ユーザー要望・進行ルール
+## 11. 今セッションで完了した作業
 
-既存ルールを維持。
-
-追加記録:
-- メモリバッファは将来RAM増設時にさらに拡大（30M〜40M）を検討する
-- 訓練ログはリアルタイムで確認できる方式を優先する（Get-Content -Wait）
-- Commanderプロンプトはタスク種別に応じてテスト要件を分ける（コード変更のみpytest必須）
+1. ライブテスト実施（Phase B完了後初回、2026-05-29）
+2. Deep CFR推奨がraise 70-80%・サイジング1.5x固定の異常を発見
+3. encode_game_stateと訓練側encode_stateの全156次元比較調査
+4. 8箇所の乖離を特定
+5. Phase C修正計画策定（C1-C5）
+6. C1: initial_stake修正 + DEBUGログ追加
+7. C2: pot_chips計算追加（GameStateフィールド追加、HandManager記録・補完追加）
+8. C3: current_player/button検証 + WARNINGログ追加
+9. C4: legal_actions Raise判定修正 + previous_actionストリート境界対応
+10. C5: INFOレベル推論入力サマリログ追加
+11. GitHub push（Phase C全修正）
+12. SPEC.md Section 10A.4 更新
+13. DESIGN_NOTES.md Section 46 追加
+14. GitHub push（ドキュメント更新）
+15. スナップショット出力
 
 ---
 
-## 12. 今セッションで完了した作業
+## 12. ドキュメント更新状況
 
-1. Phase 3 v3b モニタリング（iter 2018/10000、profit +10〜+36で安定）
-2. poker-system Phase B変更のGitHub push
-3. DESIGN_NOTES.md Section 40-43 追加（訓練知見4件）
-4. SPEC.md 10A.9/10A.10 追記（flagship非互換、情報源優先順位、Phase 3設定）
-5. ドキュメント変更のGitHub push
-6. Commanderプロンプト改訂（タスク種別判定テーブル追加）
-7. メモリバッファ拡大の調査・設計判断（30万→2000万）
-8. train.py memory_size変更（4箇所）
-9. snapshot.md GPU記載修正（GTX 1080→RTX 3080）
-10. DESIGN_NOTES.md Section 44 追加（メモリバッファ拡大理由）
-11. SPEC.md 10A.10 追記（memory_size現在設定）
-12. Phase 3 v3b 中止
-13. Phase 1 v4 実行・完了（profit 24.41、v3の2倍）
-14. Phase 2 v4 実行・完了（profit -0.80、正常）
-15. Phase 3 v4 開始（進行中）
-16. poker_error_*.txt 7495件削除
-17. Phase 3 v4 モニタリング（iter 612, 2220, 5932, 8086で確認、全異常検知基準クリア）
-18. Phase 3 v4 完了確認（iter 10000/10000）
-19. 独立再評価実行（3000 games × 3評価）
-20. モデル配置（mixed_checkpoint_iter_10000.pt → models/deep_cfr/best_checkpoint.pt）
-21. config.yaml確認（deep_cfr.model_path, device, fallback_to_solver正しいことを確認）
-22. SPEC.md / DESIGN_NOTES.md / snapshot.md 更新（Phase 3 v4完了・モデル配置完了反映）
+| ファイル | 更新有無 | 内容 |
+|---|---|---|
+| SPEC.md | ✅ 更新済み | Section 10A.4 encode_game_state仕様書き換え |
+| DESIGN_NOTES.md | ✅ 更新済み | Section 46 追加（encode乖離問題と修正） |
+| snapshot.md | ✅ 本snapshot | Phase C完了・ライブテスト前 |
+
+次セッションで渡すファイル:
+- 通常再開: SPEC.md + snapshot.md
+- 設計判断が絡む場合: SPEC.md + DESIGN_NOTES.md + snapshot.md
+
+---
+
+## 13. 次のセッションへの引継ぎ
+
+次セッションの最初に行うべきこと:
+
+1. CoinPokerでライブテストを実施する
+2. ログの「Deep CFR encode summary」行と「Deep CFR recommendation」行を確認する
+3. サイジングが1.5x固定から変動するようになったか確認する
+4. 違和感のある数値があれば、encode_game_stateの該当次元を訓練側と再照合する
+5. 問題なければconfig.yaml fallback_to_solver: falseに切り替え、数セッション安定動作確認後にRust postflop CLI廃止を判断する

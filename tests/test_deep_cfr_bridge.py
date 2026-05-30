@@ -80,25 +80,25 @@ class TestCardToIndex:
         """Ah should map to the heart ace slot."""
         from strategy.deep_cfr_bridge import card_to_index
 
-        assert card_to_index("Ah") == 25
+        assert card_to_index("Ah") == 38
 
     def test_two_of_spades(self) -> None:
-        """2s should map to the first slot."""
+        """2s should map to the spade two slot."""
         from strategy.deep_cfr_bridge import card_to_index
 
-        assert card_to_index("2s") == 0
+        assert card_to_index("2s") == 39
 
     def test_king_of_diamonds(self) -> None:
         """Kd should map to the diamond king slot."""
         from strategy.deep_cfr_bridge import card_to_index
 
-        assert card_to_index("Kd") == 37
+        assert card_to_index("Kd") == 24
 
     def test_ten_of_clubs(self) -> None:
         """Tc should map to the club ten slot."""
         from strategy.deep_cfr_bridge import card_to_index
 
-        assert card_to_index("Tc") == 47
+        assert card_to_index("Tc") == 8
 
     def test_invalid_card(self) -> None:
         """Invalid card strings should return None."""
