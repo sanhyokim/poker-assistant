@@ -117,6 +117,7 @@ class HandManager:
         self._participant_observation_started_at: float | None = None
         self._participant_observation_duration_sec = 1.5
         self._participant_observed_seats: set[str] = set()
+        self._hand_start_stacks: dict[str, int | None] = {}
 
         self._init_db()
 
@@ -291,6 +292,7 @@ class HandManager:
             game_state: Current frame GameState.
         """
         self._hand_just_started = False
+        game_state.hand_start_stacks = dict(self._hand_start_stacks)
 
         if self._phase == "waiting":
             if self._has_visible_hero_cards(game_state):
@@ -334,6 +336,19 @@ class HandManager:
                 return
 
         self._update_current_players(game_state)
+        if self._participant_observation_active and self._hand_start_stacks:
+            if (
+                self._hand_start_stacks.get("1") is None
+                and game_state.hero.stack is not None
+            ):
+                self._hand_start_stacks["1"] = game_state.hero.stack
+            for seat_key, player in game_state.players.items():
+                if (
+                    self._hand_start_stacks.get(seat_key) is None
+                    and player.stack is not None
+                ):
+                    self._hand_start_stacks[seat_key] = player.stack
+            game_state.hand_start_stacks = dict(self._hand_start_stacks)
 
         if game_state.game_event == "NEW_STREET":
             self._handle_new_street_event(game_state)
@@ -722,6 +737,14 @@ class HandManager:
             for seat_key, in_hand in self._players_in_hand.items()
             if seat_key != "1" and in_hand
         }
+        self._hand_start_stacks = {}
+        self._hand_start_stacks["1"] = game_state.hero.stack
+        for seat_key, player in game_state.players.items():
+            self._hand_start_stacks[seat_key] = player.stack
+        logger.info(
+            "Hand start stacks recorded: %s",
+            self._hand_start_stacks,
+        )
         logger.info(
             "Players in hand at start: %s",
             dict(self._players_in_hand),
@@ -1650,6 +1673,7 @@ class HandManager:
         self._participant_observation_active = False
         self._participant_observation_started_at = None
         self._participant_observed_seats.clear()
+        self._hand_start_stacks = {}
 
     def _on_hand_end(self, game_state: GameState) -> None:
         """Persist hand data when the hand reaches hand_end."""
@@ -2215,6 +2239,15 @@ class HandManager:
                 "Participant observation ended: players_in_hand=%s",
                 dict(self._players_in_hand),
             )
+            missing_stacks = [
+                seat for seat, stack in self._hand_start_stacks.items()
+                if stack is None
+            ]
+            if missing_stacks:
+                logger.warning(
+                    "Hand start stacks incomplete after observation: missing=%s",
+                    missing_stacks,
+                )
             self._supplement_participant_names(game_state)
             return
 

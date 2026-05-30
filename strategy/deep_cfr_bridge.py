@@ -225,7 +225,7 @@ class DeepCFRBridge:
 
         hero_stack = game_state.hero.stack or 0
         hero_bet = game_state.hero.bet or 0
-        initial_stake = hero_stack + hero_bet
+        initial_stake = hero_stack
         if initial_stake <= 0:
             initial_stake = 1.0
         encoded.append([game_state.pot / initial_stake])
@@ -234,15 +234,33 @@ class DeepCFRBridge:
         if game_state.dealer_seat is not None:
             button_idx = (game_state.dealer_seat - 1) % self.NUM_PLAYERS
             button_enc[button_idx] = 1
+        else:
+            logger.warning(
+                "Deep CFR encode: dealer_seat is None, button encoding is all zeros"
+            )
         encoded.append(button_enc)
 
+        # Hero is always player index 0; inference runs only on hero's turn.
         current_player_enc = np.zeros(self.NUM_PLAYERS)
         current_player_enc[0] = 1
         encoded.append(current_player_enc)
 
+        hand_start_stacks = getattr(game_state, "hand_start_stacks", {})
         for p_idx in range(self.NUM_PLAYERS):
-            player = game_state.hero if p_idx == 0 else game_state.players.get(str(p_idx + 1))
-            encoded.append(self._encode_player_state(player, initial_stake))
+            if p_idx == 0:
+                player = game_state.hero
+                seat_key = "1"
+            else:
+                seat_key = str(p_idx + 1)
+                player = game_state.players.get(seat_key)
+            start_stack = hand_start_stacks.get(seat_key)
+            if start_stack is not None and player is not None:
+                current_stack = player.stack or 0
+                current_bet = player.bet or 0
+                pot_chips = max(0.0, start_stack - current_stack - current_bet)
+            else:
+                pot_chips = 0.0
+            encoded.append(self._encode_player_state(player, initial_stake, pot_chips))
 
         max_bet = max(
             [hero_bet]
@@ -256,13 +274,19 @@ class DeepCFRBridge:
             legal_enc[1] = 1
         else:
             legal_enc[2] = 1
-        legal_enc[3] = 1
+        call_amount = max(0, max_bet - hero_bet)
+        if hero_stack > call_amount:
+            legal_enc[3] = 1
         encoded.append(legal_enc)
 
         prev_action_enc = np.zeros(5)
         street_actions = game_state.current_street_actions or []
+        last_action = None
         if street_actions:
             last_action = street_actions[-1]
+        elif game_state.preflop_actions:
+            last_action = game_state.preflop_actions[-1]
+        if last_action is not None:
             action_key = (last_action.action or "").upper()
             pokers_idx = _ACTION_TO_POKERS_ENUM.get(action_key)
             if pokers_idx is not None:
@@ -272,12 +296,18 @@ class DeepCFRBridge:
 
         return np.concatenate(encoded)
 
-    def _encode_player_state(self, player: Any, initial_stake: float) -> Any:
+    def _encode_player_state(
+        self,
+        player: Any,
+        initial_stake: float,
+        pot_chips: float = 0.0,
+    ) -> Any:
         """Encode one player state into active, bet, pot chips, and stack values.
 
         Args:
             player: HeroState, PlayerState, or None.
             initial_stake: Normalization denominator.
+            pot_chips: Cumulative chips contributed to the pot before this street.
 
         Returns:
             Numpy array with four normalized values.
@@ -287,7 +317,12 @@ class DeepCFRBridge:
             return np.array([0.0, 0.0, 0.0, 0.0])
         stack = player.stack or 0
         bet = player.bet or 0
-        return np.array([1.0, bet / initial_stake, 0.0, stack / initial_stake])
+        return np.array([
+            1.0,
+            bet / initial_stake,
+            pot_chips / initial_stake,
+            stack / initial_stake,
+        ])
 
     @staticmethod
     def _player_bet(player: PlayerState | None) -> int:
@@ -319,6 +354,26 @@ class DeepCFRBridge:
             logger.warning("Deep CFR encode failed: %s", exc)
             return None
 
+        if logger.isEnabledFor(logging.DEBUG):
+            np = self._numpy
+            logger.debug(
+                "Deep CFR input: initial_stake=%.1f pot=%d "
+                "phase=%s board_count=%d hero_cards=%s "
+                "hero_stack=%d hero_bet=%d "
+                "encoded_shape=%d encoded_min=%.4f encoded_max=%.4f encoded_mean=%.4f",
+                game_state.hero.stack or 0,
+                game_state.pot or 0,
+                game_state.phase,
+                len(game_state.board or []),
+                game_state.hero.cards,
+                game_state.hero.stack or 0,
+                game_state.hero.bet or 0,
+                len(encoded),
+                float(np.min(encoded)),
+                float(np.max(encoded)),
+                float(np.mean(encoded)),
+            )
+
         state_tensor = torch.FloatTensor(encoded).unsqueeze(0).to(self._device)
         with torch.no_grad():
             logits, bet_size_pred = self._strategy_net(state_tensor)
@@ -330,6 +385,30 @@ class DeepCFRBridge:
         call_prob = float(probs[1])
         raise_prob = float(probs[2])
         action_idx = int(np.argmax(probs))
+
+        logger.debug(
+            "Deep CFR output: logits=%s sizing_raw=%.4f "
+            "probs=[F=%.4f C=%.4f R=%.4f] raise_size_ratio=%.4f",
+            logits[0].cpu().numpy().tolist(),
+            raw_sizing,
+            fold_prob,
+            call_prob,
+            raise_prob,
+            raise_size_ratio,
+        )
+
+        logger.info(
+            "Deep CFR encode summary: hero_stack=%d hero_bet=%d pot=%d "
+            "board=%s phase=%s dealer=%s "
+            "hand_start_stacks=%s",
+            game_state.hero.stack or 0,
+            game_state.hero.bet or 0,
+            game_state.pot or 0,
+            game_state.board,
+            game_state.phase,
+            game_state.dealer_seat,
+            getattr(game_state, "hand_start_stacks", {}),
+        )
 
         return DeepCFRResult(
             fold_prob=fold_prob,

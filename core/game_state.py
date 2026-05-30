@@ -119,6 +119,7 @@ class GameState:
             PRE-HAND-CANDIDATE or PRE-HAND.
         hero_cards_unstable_reason: Reason hero cards are unsafe for strategy
             or saving, or None when hero cards are stable.
+        hand_start_stacks: Seat string to stack amount at hand start.
     """
 
     timestamp: str = ""
@@ -148,6 +149,7 @@ class GameState:
     amount_recheck_pending: bool = False
     hand_start_status: str | None = None
     hero_cards_unstable_reason: str | None = None
+    hand_start_stacks: dict[str, int | None] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the GameState to a JSON-serializable dictionary.
