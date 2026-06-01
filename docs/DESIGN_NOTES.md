@@ -3322,3 +3322,95 @@ Deep CFRと同じ方式であり、Recommendation変換も既存実装を流用�
 
 これにより、80ms程度の推論を20-30ms程度まで短縮できる可能性がある。
 
+---
+
+## 50. Sprint 1 モデル選定の経緯と結果
+
+### 50.1 評価対象と結果
+
+Sprint 1で以下の3モデルを10k SFTで評価した。
+
+Phi-4-mini-instruct 3.8B:
+  action_accuracy 65.6%, eval_loss 0.326, 訓練時間18.4h, VRAM 9,815 MiB
+  Go基準（accuracy ≥ 40%）を25.6pt超過。全基準クリア。
+
+Qwen3.5-4B:
+  QLoRA batch=4で17,076 MiB、batch=2で13,120 MiB。
+  RTX 3080 10GBのGo基準（VRAM ≤ 10,000 MiB）を大幅超過。
+  SFT未実施で脱落。
+
+Gemma 4 E2B (google/gemma-4-E2B-it):
+  hidden_size=1536, num_hidden_layers=35, 総パラメータ5.44B（PLE構造）。
+  VRAM自体は9,917 MiBで収まるが、vision/audio tower含むマルチモーダル全体が
+  ロードされるため訓練スループットが極端に低い。
+  batch=1で1 step 3分超、完走見積り3日超。
+  RTX 3080 10GBでの実用不可と判定し、step 6で中断。
+
+### 50.2 Gemma 4 E2Bを候補にした理由と脱落の経緯
+
+poker_rl作者（dcaustin33）のデフォルトモデルがGemma 3n E2Bだったため、
+後継のGemma 4 E2Bを最有力候補として追加した。
+Unsloth公式がLoRA 8-10GB、GRPO 9GBと報告していたが、
+これはUnslothの最適化込みの値であり、標準HuggingFace+PEFTでの
+QLoRA SFTでは訓練スループットが実用に耐えなかった。
+
+### 50.3 選定結論
+
+Phi-4-mini-instruct 3.8Bを正式採用。
+Qwen3-4B-Instruct-2507を未検証の予備候補として残す。
+Qwen3.5-4B、Gemma 4 E2BはクラウドGPU使用時のみの予備候補。
+
+---
+
+## 51. multiway データ分析結果とLayer 3不要判定
+
+### 51.1 PokerBench postflop 500kの実態
+
+PokerBench postflop 500kは100% HU（2人）であることを確認した。
+multiway局面は0件。6-maxを謳うデータセットだが、postflopは全てHU。
+
+### 51.2 phh-dataset multiway抽出
+
+phh-dataset 21,606,087ハンドからmultiway postflop局面を抽出した。
+結果: 20,915,640 decision points（hole cards付き726,570件）。
+
+当初計画のLayer 2目標（10k-30k件）を700倍以上上回る量が確保できた。
+
+### 51.3 Layer 3（PokerKit合成データ）不要判定
+
+phh-datasetだけで十分なmultiway訓練データが確保できたため、
+PokerKitによる合成データ生成（Layer 3）は不要と判定した。
+これによりSprint 1の期間が1週間短縮される。
+
+### 51.4 10k-30kという数値の由来
+
+当初のLayer 2目標「10k-30k」は、商用ソルバーのコスト制約を前提とした
+Deep Research調査の推定値だった。phh-datasetで72万件のhole cards付き
+データが得られたため、この制約は解消された。
+
+---
+
+## 52. active player数分布管理の設計判断
+
+### 52.1 HU:multiway固定比率を廃止した理由
+
+当初はHU:multiway = 3:1〜5:1の固定比率を検討していたが、
+この比率には根拠がなく、実験パラメータとして扱うべきと判断した。
+
+また、HUとmultiwayは別カテゴリではなく、同一ハンド内で遷移する。
+例: preflop 6人 → flop 3人 → turn 2人（HU）→ river 2人（HU）。
+各decision pointのactive player数で管理する方が自然である。
+
+### 52.2 採用した方針
+
+PokerBench HU 500kとphh-dataset multiway抽出データを統合プールにし、
+各レコードにactive player数（2〜6）をタグ付けする。
+訓練データの構成はactive player数の分布で管理する。
+具体的な分布はSprint 2の実験で決定する。
+
+### 52.3 未確定事項（Sprint 2で検証）
+
+- 勝者行動優先選別の品質（ラッキー勝利の問題）
+- 人間データとsolverデータの混合が品質に与える影響
+- active player分布を実戦頻度に合わせるか、少数カテゴリをオーバーサンプリングするか
+
