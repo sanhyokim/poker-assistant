@@ -1,7 +1,7 @@
 
 # poker-assistant snapshot
-**Updated:** 2026-05-30 JST (Session End — Final)
-**Session:** Deep CFRライブテスト → 品質不合格確定 → PokerRL+GRPO採用決定 → ドキュメント整備完了
+**Updated:** 2026-05-31 JST
+**Session:** Sprint 1 実行中 — データ取得完了・multiway分析完了・Phi-4-mini 10k SFT実行中・Gemma 4 E2B候補浮上
 
 ---
 
@@ -10,12 +10,13 @@
 このsnapshotは、次セッションでポーカーAIアシスタント開発を再開するための現在地点メモである。
 体系的な仕様は SPEC.md、設計判断の理由は DESIGN_NOTES.md を参照。
 PokerRL+GRPOの訓練・統合計画は `docs/PokerRL+GRPO 6-max NLHE.md`（実装指令書v1.1）を参照。
+**ただし指令書v1.1は現状と乖離している箇所あり（§12参照）。モデル選定確定後にv1.2として更新予定。**
 
 リポジトリ: https://github.com/sanhyokim/poker-assistant
 
 **重要: sanhyokim2050 ではない。毎回この正しいURLを使うこと。**
 
-**推論エンジンの大幅な方針転換が完了した。Deep CFR → PokerRL+GRPO（小型LLM + 補助ヘッド）への移行が決定済み。SPEC.md / DESIGN_NOTES.mdへの反映も完了。次のアクションはSprint 1（環境構築・モデル選定）の開始。**
+**現在地: Sprint 1（基盤構築＋モデル選定）の後半。データ取得・multiway分析・骨格作成が完了。Phi-4-mini 10k SFT実行中（action_accuracy 56.2% at step 200）。次にGemma 4 E2Bで同一テストを実施し、プライマリモデルを確定する。**
 
 ---
 
@@ -32,10 +33,30 @@ pytest -q
 
 全変更push済み。最新commit:
 ```text
-6306c86 docs(strategy): align PokerRL fallback routing
+1edf9c3 追加: PokerRL推論ブリッジ骨格ファイル
 ```
 
-### 1.3 システム全体の状態
+### 1.3 Sprint 1 進捗
+
+| タスク | 状態 | 備考 |
+|---|---|---|
+| S1-T1: 訓練リポジトリ作成 | ✅ 完了 | `C:\dev\pokerrl-training` (git init, .venv, requirements.txt) |
+| S1-T2: PokerBench データ取得・品質確認 | ✅ 完了 | 8ファイル全て `data/pokerbench/` に保存 |
+| S1-T2a: PokerBench postflop JSON構造確認 | ✅ 完了 | フィールドは `instruction`/`output`（`prompt`/`label`ではない） |
+| S1-T3: Pluribus(PHH)データ取得 | ✅ 完了 | `data/phh-dataset/` に10,000 .phhファイル |
+| S1-T3a: poker_datasets_ref クローン | ✅ 完了 | `tools/poker_datasets_ref/` |
+| S1-T4: Phi-4-mini ダウンロード | ✅ 完了 | `models/phi-4-mini-instruct/` (FP16: 7,317 MiB) |
+| S1-T4a: Qwen3.5-4B ダウンロード | ✅ 完了 | `models/qwen3.5-4b/` (FP16: 8,022 MiB) |
+| S1-T4b: Qwen3.5-4B VRAM判定 | ❌ 脱落 | QLoRA batch=2でも13,120 MiB。RTX 3080で不可 |
+| S1-T5: poker-assistant骨格ファイル作成 | ✅ 完了 | 6ファイル追加、1441 tests pass、commit 1edf9c3 |
+| S1-T6: multiway postflop実数量確認 | ✅ 完了 | **§2参照（最重要調査結果）** |
+| S1-T7: phh-dataset multiway抽出 | ✅ 完了 | 2,090万decision points抽出済み |
+| S1-T8: Phi-4-mini 10k SFT | 🔄 実行中 | step 258/939、action_accuracy 56.2% (step 200) |
+| S1-T9: Gemma 4 E2B 10k SFT | ⬜ 未開始 | Phi完了後に実施予定 |
+| S1-T10: モデル比較・採用決定 | ⬜ 未開始 | T8+T9完了後 |
+| verify_pokerrl_encode.py 設計 | ⬜ 未開始 | Sprint 2で実施 |
+
+### 1.4 システム全体の状態
 
 poker-assistantは、CoinPoker 6max NLHEの画面認識 → 推奨表示システムとして稼働中。
 画面認識・GameState管理・Preflop Chart・HUD表示・DB/replay保存は安定動作している。
@@ -44,161 +65,264 @@ Postflop推論エンジンの状態:
 
 | エンジン | 状態 | 詳細 |
 |---|---|---|
-| Rust postflop CLI（Solver） | **永久廃止確定** | deep-SPR flopで22秒タイムアウト。ユーザーが「タイムオーバー的に使えないものに認定」と明言。フォールバック経路からも除外済み。コードはStage D完了まで残すが代替手段とは見なさない。 |
-| Deep CFR（dberweger2017） | **品質不合格確定** | 全局面でRaise 70-80%。GTO近似を学んでいない。Stage D完了までフォールバックとして残す。 |
-| PokerRL+GRPO | **新推論エンジンとして採用決定** | 未実装。Sprint 1開始待ち。 |
+| Rust postflop CLI（Solver） | **永久廃止確定** | フォールバック経路からも除外済み |
+| Deep CFR（dberweger2017） | **品質不合格確定** | 全局面でRaise 70-80%。Stage D完了まで残す |
+| PokerRL+GRPO | **Sprint 1実行中** | データ取得完了、モデル選定フェーズ |
 
-### 1.4 ドキュメント状態
+### 1.5 ドキュメント状態
 
 | ファイル | 状態 | 最新commit |
 |---|---|---|
 | docs/SPEC.md | 更新済み・push済み | 6306c86 |
 | docs/DESIGN_NOTES.md | 更新済み・push済み | 6306c86 |
-| docs/snapshot.md | **要更新**（本ファイルで置き換え） |
-| docs/PokerRL+GRPO 6-max NLHE.md | 未追跡（実装指令書v1.1、ローカルに存在） |
+| docs/snapshot.md | **本ファイルで置き換え** | |
+| docs/PokerRL+GRPO 6-max NLHE.md | Git未追跡。**v1.2更新待ち（モデル確定後）** | |
 
 ---
 
-## 2. 本セッションで完了したこと
+## 2. ★★★ MULTIWAY データ実数量確認結果（最重要）★★★
 
-### 2.1 Deep CFRライブテスト（2026-05-30）
+**この調査はSprint 1の最優先タスクとして実施された。全報告時にこのセクションを目立たせること。**
 
-4ハンド・9局面を観察。結果:
+### 2.1 PokerBench postflop 500k
 
-| Hand | Phase | Hero | Board | 状況 | F/C/R | 推奨 | 判定 |
-|---|---|---|---|---|---|---|---|
-| 1 | Flop | JsQs | 3hTh8h | 4way, ノードロー | 0.5/24/76 | BET 751 (151%pot) | ❌ |
-| 1 | Turn | JsQs | 3hTh8hTd | 3way | 0.7/20/79 | BET 2568 (151%pot) | ❌ |
-| 1 | River | JsQs | 3hTh8hTd4s | 3way | 0.5/22/77 | BET 2566 (151%pot) | ❌ |
-| 2 | Flop | 9sKh | 9h3h3c | 5way | 0.3/25/74 | BET 903 (152%pot) | ❌ |
-| 2 | Turn | 9sKh | 9h3h3c2h | HU | 1.2/12/86 | BET 3633 (152%pot) | ❌ |
-| 3 | Flop | 3dAh | Jh6s9d | 3way facing BET | 0.7/23/76 | RAISE 12878 (5.6X) | ❌❌ 最悪 |
-| 3 | River | 3dAh | Jh6s9d2h3c | HU facing ALL_IN | 6/94/0 | CALL 10760 | △ 唯一まとも |
-| 4 | Flop | KsQh | Qs6s5c | 4way facing BET+CALL | 0.3/28/72 | RAISE 3276 (7.1X) | △ 過剰 |
-| 4 | Turn | KsQh | Qs6s5cTc | HU, TPTK, SPR 0.5 | 0.4/18/81 | ALL_IN 3948 | ✅ 合理的 |
-
-パターン:
-- ほぼ全局面でRaise 70-80%（状況に無関係）
-- Fold確率が常に0.3-1.2%で極端に低い
-- ハンド強度・ボード・ポジション・相手アクションへの感度が極めて低い
-- 9局面中、明確に合理的なのは1局面のみ。モデル品質不合格。
-
-### 2.2 スートマッピング不一致の発見と修正（C6）
-
-- 訓練側: Clubs=0, Diamonds=1, Hearts=2, Spades=3
-- poker-assistant旧版: Spades=0, Hearts=1, Diamonds=2, Clubs=3
-- C6で`strategy/deep_cfr_bridge.py`の`_SUIT_MAP`を修正、push済み
-- `tests/test_deep_cfr_bridge.py`のcard_to_index期待値も更新済み
-- verify_encode.pyで "Encodings are IDENTICAL" 確認
-
-```text
-poker-assistant encoding:
-  Logits: [-3.359221    0.07692789  1.4872566 ]
-  Probs:  F=0.0063  C=0.1950  R=0.7988
-  Sizing: raw=1.5183  ratio=1.5183
-
-training encoding:
-  Logits: [-3.359221    0.07692789  1.4872566 ]
-  Probs:  F=0.0063  C=0.1950  R=0.7988
-  Sizing: raw=1.5183  ratio=1.5183
-```
-
-**正しいエンコーディングでも同じ偏った出力** → モデル自体の問題確定。
-
-### 2.3 Deep Research調査
-
-35ソース調査。5要件（6人NLHE × ≤5秒推論 × 実戦品質 × ローカル実行 × プログラム連携）全て満たす既製エンジンは存在しない。
-
-| 候補 | 要点 | 即時利用可否 |
+| 項目 | 件数 | 割合 |
 |---|---|---|
-| **dcaustin33/poker_rl + PokerBench** | 小型LLM+補助ヘッド、SFT→GRPO、6-max NLHE、560kデータ公開 | △ 要自前訓練 |
-| **GTO Wizard AI公開API** | 2026年内に研究者向けAPI予定 | ❌ 待ち |
-| **NeurIPS 2024 MCCFVFP** | 6人NLHE論文。25BBスタック限定 | ❌ コード未公開 |
+| 総レコード | 500,000 | 100% |
+| HU（2人） | 500,000 | **100%** |
+| 3-way以上 | **0** | **0%** |
 
-除外候補: EricSteinberger/Deep-CFR, HDCFR, TexasSolver, NoRegret, cfrx, ReBel, PokerRL(旧), Shark 2.0, PioSolver, GTO Wizard AI, Deepsolver
+**PokerBench postflopデータは完全にHUのみ。multiway局面は1件もない。**
 
-### 2.4 PokerRL+GRPO採用決定
+### 2.2 Pluribus (PHH) 10,000ハンド
 
-**アプローチ:** 小型LLMの最終隠れ層にポーカー専用の補助ヘッド（アクション分類 + ベットサイズ予測）を付けて、SFT + GRPO強化学習で訓練する。
+| 項目 | 件数 |
+|---|---|
+| Flop到達ハンド | 5,338 |
+| うちHU | 4,789 |
+| うち3-way以上 | 549 (10.28%) |
+
+| Street | 3-way | 4-way以上 |
+|---|---|---|
+| Flop | 513 | 36 |
+| Turn | 253 | 20 |
+| River | 115 | 6 |
+| **合計** | **881** | **62** |
+
+### 2.3 phh-dataset 21.6M（追加調査・抽出完了）
+
+| 項目 | 件数 |
+|---|---|
+| 総ハンド | 21,606,087 |
+| multiway postflop decision points | **20,915,640** |
+| うち3-way | 11,407,661 |
+| うち4-way | 2,992,676 |
+| うち5-way以上 | 726,443 |
+| hole cards付き | **726,570** (3.47%) |
+
+| Street | 件数 |
+|---|---|
+| Flop | 11,692,440 |
+| Turn | 5,835,491 |
+| River | 3,387,709 |
+
+### 2.4 判定と方針
+
+- **PokerBench 500k は100% HU → これだけでSFTするとHU専用モデルになる**
+- **phh-dataset から2,090万multiway decision points抽出済み（原材料は十分）**
+- hole cards付き72万件から勝者行動を優先選別し、10万-20万件をmultiway訓練データとする
+- **Layer 3（PokerKit合成データ生成）は不要と判定**（phh-datasetで十分）
+- データ混合比率（HU:multiway）は事前固定せず、**active player数の分布管理**で制御
+- 具体的なデータ設計はSprint 2で実験しながら詰める
+
+### 2.5 抽出済みファイル
 
 ```text
-Deep CFR（不合格）:
-  入力: 156次元数値ベクトル
-  モデル: 3層×256ユニットFF（パラメータ数: ~300K）
-  出力: 3アクション確率 + 連続サイジング
-  訓練: CFR traversal + self-play
-
-PokerRL+GRPO（新方針）:
-  入力: テキストプロンプト（ゲーム状態の自然言語記述）
-  モデル: 小型LLM 3.8B-4B + 補助ヘッド（パラメータ数: 3.8B-4B）
-  出力: 4アクション分類（Fold/Check-Call/Raise/All-in）+ サイズ予測
-  訓練: SFT on PokerBench/Pluribus → GRPO self-play
+C:\dev\pokerrl-training\data\multiway_raw\multiway_decisions.jsonl  (16.23 GB)
+C:\dev\pokerrl-training\data\multiway_raw\multiway_hands.jsonl      (2.07 GB)
+C:\dev\pokerrl-training\data\multiway_raw\extraction_summary.json
+C:\dev\pokerrl-training\data\multiway_raw\multiway_extracted_report.md
+C:\dev\pokerrl-training\scripts\extract_multiway.py
+C:\dev\pokerrl-training\scripts\analyze_multiway_extracted.py
+C:\dev\pokerrl-training\data\multiway_analysis_report.md
 ```
-
-データ:
-- PokerBench: 560k行（preflop 60k + postflop 500k）。HuggingFace公開。
-- Pluribus: 10,000ハンド × 6人 = 60kトラジェクトリ。GitHub公開。
-- 既知制約: PokerBench postflopは大部分がHU。Pluribusで6人multiway補完。
-
-モデル候補:
-- **Phi-4-mini 3.8B**（第1選択）: MIT、VRAM ~2.5GB (Q4)、推論~80-100 tok/s
-- **Qwen3-4B**（第2選択）: Apache 2.0、VRAM ~2.7GB (Q4)、推論~70-90 tok/s
-- Gemma-3-4B、SmolLM3-3B、Qwen3-1.7Bも候補
-
-アーキテクチャ:
-- LLM最終hidden state → Action Head (4クラス: Fold/Check-Call/Raise/All-in) + Sizing Head (sigmoid 0.1x-3.0x pot)
-- autoregressive生成は行わない（<50ms目標のため）
-- prefix cache戦略: システムプロンプトをKV cacheに事前格納、毎回re-encodeは状態依存部分のみ
-
-速度目標: T1 50-300ms（prefix cache有、RTX 3080）
-
-poker_rl作者の知見:
-- Qwen-0.6B-Embedding > Gemma-3-1B（作者実験結果）
-- 全実験コスト < $50
-- エントロピー崩壊が4Bモデルで顕著 → DAPO + OPEFO対策必須
-- 補助ヘッド方式がautoregressive生成より高速・安定
-
-### 2.5 実装指令書v1.1完成
-
-`docs/PokerRL+GRPO 6-max NLHE.md`としてローカルに存在（Git未追跡）。
-内容:
-- §0: 前提と原則（既存SPEC.md原則の尊重）
-- §1: システム統合アーキテクチャ（新規モジュール一覧）
-- §2: レイテンシ設計（T0-T3 Tier、補助ヘッドアーキテクチャ詳細）
-- §3: データ準備とプロンプト設計（訓練時/推論時プロンプト分離）
-- §4: モデル選定（Phi-4-mini第1、Qwen3-4B第2）
-- §5: 訓練パイプライン（SFT Phase 1 → GRPO Phase 2）
-- §6: 推論ブリッジ統合（Stage A→B→C→D段階移行）
-- §7: HUD表示仕様
-- §8: 評価とテスト（Spot Checks 50シナリオ、Entropy、Sensitivity）
-- §9: リスク管理
-- **§9.2: 失敗時の段階的対処と撤退基準**（Phase 1 SFT未達→Phase 2 GRPO未達→量子化劣化→全体撤退基準、代替案Case A-D）
-- §10: 実装スプリント計画（Sprint 1-6）
-- §11-15: 運用ガイド
-
-### 2.6 ドキュメント更新完了
-
-SPEC.md更新箇所:
-- Section 2.2/2.3: PokerRL+GRPO / Legacy Deep CFR表記
-- Section 3.1/3.5: PokerRL表記
-- Section 9.1〜9.9: 戦略ルーティング全面書き換え（PokerRL+GRPO主軸）
-- Section 9.3/9.4フォールバック: 全街・全人数で「Deep CFR → LLM → スキップ（Stage D完了まで保持）」に統一
-- Section 10A新設: PokerRL+GRPO推論ブリッジ（10A.1〜10A.11）
-- Section 10B新設: Legacy Deep CFR Deprecated（10B.1〜10B.11）
-- Section 14.13新設: pokerrl config
-- Section 10（旧HU Solver）: 廃止予定注記追加
-
-DESIGN_NOTES.md更新箇所:
-- Section 35.2修正: フォールバック経路をDeep CFR → LLM → スキップに統一
-- Section 47新設: Deep CFRモデル品質不合格の事後分析
-- Section 48新設: PokerRL+GRPO採用判断
-- Section 49新設: 補助ヘッド設計と<50ms目標
 
 ---
 
-## 3. 既存システムの状態
+## 3. モデル選定状況
 
-### 3.1 正常に動作している部分
+### 3.1 候補と現状
+
+| 順位 | モデル | 状態 | 根拠 |
+|---|---|---|---|
+| 1 | **Gemma 4 E2B** | ⬜ 未テスト | poker_rl作者がGemma 3n E2Bをデフォルト使用。後継Gemma 4 E2BはLoRA 8-10GB、GRPO 9GBでRTX 3080対応。Unsloth動作確認済み |
+| 2 | **Phi-4-mini 3.8B** | 🔄 10k SFT実行中 | action_accuracy 56.2% (step 200/939)。Go基準40%を大幅クリア中 |
+| 3 | Qwen3.5-4B | ❌ VRAM超過 | QLoRA batch=2で13,120 MiB。クラウドGPU時の予備候補として保留 |
+| 4 | Qwen3-4B-Instruct-2507 | ⬜ 未検証 | バックアップ |
+
+### 3.2 Phi-4-mini 10k SFT 中間結果
+
+```text
+環境: RTX 3080 10GB, QLoRA 4-bit, LoRA r=32 alpha=32 all-linear dropout=0.1
+データ: PokerBench postflop 10,000件 (instruction/output形式)
+設定: epochs=3, batch=4, grad_accum=8 (effective 32), lr=1e-4, cosine, bf16
+```
+
+| step | train_loss | eval_loss | action_accuracy | perplexity | VRAM (MiB) |
+|---|---|---|---|---|---|
+| 9 | 2.2362 | — | — | — | 9,603 |
+| 84 | 0.4906 | — | — | — | 9,698 |
+| 200 | — | 0.537 | **56.2%** | 1.71 | 9,815 |
+| 258 | 0.534 | — | — | — | 9,815 |
+
+- Go基準: action_accuracy ≥ 40% → **合格** (56.2%)
+- Go基準: eval_loss収束傾向 → **合格** (train 0.534 ≈ eval 0.537、過学習なし)
+- Go基準: VRAM ≤ 10,000 MiB → **合格** (9,815 MiB)
+- Go基準: NaN/OOMなし → **合格**
+- ETA: 全939 steps完了まで残り数時間
+
+### 3.3 Gemma 4 E2B 調査結果
+
+| 項目 | 値 |
+|---|---|
+| 実効パラメータ | 2B（総パラメータ5.44B、PLE技術で実効2B） |
+| hidden_size | 未確認（ダウンロード後に確認） |
+| LoRA VRAM | 8-10 GB (Unsloth公式) |
+| RL (GRPO) VRAM | 9 GB (Unsloth公式確認済み) |
+| ポーカーRL実績 | 前世代Gemma 3n E2Bがdcaustin33/poker_rlのデフォルトモデル |
+| Q4推論VRAM | 5.8 GB (RTX 3080で余裕) |
+| 推論速度 | ~32 tok/s (Q4_K_M) |
+| ライセンス | Gemma License |
+| 注意点 | Unslothの`use_cache=False`バグ修正が必要。loss 13-15は正常（マルチモーダルモデルの特性） |
+
+### 3.4 モデル選定プロセス（残り）
+
+1. Phi-4-mini 10k SFT完了 → CP-2報告受領
+2. Gemma 4 E2Bダウンロード → 同一10kデータで同一設定SFT実施
+3. 比較レポート作成（accuracy / VRAM / 訓練時間 / 安定性）
+4. プライマリモデル確定 → 指令書v1.2更新
+
+### 3.5 10k SFTデータの特性（確認済み）
+
+```text
+PokerBenchフィールド: instruction (シナリオ) / output (アクション+サイジング)
+マッピング: instruction → prompt, output → completion
+
+train 10,000件 / eval 1,000件
+平均prompt長: train 202.36語 / eval 202.10語
+active_players: 全件2（PokerBench postflopはHU）
+
+action_type分布 (train):
+  fold   2,467 (24.67%)
+  check  2,546 (25.46%)
+  call   2,433 (24.33%)
+  bet    1,020 (10.20%)
+  raise  1,534 (15.34%)
+  サイジング付き: 2,554 (25.54%)
+
+action_accuracyの定義: completionの先頭単語の一致で判定（サイジング数値は無視）
+  例: 正解"bet 18"、出力"bet 25" → 正解扱い
+```
+
+---
+
+## 4. 本セッションで完了したこと（前回スナップショット以降）
+
+### 4.1 データ取得・分析
+
+- PokerBench 8ファイル全てダウンロード（`data/pokerbench/`）
+- PHHデータセット 10,000ハンドクローン（`data/phh-dataset/`）
+- poker_datasets_refクローン（`tools/poker_datasets_ref/`）
+- multiway分析スクリプト作成・実行（`scripts/analyze_multiway.py`）
+- phh-dataset multiway抽出スクリプト作成・実行（`scripts/extract_multiway.py`）
+- 抽出結果分析スクリプト作成（`scripts/analyze_multiway_extracted.py`）
+- multiway分析レポート作成（`data/multiway_analysis_report.md`）
+- SFTデータ準備スクリプト作成（`scripts/prepare_sft_10k.py`）
+- SFT比較スクリプト作成（`scripts/run_sft_comparison.py`）
+
+### 4.2 モデルダウンロード・検証
+
+- Phi-4-mini-instruct: hidden_size=3072, 32 layers, FP16 7,317 MiB
+- Qwen3.5-4B: hidden_size=2560, 32 layers, FP16 8,022 MiB
+- Qwen3.5-4B VRAM超過判定（QLoRA batch=2で13,120 MiB → 脱落）
+
+### 4.3 poker-assistant リポジトリ変更
+
+- 骨格ファイル6個追加: `strategy/pokerrl_bridge.py`, `pokerrl_prompt_builder.py`, `pokerrl_inference_engine.py`, `pokerrl_heads.py`, `pokerrl_output_parser.py`, `pokerrl_spot_classifier.py`
+- 1441 tests pass確認
+- commit 1edf9c3 push済み
+
+### 4.4 重要な設計判断
+
+| 判断 | 内容 | 根拠 |
+|---|---|---|
+| Layer 3（PokerKit合成）不要 | phh-dataset 2,090万件で十分 | 72万件のhole cards付きだけでも目標の24倍 |
+| HU:multiway固定比率を廃止 | active player数分布管理に変更 | HUとmultiwayは同一ハンド内で遷移する。固定比率は不適切 |
+| データ設計はSprint 2で実験 | 事前に完璧な設計を決めない | 勝者行動選別の品質、最適混合比率は実験で判断 |
+| Gemma 4 E2Bを最有力候補に追加 | poker_rl作者の実績 + VRAM余裕 + GRPO 9GB確認 | Phi-4-miniより小さいがポーカー特化の実績あり |
+
+---
+
+## 5. 訓練リポジトリの状態
+
+### 5.1 ディレクトリ構成
+
+```text
+C:\dev\pokerrl-training/
+├── .venv/                          Python仮想環境 (torch 2.12.0+cu130)
+├── .gitignore                      models/, results/ 除外
+├── requirements.txt
+├── data/
+│   ├── pokerbench/                 PokerBench 8ファイル
+│   │   ├── postflop_500k_train_set_prompt_and_label.json (560 MB)
+│   │   ├── postflop_10k_test_set_prompt_and_label.json (11 MB)
+│   │   ├── preflop_60k_train_set_prompt_and_label.json (59 MB)
+│   │   └── ... (CSV等含む全8ファイル)
+│   ├── phh-dataset/                PHH 10,000 .phhファイル
+│   ├── multiway_raw/               phh-dataset抽出結果
+│   │   ├── multiway_decisions.jsonl (16.23 GB)
+│   │   ├── multiway_hands.jsonl    (2.07 GB)
+│   │   ├── extraction_summary.json
+│   │   └── multiway_extracted_report.md
+│   ├── multiway_analysis_report.md
+│   ├── sft_train_10k.jsonl         SFT訓練データ (10k件)
+│   └── sft_eval_1k.jsonl           SFT評価データ (1k件)
+├── models/
+│   ├── phi-4-mini-instruct/        Phi-4-mini FP16
+│   └── qwen3.5-4b/                Qwen3.5-4B FP16 (VRAM超過で使用不可)
+├── scripts/
+│   ├── analyze_multiway.py
+│   ├── extract_multiway.py
+│   ├── analyze_multiway_extracted.py
+│   ├── prepare_sft_10k.py
+│   ├── run_sft_comparison.py
+│   └── monitor_sft.py
+├── results/
+│   └── sft_comparison/
+│       ├── phi4/                   Phi-4-mini SFT出力 (実行中)
+│       ├── data_preparation_report.txt  instruction先頭3件全文
+│       └── run_status.md
+└── tools/
+    └── poker_datasets_ref/         dcaustin33/poker_datasets クローン
+```
+
+### 5.2 環境
+
+```text
+Python: .venv内
+torch: 2.12.0+cu130 (CUDA対応確認済み)
+cuda_available: True
+cuda_version: 13.0
+bf16_supported: True
+GPU: NVIDIA GeForce RTX 3080 (10 GB)
+空きディスク: 約358 GB
+```
+
+---
+
+## 6. 既存システムの状態（前回から変更なし）
+
+### 6.1 正常に動作している部分
 
 ```text
 - 画面キャプチャ・認識パイプライン（全ストリート）
@@ -211,155 +335,86 @@ DESIGN_NOTES.md更新箇所:
 - 全テスト1441 passed
 ```
 
-### 3.2 Deep CFR関連（現状維持、将来廃止予定）
+### 6.2 Deep CFR関連（現状維持、将来廃止予定）
 
 ```text
 - strategy/deep_cfr_bridge.py: encode_game_state修正済み（C1-C6）、スートマッピング修正済み
-- strategy/_deep_cfr_network.py: PokerNetwork定義（訓練リポジトリと同一構造）
+- strategy/_deep_cfr_network.py: PokerNetwork定義
 - models/deep_cfr/best_checkpoint.pt: Phase 3 v4モデル（品質不合格）
 - config.yaml deep_cfr.fallback_to_solver: true
-
-これらは新推論エンジン統合完了（Stage D）まで残す。
+Stage D完了まで残す。
 ```
 
-### 3.3 Rust postflop CLI（廃止方針確定）
+### 6.3 Rust postflop CLI（廃止方針確定）
 
 ```text
-- solver/solver_bridge.py: Rust postflop CLI連携
-- 廃止方針確定。フォールバック経路からも除外済み。
-- コードは新推論エンジン統合完了（Stage D）まで残すが使わない。
+- solver/solver_bridge.py: フォールバック経路からも除外済み
+- Stage D完了まで残すが使わない。
 ```
 
-### 3.4 戦略ルーティング現在状態
+### 6.4 戦略ルーティング現在状態
 
 ```text
-Preflop: Chart（正常動作、変更なし）
-HU Postflop: Deep CFR推論（モデル品質不合格だがフォールバックとして残存）
-Multiway Postflop: Deep CFR推論（同上）
-All-in: 既存 equity / pot odds 数理避難路
-exploit_adjustment: LLM継続（Deep CFR/新エンジン出力に対する統計ベース補正）
-```
-
-SPEC.md Section 9.3/9.4で確定したフォールバック経路:
-```text
-全街・全人数共通:
+全街・全人数共通フォールバック経路:
   PokerRL+GRPO → Deep CFR → LLM → スキップ（Stage D完了まで保持）
   Rust Solver はフォールバック経路から除外済み
 ```
 
 ---
 
-## 4. Deep CFR訓練情報（参照用）
+## 7. Deep CFR訓練情報（参照用、前回から変更なし）
 
-### 4.1 訓練経緯
-
-```text
-訓練リポジトリ: C:\dev\deepcfr-training
-ベース: https://github.com/dberweger2017/deepcfr-texas-no-limit-holdem-6-players (MIT)
-ハードウェア: RTX 3080 (VRAM 10GB, RAM 32GB)
-
-Phase 1 v4: --iterations 1000 --traversals 200
-  → profit vs random: 28.08（独立再評価3000 games）
-  → ~3秒/イテレーション
-
-Phase 2 v4: --self-play --iterations 2000 --traversals 400
-  → ~44-52秒/イテレーション（ニューラルネット対戦で~15倍遅化）
-  → ~24-28時間
-
-Phase 3 v4: --mixed --iterations 10000 --traversals 400
-  → memory_size=20,000,000（デフォルト300Kから67倍拡大、原論文40Mの50%）
-  → ~9日間
-  → 最終profit vs random: 46.07（独立再評価3000 games）
-  → Phase 1 v4との対戦: +4.72
-
-モデル配置: models/deep_cfr/best_checkpoint.pt
-  = Phase 3 v4 mixed_checkpoint_iter_10000.pt (1.76MB)
-  配置日: 2026-05-29
-
-問題: profit vs random = 46.07は「ランダム相手にひたすらレイズ」戦略でも達成可能。
-GTO近似として必要なハンド強度・ボード・ポジション・相手アクションへの感度が不足。
-```
-
-### 4.2 訓練中に発見された技術的問題
+前回スナップショット §4 と同一。要約のみ記載:
 
 ```text
-- evaluate_against_randomでRaise無限ループ → MAX_ACTIONS_PER_GAME=300で対処
-- PrioritizedMemoryの_max_priority正帰還ループ → max_priority_cap=100.0で対処
-- checkpoint再開時メモリバッファ損失 → checkpoint再開を使わずフル実行で対処
-- Phase 3初期のloss散発スパイク（10^11〜10^12）→ 数百iter後に自然収束
-- flagship_modelsは旧アーキテクチャ（fc1-fc6）で現行コード（base/action_head/sizing_head）と非互換
-- 訓練情報源優先順位: README > description.md > Medium記事
-```
-
-### 4.3 「profit vs random」の罠（教訓）
-
-ランダム相手への最適戦略は「常にレイズ」に近くなり得る。
-この指標が高くても、GTO近似や実戦品質が高いとは限らない。
-**今後は「profit vs random」を単独評価指標として使用禁止。**
-
-代わりに以下を組み合わせて評価する:
-- Spot Checks（特定局面での行動分布確認）
-- Entropy（top-1確率の偏り）
-- Sensitivity Tests（入力変化への反応性）
-- 対GTOデータセットaccuracy
-- Slumbot等の外部ベンチマーク
-
----
-
-## 5. 156次元エンコーディング対応表（Deep CFR用、参照用）
-
-Phase C修正（C1-C5）+ C6スートマッピング修正で訓練側と完全一致確認済み。
-新エンジンでは不要になるが、verify_pokerrl_encode.py設計時の参考として保持。
-
-```text
-[0:52]    hero hand one-hot (52次元)
-[52:104]  board one-hot (52次元)
-[104:109] stage one-hot (5次元: preflop/flop/turn/river/showdown)
-[109]     pot / initial_stake (1次元)
-[110:116] button position one-hot (6次元)
-[116:122] current player one-hot (6次元, Hero=index 0固定)
-[122:146] per-player state (24次元: 6人 × 4値)
-            active, bet/initial_stake, pot_chips/initial_stake, stack/initial_stake
-[146]     min_bet / initial_stake (1次元)
-[147:151] legal actions (4次元: Fold/Check/Call/Raise)
-[151:156] previous action (5次元: 4 action type one-hot + 1 amount)
-合計: 156次元
-
-カード表記: スート Clubs=0, Diamonds=1, Hearts=2, Spades=3
-           ランク 2=0, 3=1, ..., A=12
-           インデックス = suit * 13 + rank
-
-正規化分母: initial_stake = hero.stack（残りチップのみ）
-pot_chips: max(0, hand_start_stack - current_stack - current_street_bet)
+Phase 3 v4: mixed 10,000 iterations, memory 20M
+最終profit vs random: 46.07
+ライブテスト: 9局面中合理的1局面のみ → 品質不合格確定
+正しいエンコーディングでも同じ偏った出力 → モデル自体の問題
+「profit vs random」は単独評価指標として使用禁止（教訓）
 ```
 
 ---
 
-## 6. seat番号とテーブル配置（不変）
+## 8. 156次元エンコーディング対応表（Deep CFR用、参照用）
+
+前回スナップショット §5 と同一。新エンジンでは不要だが参照用に保持。
+
+```text
+[0:52] hero hand, [52:104] board, [104:109] stage, [109] pot,
+[110:116] button, [116:122] current player, [122:146] per-player,
+[146] min_bet, [147:151] legal actions, [151:156] previous action
+スート: Clubs=0, Diamonds=1, Hearts=2, Spades=3
+```
+
+---
+
+## 9. seat番号とテーブル配置（不変）
 
 ```text
 座標プロファイル: profiles/coinpoker_6max.json
-
-seat 1 = Hero = 下中央
-seat 2 = 右下
-seat 3 = 右上
-seat 4 = 上中央
-seat 5 = 左上
-seat 6 = 左下
+seat 1 = Hero = 下中央, seat 2 = 右下, seat 3 = 右上,
+seat 4 = 上中央, seat 5 = 左上, seat 6 = 左下
 ```
 
 ---
 
-## 7. 主要コードファイル
+## 10. 主要コードファイル
 
 ```text
 core/game_state.py          GameState/PlayerState/HeroState/ActionRecord定義
 core/hand_manager.py        ハンドライフサイクル管理、DB保存
 core/game_loop.py           メインループ、戦略ルーティング
-strategy/deep_cfr_bridge.py Deep CFR推論ブリッジ（C1-C6修正済み、モデル品質不合格）
+strategy/deep_cfr_bridge.py Deep CFR推論ブリッジ（品質不合格）
 strategy/_deep_cfr_network.py PokerNetwork定義
-strategy/recommendation_engine.py 戦略ルーティング（preflop chart / Deep CFR / LLM / fallback）
-strategy/llm_pipeline.py    OpenRouter API呼び出し（exploit_adjustment用）
+strategy/recommendation_engine.py 戦略ルーティング
+strategy/llm_pipeline.py    OpenRouter API呼び出し
+strategy/pokerrl_bridge.py          ★ 新: 骨格のみ (commit 1edf9c3)
+strategy/pokerrl_prompt_builder.py  ★ 新: 骨格のみ
+strategy/pokerrl_inference_engine.py★ 新: 骨格のみ
+strategy/pokerrl_heads.py           ★ 新: 骨格のみ
+strategy/pokerrl_output_parser.py   ★ 新: 骨格のみ
+strategy/pokerrl_spot_classifier.py ★ 新: 骨格のみ
 solver/solver_bridge.py     Rust postflop CLI連携（廃止予定）
 gui/main_window.py          PyQt6メインウィンドウ
 gui/hud_overlay.py          HUDオーバーレイ
@@ -368,164 +423,178 @@ config.yaml                 設定ファイル
 docs/SPEC.md                正仕様（v3.5、PokerRL+GRPO反映済み）
 docs/DESIGN_NOTES.md        設計判断理由（Section 49まで）
 docs/snapshot.md            本ファイル
-docs/PokerRL+GRPO 6-max NLHE.md  実装指令書v1.1（Git未追跡）
+docs/PokerRL+GRPO 6-max NLHE.md  実装指令書v1.1（Git未追跡、v1.2更新待ち）
 ```
 
 ---
 
-## 8. ファイル変更履歴（本セッション）
+## 11. ファイル変更履歴（本セッション）
 
 ### poker-assistant リポジトリ
 
 | ファイル | 変更 | commit |
 |---|---|---|
-| strategy/deep_cfr_bridge.py | C6: _SUIT_MAP修正 | push済み（セッション前半） |
-| tests/test_deep_cfr_bridge.py | card_to_index期待値更新 | push済み（セッション前半） |
-| docs/SPEC.md | Section 9.3/9.4/10A/10B/14.13追加・更新 | push済み |
-| docs/SPEC.md | Section 9.3/9.4 フォールバック経路修正 | 6306c86 |
-| docs/DESIGN_NOTES.md | Section 47/48/49 追加 | push済み |
-| docs/DESIGN_NOTES.md | Section 35.2 フォールバック経路修正 | 6306c86 |
+| strategy/pokerrl_bridge.py | 新規: 骨格 | 1edf9c3 |
+| strategy/pokerrl_prompt_builder.py | 新規: 骨格 | 1edf9c3 |
+| strategy/pokerrl_inference_engine.py | 新規: 骨格 | 1edf9c3 |
+| strategy/pokerrl_heads.py | 新規: 骨格 | 1edf9c3 |
+| strategy/pokerrl_output_parser.py | 新規: 骨格 | 1edf9c3 |
+| strategy/pokerrl_spot_classifier.py | 新規: 骨格 | 1edf9c3 |
 
-### 訓練リポジトリ (C:\dev\deepcfr-training)
+### 訓練リポジトリ (C:\dev\pokerrl-training)
 
 | ファイル | 変更 |
 |---|---|
-| verify_encode.py | 新規作成。訓練側/推論側エンコーディング一致検証 |
-
-### 未コミット/未追跡
-
-| ファイル | 状態 |
-|---|---|
-| docs/snapshot.md | 要更新（本ファイルで置き換え） |
-| docs/PokerRL+GRPO 6-max NLHE.md | 実装指令書v1.1。Git未追跡 |
+| scripts/analyze_multiway.py | 新規 |
+| scripts/extract_multiway.py | 新規 |
+| scripts/analyze_multiway_extracted.py | 新規 |
+| scripts/prepare_sft_10k.py | 新規 |
+| scripts/run_sft_comparison.py | 新規 |
+| scripts/monitor_sft.py | 新規 |
+| data/sft_train_10k.jsonl | 新規 |
+| data/sft_eval_1k.jsonl | 新規 |
+| data/multiway_raw/* | 新規（抽出結果） |
+| data/multiway_analysis_report.md | 新規 |
+| results/sft_comparison/data_preparation_report.txt | 新規 |
 
 ---
 
-## 9. 確定した制約（次セッション以降も有効）
+## 12. 実装指令書v1.1との乖離点（v1.2更新時に反映）
 
-### 9.1 永久廃止
+| 指令書v1.1の記述 | 現状 | v1.2で反映すべき変更 |
+|---|---|---|
+| §4.1 モデル候補: Phi-4-mini / Qwen3-4B / Gemma 3-4B / SmolLM3 / Qwen3-1.7B | Gemma 4 E2B最有力、Qwen3.5-4B脱落 | モデル候補表を全面更新 |
+| §4.2 第1選択: Phi-4-mini | Gemma 4 E2Bとの比較待ち | 比較結果で確定 |
+| §3.1 データ: PokerBench 560k + Pluribus 60k | + phh-dataset 2,090万multiway | データソースにphh-datasetを追加 |
+| §3.1 データ比率未言及 | active player数分布管理に決定 | データ設計方針セクション追加 |
+| §5.1 訓練リポジトリ未作成 | `C:\dev\pokerrl-training`作成済み | パス確定 |
+| §5.2 LoRA r=64, alpha=128 | r=32, alpha=32で実行中 | poker_rl作者設定に合わせて修正 |
+| §2.4 Sizing Head: sigmoid | カテゴリカルへ変更提案済み | 確定後に反映 |
+| §10 Sprint 1: 未着手 | 大半完了 | 完了タスクをチェック |
+| §1.2 models/pokerrl/base_qwen3_4b/ | モデル未確定 | 確定モデルのパスに変更 |
+| Layer 3 (PokerKit合成) 言及なし | 不要と判定 | 明示的に「不要」と記載 |
 
-- **Rust postflop CLI（Solver）は永久廃止**: 代替として検討しない。フォールバック経路からも除外済み。コードはStage D完了まで残すが使わない。
+---
 
-### 9.2 品質不合格（保持）
+## 13. 確定した制約（次セッション以降も有効）
 
-- **Deep CFRモデルは品質不合格**: 正しいエンコーディングでもRaise 70-80%。改善の見込みなし。Stage D完了までフォールバックとして残す。
+### 13.1 永久廃止
 
-### 9.3 評価基準
+- **Rust postflop CLI（Solver）は永久廃止**: フォールバック経路からも除外済み
 
-- **「profit vs random」は単独評価指標として使用禁止**: 46.07でも実戦不可だった教訓。
+### 13.2 品質不合格（保持）
+
+- **Deep CFRモデルは品質不合格**: Stage D完了までフォールバックとして残す
+
+### 13.3 評価基準
+
+- **「profit vs random」は単独評価指標として使用禁止**
 - PokerRL+GRPOの品質評価基準（SPEC 10A.11）:
   - Spot Checks 50シナリオで95%合格
   - Entropy健全（top-1確率中央値 ≤ 0.85）
   - PokerBench Postflop accuracy ≥ 60%
   - Slumbot HU ≥ -15 bb/100
 
-### 9.4 削除禁止
+### 13.4 削除禁止
 
 - 既存Deep CFR/Solverコードは新エンジン統合完了（Stage D）まで削除禁止
-- verify_pokerrl_encode.pyの検証をスキップしない（Deep CFRの教訓）
+- verify_pokerrl_encode.pyの検証をスキップしない
 - Spot Checks 50シナリオを削除・緩和しない
 - エントロピー崩壊対策なしに4B以上のモデルを訓練しない
 - PokerBench/Pluribusデータの品質を確認せずに訓練を開始しない
 
-### 9.5 ハードウェア
+### 13.5 ハードウェア・予算
 
-- RTX 3080 (VRAM 10GB, RAM 32GB)が唯一のハードウェア
+- RTX 3080 (VRAM 10GB, RAM 32GB)
 - クラウドは$500上限
+- 全体タイムボックス: 12週間（最大15週間）
 
-### 9.6 タイムボックス
+### 13.6 データ設計制約（本セッションで確定）
 
-- PokerRL+GRPOアプローチ: 12週間タイムボックス（補正含め最大15週間）
-- 撤退基準は実装指令書v1.1 §9.2に記載
-- Sprint中間点でもGo/No-go判定を実施
+- PokerBench postflop 500kは100% HU。multiway訓練にはphh-dataset抽出データが必須
+- データ混合はactive player数の分布管理で行う（HU:multiway固定比率は使わない）
+- phh-datasetの勝者行動を優先選別するが、ラッキー勝利の問題は実験で検証
+- Layer 3（PokerKit合成データ）は不要（phh-datasetで十分）
 
-### 9.7 既存原則（不変）
+### 13.7 モデル選定制約（本セッションで確定）
 
-- Quality over Speed: 速いが間違った推奨 < 遅いが正しい推奨
-- No provisional recommendations: 暫定推奨は表示禁止
-- GameLoop must never freeze: 認識ループは絶対に止めない
-- State-only HUD when not ready: 計算中はステータスメッセージのみ
-- Stale context discard: Context Snapshot不一致なら結果を破棄
-- No silent fallback: 入力不安定なら推奨を出さず明示的にステータス表示
+- Qwen3.5-4BはRTX 3080 10GBでQLoRA SFT不可（13,120 MiB必要）
+- クラウドGPU使用時のみ第3候補として残す
 
----
+### 13.8 既存原則（不変）
 
-## 10. PokerRL+GRPO実装計画（実装指令書v1.1の要約）
-
-### 10.1 Stage移行計画
-
-```text
-[Stage A] 実装開始〜Phase 1完了
-  → Deep CFR表示のまま、PokerRLをテスト用に並行稼働
-
-[Stage B] Phase 1完了〜Phase 2完了
-  → PokerRLをshadow modeで稼働、推奨表示はまだDeep CFR
-
-[Stage C] Phase 2完了後
-  → HU/Multiway postflopをPokerRLに切替
-  → Deep CFRはフォールバック保持（1ヶ月間）
-
-[Stage D] 品質安定後
-  → Deep CFR Bridge / Rust Solver削除
-```
-
-### 10.2 Sprint計画
-
-| Sprint | 期間 | 内容 |
-|---|---|---|
-| Sprint 1 | Week 1-2 | 基盤構築 + モデル選定（両モデルで10k SFT比較） |
-| Sprint 2 | Week 3-5 | Phase 1 SFT本訓練（560k+60k、RTX 3080で40-60h） |
-| Sprint 3 | Week 6-9 | Phase 2 GRPO強化学習（自己対戦、100-150h） |
-| Sprint 4 | Week 10-11 | 推論ブリッジ統合 + Shadow Mode |
-| Sprint 5 | Week 12-13 | 本番切替 + モニタリング |
-| Sprint 6 | Week 14 | 旧コンポーネント削除（オプション） |
-
-### 10.3 新規追加モジュール（予定）
-
-```text
-strategy/
-  ├── pokerrl_bridge.py          推論ブリッジ（deep_cfr_bridgeと同じI/F）
-  ├── pokerrl_prompt_builder.py  GameState → プロンプト変換
-  ├── pokerrl_inference_engine.py vLLM/llama-cpp ローダ + 推論実行
-  ├── pokerrl_heads.py            Action / Sizing 補助ヘッド
-  ├── pokerrl_output_parser.py    モデル出力 → Recommendation変換
-  ├── pokerrl_spot_classifier.py  局面分類 (Tier振り分け)
-  └── verify_pokerrl_encode.py    訓練側との一致検証
-
-models/pokerrl/
-  ├── base_model/                 ベースモデル重み
-  ├── sft_adapter/                Phase 1 LoRAアダプタ
-  ├── grpo_adapter/               Phase 2 LoRAアダプタ
-  └── final_quantized/            量子化版（本番推論用）
-```
-
-### 10.4 撤退後の代替案（§9.2.6要約）
-
-| 撤退時の状況 | 第1優先 | 第2優先 |
-|---|---|---|
-| SFT成功、GRPO失敗 | PokerSkill風ハイブリッド | GTO Wizard API待機 |
-| SFT失敗 | Deep CFR改善（評価刷新） | GTO Wizard API待機 |
-| タイムボックス超過、品質改善中 | GTO Wizard API待機 | SFTモデルshadow mode運用 |
-| 全失敗 | 既存システム暫定運用 | 新興手法(MCCFVFP等)調査 |
+- Quality over Speed
+- No provisional recommendations
+- GameLoop must never freeze
+- State-only HUD when not ready
+- Stale context discard
+- No silent fallback
 
 ---
 
-## 11. 次セッションの開始手順
+## 14. PokerRL+GRPO実装計画（指令書v1.1要約 + 更新）
+
+### 14.1 Stage移行計画（変更なし）
+
+```text
+Stage A → B → C → D（指令書v1.1 §6.1と同一）
+```
+
+### 14.2 Sprint計画（更新版）
+
+| Sprint | 期間 | 内容 | 状態 |
+|---|---|---|---|
+| Sprint 1 | Week 1-3 | データ取得 + multiway分析 + モデル選定 | 🔄 実行中 |
+| Sprint 2 | Week 4-6 | Phase 1 SFT本訓練（データ設計含む） | ⬜ 未開始 |
+| Sprint 3 | Week 7-10 | Phase 2 GRPO強化学習 | ⬜ 未開始 |
+| Sprint 4 | Week 11-12 | 推論ブリッジ統合 + Shadow Mode | ⬜ 未開始 |
+| Sprint 5 | Week 13 | 本番切替 + モニタリング | ⬜ 未開始 |
+| Sprint 6 | Week 14 | 旧コンポーネント削除（オプション） | ⬜ 未開始 |
+
+**変更点**: Sprint 1を2週間→3週間に延長（multiway分析 + Gemma 4 E2B比較追加のため）
+
+### 14.3 撤退基準
+
+指令書v1.1 §9.2に記載。変更なし。
+
+---
+
+## 15. 次セッションの開始手順
 
 1. 本snapshot.mdの内容を確認
-2. SPEC.md Section 9（戦略ルーティング）と Section 10A（PokerRL+GRPO推論ブリッジ）を参照
-3. `docs/PokerRL+GRPO 6-max NLHE.md`（実装指令書v1.1）を読む
-4. Sprint 1から開始:
-   - PokerBenchデータ取得・前処理
-   - Pluribusデータ取得・変換
-   - Phi-4-mini 3.8BとQwen3-4Bを両方ダウンロード
-   - 10kサンプルで小規模SFTを両モデルで実施（Go/No-go: 採用モデル確定）
-   - verify_pokerrl_encode.py設計
-   - 訓練側リポジトリ `C:\dev\pokerrl-training` 作成
+2. **最優先: Phi-4-mini 10k SFTが完了しているか確認**
+   - 完了していれば CP-2報告を取得（final_metrics.json、学習曲線、instruction先頭3件全文）
+3. **Gemma 4 E2Bダウンロード + 同一10kデータでSFT実施**
+   - Gemma 4 E2Bのモデルパス: `models/gemma-4-e2b/`
+   - Unslothの`use_cache`バグに注意
+   - LoRA設定はPhi-4-miniと同一 (r=32, alpha=32, all-linear, dropout=0.1)
+4. 比較レポート作成 → プライマリモデル確定
+5. 指令書v1.2更新（§12の乖離点を全て反映）
+6. Sprint 2（Phase 1 SFT本訓練）開始
+
+### 15.1 Gemma 4 E2B SFT実施時の注意事項
+
+- ダウンロード: `huggingface_hub.snapshot_download("google/gemma-4-E2B-it")`
+- Unslothを使う場合: `FastModel.from_pretrained("unsloth/gemma-4-E2B-it")`
+- `use_cache=False`のバグ（KV shared layers問題）に注意。Unsloth経由なら修正済み
+- loss 13-15は正常（マルチモーダルモデルの特性）
+- E2B固有のLoRAターゲットモジュールはpoker_rlのコードを参照:
+  ```
+  q_proj, v_proj, k_proj, o_proj, up_proj, down_proj, gate_proj,
+  linear_left, linear_right, per_layer_projection
+  ```
+- hidden_stateが4次元テンソルの場合あり（`hidden_states[-1]`で最終層のみ取得）
+
+### 15.2 CP-2で必要な報告内容
+
+1. `final_metrics.json` の全内容
+2. eval_loss と action_accuracy の推移（100 stepsごとの数値テーブル）
+3. 訓練中にNaN/異常スパイクがなかったか
+4. `data_preparation_report.txt` の instruction先頭3件全文
 
 **最重要:**
 - リポジトリURL: https://github.com/sanhyokim/poker-assistant（sanhyokim2050ではない）
-- Deep CFRの失敗パターン（ランダム相手最適化、profit vs randomだけの評価）を繰り返さないこと
-- verify_pokerrl_encode.py（訓練側/推論側の一致検証）は最初に作ること
+- Deep CFRの失敗パターンを繰り返さないこと
+- **multiwayデータの取り扱いは全報告で目立たせること（§2参照）**
+- verify_pokerrl_encode.pyはSprint 2で最初に作ること
 - 品質評価にはSpot Checks 50シナリオを必ず含めること
-```
