@@ -3414,3 +3414,297 @@ PokerBench HU 500kとphh-dataset multiway抽出データを統合プールにし
 - 人間データとsolverデータの混合が品質に与える影響
 - active player分布を実戦頻度に合わせるか、少数カテゴリをオーバーサンプリングするか
 
+---
+
+## 53. phh-dataset hole cards付きデータが全件敗者だった問題
+
+### 53.1 発覚経緯
+
+Sprint 2のS2-T2a（multiway confidence scoringスクリプト作成）の前段階として、
+phh-dataset multiway抽出データ（726,570件のhole cards付きレコード）の品質を
+詳細分析した。
+
+当初の計画では、hole cards付き726,570件から勝者行動を優先選別し、
+confidence-weighted SFTでmultiway訓練データを作成する予定だった（snapshot §1.5）。
+
+しかし分析の結果、以下が判明した。
+
+```text
+hole cards付き726,570件の全件が net_result ≤ 0（敗者または引き分け）
+勝者（net_result > 0）のhole cards付きレコードは0件
+```
+
+### 53.2 原因
+
+PHH（Poker Hand History）フォーマットの仕様上、
+showdownで負けたプレイヤーのhole cardsのみが記録される。
+勝者のhole cardsは記録されない（mucked扱い）。
+
+そのため、hole cards付きデータ = 敗者データ という構造的制約がある。
+これはデータ抽出スクリプトの問題ではなく、元データの仕様である。
+
+### 53.3 影響
+
+以下の計画が根本から成立しなくなった。
+
+```text
+- S2-T2a: confidence scoringスクリプト（勝者行動を高スコアにする前提が崩壊）
+- S2-T2b: stratified sampler + HU rehearsal（高品質データの選別が不可能）
+- S2-T2c: weighted SFT実行（重み付けの根拠となる勝者データが存在しない）
+- S2-T2d: multiway Go/No-go判定（weighted SFT自体が実行不可）
+- S2-T2e: KTO検討（desirable/undesirableの分類根拠がない）
+```
+
+snapshot §1.5で確定していた「confidence-weighted SFT」方針は全面的に破綻した。
+
+### 53.4 敗者データの限定的活用可能性
+
+敗者データ自体が完全に無価値ではない。以下の用途は検討可能。
+
+```text
+- 「やってはいけない行動」の負例としての利用（KTOのundesirable側）
+- action history理解やboard texture認識の補助学習
+- opponent modelingの訓練データ
+```
+
+ただし、positive example（良い行動の教師ラベル）としては使用できない。
+multiway postflopの「正しい行動」を教えるデータソースが別途必要になった。
+
+### 53.5 教訓
+
+phh-datasetの「hole cards付き726,570件」という数字だけを見て
+十分な量があると判断していたが、その全件が敗者であることを
+事前に検証していなかった。
+
+データの量だけでなく、ラベルの方向性（勝者/敗者）を
+訓練計画の前提として早期に検証すべきだった。
+
+---
+
+## 54. PokerSkill論文（arXiv 2605.30094）の分析とMW拡張可能性
+
+### 54.1 論文概要
+
+PokerSkill（Li, Wang, Huang, 2026年5月）は、訓練なし・ソルバーなしで
+LLMにヘッズアップ（HU）ノーリミットテキサスホールデムをプレイさせるフレームワークである。
+
+```text
+タイトル: PokerSkill: LLMs Can Play Expert-Level Poker without Training or Solvers
+arXiv: 2605.30094
+公開日: 2026年5月
+コード: https://github.com/lbn187/PokerSkill
+```
+
+### 54.2 アーキテクチャ
+
+PokerSkillは以下の3層で構成される。
+
+```text
+1. Context Engine（決定論的）
+   - GameStateからラベルを抽出: board texture, hand class, action line, SPR, betting pressure
+   - 23のhand class分類（16 Made-Hand + 8 Drawing-Hand）
+   - 46段階のpressure weight table
+
+2. Skill Library（人間専門家が設計）
+   - P1: 基本ルール
+   - P2: プリフロップレンジ
+   - P3: ポストフロップ安定原則
+   - P4: コンテキスト別ガイダンス（約60シナリオ）
+   - P5: リバーブロッカーアドバイス
+
+3. ATT/DEF Budget System
+   - 各hand classに攻撃予算（ATT）と防御予算（DEF）を割り当て
+   - ストリートごとのaction weightを累積し、残予算で行動制約
+   - 残ATT > 0 → bet/raise可能、残DEF > 0 → call可能
+```
+
+### 54.3 主要結果
+
+GTOWizardベンチマーク（150,000ハンド、AIVAT分散削減）での結果。
+
+```text
+GPT-5.5 XHigh + PokerSkill: -57 ± 21 mbb/hand
+Claude Opus 4.6 + PokerSkill: -80 ± 29 mbb/hand
+Claude Opus 4.7 + PokerSkill: -87 ± 64 mbb/hand
+
+ベースライン（デフォルトプロンプト）:
+GPT-5.5 XHigh: -132 ± 25 mbb/hand
+Claude Opus 4.6: -204 ± 44 mbb/hand
+Claude Opus 4.7: -170 ± 28 mbb/hand
+
+損失削減率: 49-61%
+Slumbotを上回る性能
+```
+
+ルール層のみ（LLMなし）: -132 mbb/hand（デフォルトGPT-5.5と同程度）。
+ルール層単体では弱いが、LLMと組み合わせることで大幅に改善する。
+
+### 54.4 PokerSkillとPokerBench/PokerRL+GRPOの関係
+
+PokerSkillとPokerBenchは全く別の論文・別のアプローチである。
+
+```text
+PokerBench (Zhuang et al., 2025):
+  - solver出力をSFT訓練データとして使用（563,200件）
+  - LLMに判断を教示する訓練ベースのアプローチ
+
+PokerSkill (Li, Wang, Huang, 2026):
+  - 訓練なし、ソルバーなし
+  - ルールベースSkill Library + LLM推論
+  - HU専用だがMW拡張の設計余地あり
+```
+
+現在のHU SFT訓練（PokerBenchデータ使用）とPokerSkillは補完的関係にある。
+PokerSkillの設計思想（Context Engine + ルール層 + 行動制約）は、
+multiway対策として訓練済みSFTモデルやAPI LLMの前段に組み込める。
+
+### 54.5 HU論文のMW拡張可能性
+
+PokerSkill論文はHU専用だが、以下のコンポーネントはMWにそのまま再利用可能。
+
+```text
+再利用可能（低難度）:
+  - Context Engine（board texture, hand class分類）
+  - Hand Strength分類（23 hand class）
+  - Pressure Weight table（46段階）
+  - ATT/DEF Budget計算式
+
+要修正（中〜高難度）:
+  - プリフロップレンジ（6-max用に拡張必要）
+  - ATT/DEFバジェット値（人数に応じた修正子が必要、例: ATT -1.5/player）
+  - アクションラインシナリオ（HU 60シナリオ → MW用に追加）
+  - Viable Action Logic（複数opponent考慮）
+  - リバーブロッカーノート（MW向け調整）
+```
+
+### 54.6 ATT/DEFバジェットの具体的な値（論文Appendix E）
+
+論文のAppendix Eから確認した、16 Made-Hand classと8 Draw classの
+ATT/DEFバジェット値。これらはHU専用の値であり、MW拡張時には調整が必要。
+
+```text
+Made-Hand classes (16):
+  Nuts: ATT ∞ / DEF ∞
+  Strong set+: ATT very high / DEF very high
+  Overpair: ATT high / DEF high
+  Top pair good kicker: ATT medium-high / DEF medium-high
+  Top pair weak kicker: ATT medium / DEF medium
+  ...（中間省略）
+  Trash: ATT 0 / DEF 0
+
+Draw classes (8):
+  Nut flush draw: ATT high / DEF pot-odds-based
+  Open-ended straight draw: ATT medium / DEF pot-odds-based
+  Backdoor flush draw: ATT very low / DEF very low
+  ...（中間省略）
+
+Combo rule: Draw ATT bonus + Made-hand base ATT
+```
+
+### 54.7 本プロジェクトへの適用方針
+
+PokerSkillの設計は、phh-dataset敗者バイアス問題の代替MW戦略として採用する。
+
+具体的には:
+- Context Engineを決定論的Pythonスクリプトとして実装
+- ATT/DEF Budget計算をゲーム状態から自動導出
+- 構造化プロンプトを生成し、LLM（GPT-5.4-mini or Phi-4-mini）に渡す
+- LLMは制約された行動空間内で最終判断を行う
+
+この方針により、multiway訓練データの品質問題（敗者バイアス）を回避しつつ、
+ルールベースの構造化でLLMの判断品質を向上させる。
+
+---
+
+## 55. MW方針転換: weighted SFTからPokerSkill式ルール層 + LLM比較テストへ
+
+### 55.1 転換の理由
+
+以下の2つの発見が重なり、MW戦略の根本的な方針転換が必要になった。
+
+```text
+1. phh-dataset hole cards付きデータ全件敗者（§53）
+   → confidence-weighted SFTの前提が崩壊
+   → positive exampleとしてのmultiway訓練データが入手不可
+
+2. PokerSkill論文の発見（§54）
+   → 訓練なしでLLMのポーカー判断品質を大幅改善する手法が存在
+   → Context Engine + ATT/DEF Budget + Skill Libraryの設計が公開
+   → HU論文だがMW拡張可能な設計
+```
+
+### 55.2 旧方針（破棄）
+
+```text
+S2-T2a: confidence scoringスクリプト → 破棄（勝者データなし）
+S2-T2b: stratified sampler + HU rehearsal → 破棄
+S2-T2c: weighted SFT実行 → 破棄
+S2-T2d: multiway Go/No-go判定 → 破棄
+S2-T2e: KTO検討 → 破棄
+```
+
+### 55.3 新方針（採用）
+
+PokerSkill式Context Engine + ATT/DEF Budgetを決定論的Pythonスクリプトとして実装し、
+構造化プロンプトを生成してLLMに渡す方式に転換する。
+
+テスト計画:
+
+```text
+Phase 0（パイプライン確認）: 5件
+  - phh-datasetからMWスポットを抽出
+  - Context Engine → 構造化プロンプト → LLM → 出力
+  - スクリプトが動くか確認
+
+Phase 1（定性評価）: 50件
+  - GPT-5.4-mini vs Phi-4-mini（未SFT素モデル）の出力比較
+  - 人間が読んで品質差を判定
+
+Phase 2（定量評価）: 500-1,000件
+  - action accuracy、fold/call/raise分布の偏り
+  - ポットタイプ別・ストリート別の傾向分析
+```
+
+### 55.4 他のMW代替案の検討と却下
+
+PokerSkill式を採用するにあたり、以下の代替案も検討した。
+
+```text
+MonkerSolver:
+  - 商用MWソルバー。GTO解を計算可能。
+  - 却下理由: APIなし、GUI専用、ライセンス高額、自動連携不可
+
+敗者データのKTO undesirable利用:
+  - phh-datasetの敗者行動を「やってはいけない例」として学習
+  - 保留: positive exampleが別途必要。PokerSkill式と併用は将来検討
+
+PokerBenchのHUデータでMWも代用:
+  - 却下理由: PokerBenchは100% HU。MW固有の判断（相手複数のequity変化、
+    ポジション関係の複雑化、ブラフ頻度の低下）を学習できない
+```
+
+### 55.5 HU SFT訓練との関係
+
+HU SFTは現在進行中（PID 18392, 30k第1弾）であり、影響を受けない。
+
+```text
+HU: Phi-4-mini SFT（PokerBenchデータ）→ 継続
+MW: PokerSkill式Context Engine + LLM → 新規実装
+
+両者は補完的:
+  - HU SFT完了後のPhi-4-miniモデルにPokerSkill式プロンプトを渡す検証も可能
+  - GPT-5.4-mini APIとの品質比較でMW推論のコスト/品質トレードオフを判断
+```
+
+### 55.6 今後の検証手順
+
+```text
+1. phh-datasetからMWスポット抽出（既存multiway_decisions.jsonlから選択）
+2. Context Engine実装（board texture, hand class, ATT/DEF budget計算）
+3. 構造化プロンプト生成スクリプト実装
+4. Phase 0: 5件でパイプライン確認
+5. Phase 1: 50件でGPT-5.4-mini vs Phi-4-mini定性比較
+6. Phase 2: 500件で定量評価
+7. 結果に基づきMW推論の最終方針決定
+```
+

@@ -1,6 +1,6 @@
 # ポーカーAIアシスタントシステム — SPEC.md
-**Version:** 3.5  
-**Updated:** 2026-05-22 JST  
+**Version:** 3.6  
+**Updated:** 2026-06-03 JST  
 **Purpose:** 現在の正仕様のみを記載する。過去の経緯・判断理由・採用しなかった案は `DESIGN_NOTES.md`、現在地点と次タスクは `snapshot.md` に分離する。
 
 
@@ -28,7 +28,7 @@
 - GameState層はサイト非依存のポーカー状態として扱う
 - プリフロップはチャートを主軸に判断する
 - HUポストフロップはSolverを主軸に判断する
-- Multiwayポストフロップはeval7 + LLM + 数理ガードで判断する
+- MultiwayポストフロップはPokerSkill式Context Engine + LLM判断を主軸とし、eval7を数理補助に使う
 - 相手ALL-IN対応はSolver可能ならSolver、不可ならequity / pot odds数理避難路を使う
 - GameStateが安定していない場合は推奨を出さない
 - 推奨は古い文脈で表示しない
@@ -282,11 +282,11 @@ GameState構築
 ↓
 局面判定
 ↓
-┌──────────────┬────────────────────┬────────────────────┐
-│ Preflop      │ HU Postflop        │ Multiway Postflop   │
-│ Chart        │ PokerRL+GRPO推論   │ PokerRL+GRPO推論    │
-│ + DB補正     │ + exploit補正      │ + eval7補助         │
-└──────────────┴────────────────────┴────────────────────┘
+┌──────────────┬────────────────────┬─────────────────────────┐
+│ Preflop      │ HU Postflop        │ Multiway Postflop        │
+│ Chart        │ PokerRL+GRPO推論   │ PokerSkill式Context      │
+│ + DB補正     │ + exploit補正      │ Engine + LLM + eval7補助 │
+└──────────────┴────────────────────┴─────────────────────────┘
 ↓
 推奨contextが現在GameStateと一致する場合のみ採用
 ↓
@@ -2137,7 +2137,8 @@ phase in {flop, turn, river} and active_player_count == 2
 → PokerRL+GRPO推論
 
 phase in {flop, turn, river} and active_player_count >= 3
-→ PokerRL+GRPO推論 + eval7補助
+→ PokerSkill式Context Engine + LLM判断 + eval7数理補助
+  （詳細は実装指令書v1.3 §3.1.5およびDESIGN_NOTES §54-55を参照）
 
 その他
 → skip / fallback
@@ -2246,8 +2247,7 @@ confidence判定:
 
 ### 9.4 Multiway Postflop
 
-Multiway postflopはPokerRL+GRPO推論を主軸に判断する。
-Deep CFR推論はフォールバックとして残す（Stage D完了まで）。
+Multiway postflopは2層構造で判断する。
 
 基本:
 
@@ -2256,34 +2256,91 @@ active_player_count >= 3
 phase in {flop, turn, river}
 ```
 
-PokerRL+GRPO推論はHU postflopと同じモデル・同じブリッジを使用する。
-PokerRL+GRPOは6-max NLHEを前提に訓練するため、
-HU/Multiwayで別モデルを使い分ける必要はない。
+#### 9.4.1 第1層: PokerSkill式Context Engine（決定論的、訓練不要）
 
-eval7はequity補助情報として維持する。
-ただしeval7結果は推奨の主軸ではなく、HUD表示やreason生成の補助とする。
-
-処理中表示:
+GameStateから以下のラベルを決定論的に計算する。
 
 ```text
-POKERRL THINKING...
+- board texture: dry / dynamic / wet / monotone / paired / connected
+- hand class: 23分類（16 Made-Hand + 8 Draw、PokerSkill論文 Appendix E準拠）
+- SPR bucket: low (<3) / medium (3-10) / deep (>10)
+- ATT/DEF budget: hand classごとの攻撃予算・防御予算
+- pressure weight累積: 各actionの重み（25%pot≈0.3, 50%pot≈0.5, 100%pot≈1.0）
+- MW修正子: 追加プレイヤーによるATT/DEF調整（実験的に決定）
 ```
 
-PokerRL+GRPO推論失敗時のフォールバック:
+Context Engineの出力は構造化プロンプトとしてLLMに渡される。
+Context Engine自体はPythonスクリプトであり、モデル推論を行わない。
+
+実装ファイル: strategy/pokerrl_prompt_builder.py（既存骨格を拡張）
+
+設計根拠: DESIGN_NOTES §54（PokerSkill論文分析）、§55（MW方針転換）
+
+#### 9.4.2 第2層: LLM判断（制約された行動空間内）
+
+Context Engineが生成した構造化プロンプトを受け取り、最終判断を行う。
+
+LLM候補:
 
 ```text
-Flop Multiway: Deep CFR → LLM → スキップ（Stage D完了まで保持）
-Turn/River Multiway: Deep CFR → LLM → スキップ（Stage D完了まで保持）
+- GPT-5.4-mini（OpenRouter API経由）
+- Phi-4-mini（ローカルSFTモデル、HU SFT完了後に検証）
+```
+
+行動制約:
+
+```text
+- 残ATT > 0 → bet/raise可能
+- 残DEF > 0 → call可能
+- 残ATT ≤ 0 and 残DEF ≤ 0 → fold推奨
+```
+
+LLMはATT/DEF制約内で最終アクションとサイジングを決定する。
+
+#### 9.4.3 eval7数理補助
+
+eval7はequity補助情報として維持する。
+
+```text
+- hero equity計算
+- required equity計算（pot odds）
+- LLM fold時の数理ガード（hero_equity >> required_equityならCALLへ補正）
+```
+
+eval7結果は推奨の主軸ではなく、LLM判断の検証・補正に使う。
+
+#### 9.4.4 フォールバック
+
+Multiway postflopのフォールバック:
+
+```text
+Context Engine + LLM → eval7数理ガードのみ → スキップ
 全失敗時: 推奨なし（暫定推奨は出さない）
 ```
 
-注記: Rust postflop CLI（Solver）はフォールバック経路から除外する。
-Deep CFRはStage D（PokerRL+GRPO統合完了）後に廃止する。
+注記: Deep CFRはMultiway postflopのフォールバックから除外する。
+Deep CFRは品質不合格であり、MW判断にはContext Engine + LLMが代替する。
 
-LLMはMultiway判断の主軸としては使用しない。
-exploit_adjustmentとしてのLLM利用は、HUと同様にDB統計十分な相手に対してのみ行う。
+#### 9.4.5 処理中表示
 
-出力形式はHU postflopと同一。
+```text
+POKERRL THINKING...（Context Engine + LLM処理中）
+```
+
+#### 9.4.6 背景
+
+MW戦略をPokerSkill式に転換した理由:
+
+```text
+1. phh-dataset hole cards付き726,570件が全件敗者（PHH仕様上、勝者hole cardsは記録されない）
+   → multiway SFT用positive exampleが構造的に入手不可
+2. PokerSkill論文（arXiv 2605.30094）の発見
+   → 訓練なしでLLMのポーカー判断品質を大幅改善するフレームワーク
+   → Context Engine + ATT/DEF Budget設計が公開されておりMW拡張可能
+```
+
+詳細: DESIGN_NOTES §53（phh-dataset敗者バイアス）、§54（PokerSkill論文分析）、§55（MW方針転換）
+実装計画: 実装指令書v1.3 §3.1.5
 
 ---
 
@@ -2951,6 +3008,11 @@ Sizing Head（sigmoid 0.1x-3.0x pot）
 量子化: AWQ 4-bit or GGUF Q4_K_M
 推論速度: T1 50-300ms（RTX 3080）
 
+注記: PokerRL+GRPO推論はHU postflopの主推論エンジンとして使用する。
+Multiway postflopにはPokerSkill式Context Engine + LLMを使用し、
+PokerRL+GRPOモデルはMultiway主推論には使用しない。
+PokerRL+GRPOのMultiway対応は将来検討事項として保留する。
+
 ### 10A.3 モデルロード
 
 アプリ起動時にモデルをGPUにロードする（1回のみ）。
@@ -3036,6 +3098,10 @@ T3 (Search): 極難、5-12秒
 ```
 
 全TierはAsyncで実行し、GameLoopは止めない。
+
+注記: 上記Tier設計はHU postflop向けである。
+Multiway postflopのレイテンシはContext Engine（<10ms）+ LLM API呼び出し（1-3秒）
+またはローカルPhi-4-mini推論（50-300ms）となり、別途管理する。
 
 ### 10A.10 訓練済みモデル管理
 
@@ -4207,6 +4273,10 @@ pokerrl:
 | pokerrl.inference_timeout_ms | 推論タイムアウト |
 | pokerrl.prefix_cache_enabled | システムプロンプトのprefix cacheを有効化するか |
 | pokerrl.fallback_to_deep_cfr | PokerRL利用不可時にLegacy Deep CFRへfallbackするか |
+| pokerrl.context_engine_enabled | MW用Context Engineを有効化するか |
+| pokerrl.mw_llm_provider | MW判断用LLM（openrouter / local） |
+| pokerrl.mw_att_modifier_per_player | MW ATT修正子/追加プレイヤー（実験値、デフォルト-1.0） |
+| pokerrl.mw_def_modifier_per_player | MW DEF修正子/追加プレイヤー（実験値、デフォルト-0.5） |
 
 ---
 
