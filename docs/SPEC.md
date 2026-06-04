@@ -2483,6 +2483,279 @@ Combo rule:
 - riverでは未完成drawのDEF thresholdを無効化し、made-hand/high-card分類だけで判定する
 ```
 
+---
+
+##### 9.4.8.1 Made-Hand分類の実装ロジック
+
+```text
+入力: hero_cards[2], board_cards[3-5]（eval7カード表現）
+出力: made_hand_class（15クラスのいずれか）
+
+手順:
+
+1. eval7で5-7枚のhand rankを取得（hand_type: straight_flush, four_of_a_kind, full_house, flush, straight, three_of_a_kind, two_pair, one_pair, high_card）
+
+2. hand_type別の分類:
+   - straight_flush → nuts（§9.4.8.5 nuts判定で最終確認）
+   - four_of_a_kind → nuts（§9.4.8.5 nuts判定で最終確認）
+   - full_house → 相対強度で nuts / set / two_pair を検討（後述）
+   - flush → flush
+   - straight → straight
+   - three_of_a_kind → set or trips（後述）
+   - two_pair → two_pair
+   - one_pair → pair分類（後述）
+   - high_card → nuts_high / second_high / weak_showdown / trash（後述）
+
+3. Set vs Trips の判定:
+   - hero_cards 2枚が同ランク and board上にそのランクが1枚 → set
+   - hero_cards のうち1枚が board上の pair ランクと一致 → trips
+   - board上に3枚同ランク → board trips（§9.4.11 Special Board Override参照）
+
+4. Pair分類（one_pair の場合）:
+   board_ranks_descending = board上のユニークランクを降順ソート
+   hero_pair_rank = hero_cardsのうちboard上のランクと一致するカードのランク
+
+   a) Pocket pair判定:
+      hero_cards[0].rank == hero_cards[1].rank の場合:
+        pp_rank = hero_cards[0].rank
+        - pp_rank > max(board_ranks) → overpair
+        - pp_rank == board_ranks_descending[0] → top_pair（board上の最高ランクとhit）
+        - otherwise:
+          overcards_on_board = board上でpp_rankより大きいユニークランクの数
+          overcards_on_board == 1 → second_pair
+          overcards_on_board == 2 → third_pair
+          overcards_on_board >= 3 → fourth_fifth_pair
+
+   b) Board hit判定（非pocket pair）:
+      hero_pair_rank が board_ranks_descending[0] と一致 → top_pair
+      hero_pair_rank が board_ranks_descending[1] と一致 → second_pair
+      hero_pair_rank が board_ranks_descending[2] と一致 → third_pair
+      それ以外 → fourth_fifth_pair
+
+5. High card分類（eval7がhigh_cardを返した場合のみ本分類を使用）:
+   hero_high = max(hero_cards[0].rank, hero_cards[1].rank)
+   hero_second = min(hero_cards[0].rank, hero_cards[1].rank)
+   - hero_high == A → nuts_high
+   - hero_high == K and hero_second >= T → nuts_high
+   - hero_high == K and hero_second < T → second_high
+   - hero_high == Q → second_high
+   - hero_high >= T → weak_showdown
+   - hero_high < T → trash
+
+6. Full house 相対強度:
+   - hero pocket pair + board pair → full_house。nuts判定（§9.4.8.5）で最強か確認
+   - nuts full house → nuts
+   - non-nuts full house → set相当のATT/DEFを使用（DESIGN_NOTESで記録）
+
+注意:
+   - eval7のhand_typeとboard情報の組み合わせで全15クラスを決定論的に分類
+   - eval7単体では overpair / top_pair / second_pair 等を区別できない
+   - board上のランク順序比較は必ずユニークランクの降順で行う
+   - Aは常にランク14として扱う（eval7のデフォルト）
+```
+
+##### 9.4.8.2 Kicker分類
+
+```text
+注記: kicker修正子の数値（ATT -0.3/-0.5/-0.8、DEF -0.2/-0.3/-0.5）は
+論文に記載のない独自推定値であり、Phase 0-2テスト（§9.4.18）で調整する。
+
+目的: top_pair等のMade-hand内でkicker強度を細分類し、ATT/DEF表のkicker修正子を適用
+
+対象クラス: top_pair, overpair, second_pair, third_pair
+
+手順:
+1. pair_rank = ペアに使用されているランク
+2. kicker_rank = hero_cardsのうちpairに使われていない方のランク
+   （pocket pair の場合: kicker_rank = board上の最高ランクのうちpair_rankと異なるもの）
+3. all_possible_kickers = {A, K, Q, J, T, 9, ..., 2} から board_ranks と pair_rank を除外し降順ソート
+4. kicker_position = all_possible_kickers内でのkicker_rankの順位（0基準）
+
+分類:
+   kicker_position == 0 → top_kicker（TPTK等）
+   kicker_position == 1 → second_kicker（TPSK等）
+   kicker_position == 2 → third_kicker
+   kicker_position >= 3 → weak_kicker
+
+ATT/DEF適用:
+   §9.4.9 の made_hand_class ベース値に以下のkicker修正子を加算:
+   top_kicker: ATT +0.0, DEF +0.0（ベース値そのまま）
+   second_kicker: ATT -0.3, DEF -0.2
+   third_kicker: ATT -0.5, DEF -0.3
+   weak_kicker: ATT -0.8, DEF -0.5
+
+注意:
+   - kicker修正子は §9.4.13 MW修正子の前に適用
+   - kicker修正子適用後にATTが0未満になる場合は0にクランプ
+   - DEFは0未満にクランプしない（負のDEFは「foldに強く傾く」を意味）
+   - overpairのkicker分類は pocket pair のためboard最高ランクで判定
+```
+
+##### 9.4.8.3 Draw分類の実装ロジック
+
+```text
+入力: hero_cards[2], board_cards[3-5]
+出力: draw_class（8クラスのいずれか、または None）
+      draw_outs（推定アウツ数）
+
+前提: Made-hand分類（§9.4.8.1）と並行して実行。両方該当する場合はCombo ruleで結合
+
+手順:
+
+1. Flush draw判定:
+   all_cards = hero_cards + board_cards
+   各スートの枚数を計数:
+     suit_counts = {s: count for s in [h, d, c, s]}
+     hero_suit_counts = {s: hero_cardsのうちそのスートの枚数}
+
+   判定:
+   - suit_counts[s] >= 5 → flush完成（Made-hand側で処理、draw判定不要）
+   - suit_counts[s] == 4 and hero_suit_counts[s] >= 1 → flush_draw
+     flush_draw_suit = s
+     hero_flush_high = hero_cards内の同スートの最高ランク
+     is_nut_flush_draw = hero_flush_high == A
+     outs_flush = 9（基本）
+   - suit_counts[s] == 3 and hero_suit_counts[s] >= 1 and len(board_cards) == 3:
+     → backdoor_flush_draw（flop限定）
+     outs_bd_flush = 0（直接的なoutsではなくPhase 0で確率的に扱う）
+
+2. Straight draw判定:
+   all_ranks = hero_cards + board_cards の全ランクをユニーク化
+   A は 14 と 1 の両方で検査（A-2-3-4-5 wheel 対応）
+
+   5枚スライドウィンドウ（14-10, 13-9, ..., 5-1）を検査:
+   window_cards = all_ranks内でwindowに含まれるランク数
+   hero_contribution = hero_cards のうちwindowに含まれる枚数
+
+   判定（hero_contribution >= 1 を条件）:
+   - window_cards == 5 → straight完成（Made-hand側で処理）
+   - window_cards == 4:
+     missing = window内で不在のランク
+     hero_contribution >= 1:
+       - missingがwindowの端 → open_ended_straight_draw (OESD)
+         outs_oesd = 8
+       - missingがwindow中間 → gutshot_straight_draw
+         outs_gutshot = 4
+   - window_cards == 3 and len(board_cards) == 3:
+     → backdoor_straight_draw（flop限定）
+
+   複数のwindowで該当する場合は最も強い（outs最多の）ものを採用
+
+3. Draw class分類:
+   flush_draw と straight_draw の組み合わせで8クラスに分類:
+
+   - strong_draw:
+     nut_flush_draw + OESD （outs ≈ 15）
+     または nut_flush_draw + pair（outs ≈ 12+）
+   - medium_strong_draw:
+     non-nut flush_draw + OESD（outs ≈ 12-14）
+     または nut_flush_draw 単独（outs = 9）
+   - medium_draw:
+     non-nut flush_draw 単独（outs = 9、ただしhero_flush_high < K）
+     または OESD 単独（outs = 8）
+   - medium_weak_draw:
+     gutshot + backdoor_flush（outs ≈ 6-7）
+     または flush_draw with paired board（割引 outs）
+   - weak_draw:
+     gutshot 単独（outs = 4）
+   - strong_overcard_draw:
+     AK, AQ, KQ（overcards 2枚、うち少なくとも1枚A or K）+ backdoor flush or backdoor straight
+   - medium_overcard_draw:
+     AJ, AT, KJ, KT 等（overcards 2枚）+ no backdoor
+     または A単独overcard + backdoor flush + backdoor straight
+   - weak_overcard_draw:
+     A単独overcard のみ、backdoor なし
+     または K単独overcard
+
+4. アウツ割引:
+   - paired board: flush outs を -1（full house で負ける可能性）
+   - monotone board (3-flush): straight outs を -2（フラッシュ完成で負け）
+   - 上記割引後のoutsでクラス判定を再評価
+   - 割引は §9.4.7 board texture の flush possible / paired 判定と連動
+
+注意:
+   - Turn/River では backdoor は存在しない（flop限定）
+   - River では draw class = None（全て Made-hand として評価）
+   - hero_contribution == 0 の straight window は除外（board だけで straight が可能でも hero の draw ではない）
+```
+
+##### 9.4.8.4 Combo rule の実装詳細
+
+```text
+前提: §9.4.8.1 の made_hand_class と §9.4.8.3 の draw_class が両方 non-None
+
+結合ルール:
+1. ATT結合:
+   combined_ATT = made_hand_ATT + draw_combo_bonus
+   draw_combo_bonus は §9.4.10 の各draw classの "Combo bonus" 値
+
+2. DEF結合:
+   combined_DEF = made_hand_DEF + draw_combo_bonus
+   （DEFにもcombo bonusを加算）
+
+3. Draw threshold の扱い:
+   made_hand が pair以上 → draw threshold は使用しない（made_hand のDEFで防御判定）
+   made_hand が high_card系（nuts_high / second_high / weak_showdown / trash）→ draw threshold を使用
+
+4. River での再分類:
+   Draw が完成しなかった場合（river時点でflush_draw/straight_draw が完成しない）:
+     draw_class = None に変更
+     made_hand_class のみで評価
+     combo bonus は消滅
+   Draw が完成した場合:
+     made_hand_class を完成した手役に更新（例: flush_draw → flush）
+     draw_class = None
+     combo bonus は不要（made_hand が更新済み）
+
+5. 実装上の処理順序:
+   a) eval7 で hand_type 取得
+   b) §9.4.8.1 で made_hand_class 決定
+   c) §9.4.8.2 で kicker修正子 適用
+   d) §9.4.8.3 で draw_class 決定
+   e) 両方 non-None なら combo rule 適用
+   f) §9.4.9/§9.4.10 から ATT/DEF 取得
+   g) §9.4.14 の Budget計算順序へ進む
+```
+
+##### 9.4.8.5 Nuts判定の実装ロジック
+
+```text
+目的: 現在のboard + hero_cardsが、そのboardで可能な最強handかどうかを判定
+
+入力: hero_cards[2], board_cards[3-5]
+出力: is_nuts（bool）, nuts_distance（0 = nuts, 1 = 2nd nuts, ...）
+
+手順:
+1. remaining_deck = 52枚 - board_cards - hero_cards
+2. hero_strength = eval7.evaluate(hero_cards + board_cards)
+3. 全可能な2枚組み合わせを列挙: C(remaining_deck, 2)
+   - flop(3枚board): C(47,2) = 1081 通り
+   - turn(4枚board): C(46,2) = 1035 通り
+   - river(5枚board): C(45,2) = 990 通り
+4. 各組み合わせ opp_cards について:
+   opp_strength = eval7.evaluate(opp_cards + board_cards)
+   strongest = max(strongest, opp_strength)
+5. is_nuts = (hero_strength >= strongest)
+6. nuts_distance: hero_strengthが全可能handの強度分布の中で何番目か
+   0 = 最強（nuts）、1 = 2番目、2 = 3番目 ...
+
+計算量:
+   eval7 は ~1μs/call
+   最大 1081 * 1μs ≈ 1.1ms
+   リアルタイム使用に問題なし
+
+使用箇所:
+   - made_hand_class 判定: is_nuts == True → class を "nuts" に設定
+   - nuts_distance <= 2 → "near_nuts" として ATT を nuts レベルに近づける（Phase 0 で検証）
+   - Viable Action Logic（§9.4.15）: nuts は常に bet/raise viable
+   - River bluff-catch: nuts_distance が大きい場合に defensive に
+
+注意:
+   - Board上で既にstraight/flushが完成可能な場合、nuts判定は正確にそれを考慮
+   - Combo draw が nuts に近い場合は draw_class 側ではなく made_hand_class 側で nuts 判定
+   - eval7 の evaluate() は7枚から最強5枚を自動選択するため、5枚board でも正しく動作
+```
+
 #### 9.4.9 ATT/DEF Budget Table（Made-Hand）
 
 以下の表はHU論文（PokerSkill Appendix E）のbase値。MW修正子は§9.4.13で別途定義する。
