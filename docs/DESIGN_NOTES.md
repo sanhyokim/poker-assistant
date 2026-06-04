@@ -3708,3 +3708,261 @@ MW: PokerSkill式Context Engine + LLM → 新規実装
 7. 結果に基づきMW推論の最終方針決定
 ```
 
+## 56. PokerRL+GRPO撤退基準と段階的対処
+
+実装指令書v1.3 §9.2から移動。実装指令書は2026-06-04に廃止された。
+
+### 56.1 全体方針
+
+Deep CFRで約1ヶ月を浪費した教訓を踏まえ、「失敗を早期検知し、明確な基準で撤退する」を原則とする。
+
+```text
+[Layer 1] 各Sprint内での即時改善 (1-3日サイクル)
+   ↓ 改善不能なら
+[Layer 2] Sprint間でのアプローチ調整 (3-7日サイクル)
+   ↓ 改善不能なら
+[Layer 3] アプローチ全体の撤退 → 代替案へ移行
+```
+
+全体タイムボックス: 12週間（最大15週間）。
+
+### 56.2 Phase 1 SFT閾値未達時の段階的対処
+
+発動条件: Sprint 2完了時に以下のいずれかを満たさない場合。
+- PokerBench Preflop accuracy ≥ 70%
+- PokerBench Postflop accuracy ≥ 55%
+- Spot Checks合格率 ≥ 80%
+- 「全局面でRaise 70-80%」のような病理的偏りがゼロ
+
+Step 1: 補助ヘッド構造の修正（最大3日）
+- Sizing HeadをscalarからCategorical 8-binに変更
+- Action Headを3層MLPに拡張
+- Action Headにdropout 0.1-0.2追加
+- Action tokenの重み付きCE loss
+
+Step 2: LoRAハイパラ調整（最大2日）
+- rank r=64→r=128, alpha=256
+- LR 2e-4→1e-4, warmup 15%
+- target_modules全linear
+- epochs 3→5
+
+Step 3: データ前処理の見直し（最大4日）
+- PokerBench:Pluribus比率変更
+- Action history圧縮拡張
+- eval7 equity値をプロンプトに追加
+- 低信頼度サンプルフィルタリング
+- Board texture多様化（suit swap）
+
+Step 4: ベースモデル切替（最大5日）
+- Phi-4-mini→Qwen3-4B→Gemma 3-4B(QAT)→Qwen3-8B(Q4 QLoRA)
+
+Phase 1全体の上限は5週間（標準3週間+改善2週間）。
+
+### 56.3 Phase 2 GRPO品質未達時の段階的対処
+
+発動条件: Sprint 3完了時に以下のいずれかを満たさない場合。
+- Spot Checks 95%合格
+- Slumbot HU勝率 ≥ -15 bb/100
+- Self-play vs Phase 1 baseline +3 bb/100
+- Entropy健全（top-1確率中央値 ≤ 0.85）
+
+Step 1: Entropy崩壊対処（最大4日）
+- DAPO Clip Higher ε_high拡大
+- Entropy bonus係数導入
+- KL coefficient導入
+- OPEFO balancing coefficient上限導入
+- Generation temperature増加
+- Dynamic Sampling zero-variance filter緩和
+
+Step 2: 対戦相手プール構成見直し（最大3日）
+- 過去全SFT checkpoint 8体を等確率で含める
+- Rule-based TAG/LAG/Tight-Passive/Maniac 4種混合
+- Deep CFR失敗モデルを20%混入
+- 自己最新版とのみ対戦フェーズと混合プール対戦を2:1交互
+
+Step 3: 報酬関数調整（最大4日）
+- chip_delta重み0.7→0.5、EV項0.2→0.4
+- 敗北回避ボーナス
+- 妥当性ペナルティ（GTO KL divergence）
+- Fold不足ペナルティ
+
+Step 4: 訓練期間延長（最大5日）
+- 改善トレンドあり→+3日延長（最大2回）
+
+### 56.4 Spot Checks病理パターン検出時の対処
+
+病理パターン:
+- Raise偏重（全局面でRaise>60%）
+- Fold偏重（全局面でFold>50%）
+- Sizing固定（95%以上同じ値）
+- Position無感度
+- Board texture無感度
+- Stack depth無感度
+
+切り分け手順:
+1. verify_pokerrl_encode.py再実行
+2. 推論時vs訓練時の同一input出力比較
+3. 病理特化データ拡張
+4. カリキュラム学習導入
+
+### 56.5 量子化品質劣化時の対処
+
+発動条件: 量子化後のPostflop accuracyが量子化前から10%以上低下。
+
+Step 1: Q4_K_M→Q5_K_M→Q6_K→Q8_0→FP16の段階的緩和
+Step 2: レイテンシ予算見直し（T1 100-500msに緩和）
+Step 3: モデルサイズダウン（Phi-4-mini→SmolLM3-3B→Qwen3-1.7B）
+
+### 56.6 撤退発動条件（OR条件）
+
+1. タイムボックス超過: Sprint 1-3合計12週間超過（補正含め15週間超過）
+2. 品質下限未達: 全Step消化後もPostflop accuracy<50%、Slumbot<-30 bb/100、Spot Checks<80%
+3. 改善トレンド消失: 直近2週間で指標±5%内横ばい、対処全消化済み
+4. コスト超過: クラウドGPU等$500超過
+
+撤退判断タイミング:
+- Sprint 2開始から2週間時点
+- Sprint 2開始から4週間時点
+- Sprint 3開始から2週間時点
+- Sprint 3開始から5週間時点
+- Sprint 1-3合計12週間時点
+
+### 56.7 撤退後の代替案優先順位
+
+Case A（SFT成功、GRPO失敗）:
+  第1: PokerSkill風ハイブリッド（MW方針として即時採用済み）
+  第2: GTO Wizard API待機
+  第3: Deep CFR改善
+
+Case B（SFT失敗）:
+  第1: Deep CFR改善（評価刷新）
+  第2: GTO Wizard API待機
+  第3: 既存システム暫定運用
+
+Case C（タイムボックス超過、品質改善中）:
+  第1: GTO Wizard API待機
+  第2: PokerSkill風ハイブリッド
+  第3: Phase 1 SFTのみshadow mode運用
+
+Case D（全失敗）:
+  第1: 既存システム暫定運用
+  第2: 新興手法（MCCFVFP等）調査
+  第3: 6-12ヶ月長期待機
+
+### 56.8 撤退判断のドキュメント化テンプレート
+
+```text
+撤退判断ログテンプレート:
+  発動日:
+  発動条件（§56.6のどれに該当）:
+  Phase 1 SFT到達状況:
+    - PokerBench Preflop accuracy:
+    - PokerBench Postflop accuracy:
+    - Spot Checks合格率:
+  Phase 2 GRPO到達状況:
+    - Slumbot HU勝率:
+    - Self-play vs SFT baseline:
+    - Entropy健全性:
+  消化済み対処（§56.2-56.5のどこまで実施）:
+  保持する成果物:
+  選択した代替案（Case A/B/C/Dのどれ）:
+  代替案開始予定日:
+```
+
+## 57. Phase 2 GRPO訓練仕様（未実施）
+
+実装指令書v1.3 §5.3から移動。Phase 2は未実施であり、Sprint 3で実施予定。
+
+```text
+入力: Phase 1 SFTモデル
+方式: GRPO + DAPO trick + OPEFO entropy制御
+環境: PokerKitベース6-max NLHE自己対戦
+opponents:
+  - 過去SFT checkpoint (population play)
+  - Rule-based (TAG/LAG)
+  - 既存Deep CFR失敗モデル（弱い相手としてエントロピー多様性確保）
+時間: 約80-120時間
+報酬:
+  - 0.7 × 即時chip delta
+  - + 0.2 × EV at decision (eval7計算)
+  - + 0.1 × 直近20ハンド累積 (bankroll preservation)
+Go/No-go (Phase 2終了時):
+  - Spot checks: 全50局面で行動分布が合理的に変動
+  - Entropy健全 (top-1確率の中央値 < 0.85)
+  - Slumbot相手（HU、無料API）で勝率 ≥ -15 bb/100
+  - 自己対戦でPhase 1ベースラインに +3 bb/100以上
+```
+
+## 58. 評価フレームワーク
+
+実装指令書v1.3 §8から移動。
+
+### 58.1 必須評価指標
+
+| 指標 | Phase 1閾値 | Phase 2閾値 |
+|---|---|---|
+| Spot Checks（50シナリオ） | 80%合格 | 95%合格 |
+| Entropy（top-1確率中央値） | ≤ 0.90 | ≤ 0.85 |
+| Sensitivity Tests | 70% pass | 90% pass |
+| PokerBench Accuracy | preflop ≥ 70%, postflop ≥ 55% | preflop ≥ 75%, postflop ≥ 60% |
+| Slumbot HU勝率 | N/A | ≥ -15 bb/100 |
+| Self-play vs Phase 1 | N/A | ≥ +3 bb/100 |
+| Latency P95 | T1 ≤ 300ms | T1 ≤ 200ms |
+| Hard Deadline超過率 | < 5% | < 1% |
+
+### 58.2 Spot Checks設計方針
+
+Deep CFRの「Ace high・no pair・no draw・3way facing BETでRaise 80%」病理を捕捉する50局面を作成する。
+
+例:
+```text
+spot_001: 3way flop, hero AhKd (overcards no pair),
+          board 7s 4c 2h, facing BET 30%pot,
+          期待: Fold or Call majority, Raise ≤ 20%
+
+spot_002: HU turn, hero AsAh (set),
+          board As 4d 7c Jh, facing BET 50%pot,
+          期待: Raise majority
+```
+
+Phase 1完了時点で自動回帰テストとして組み込む。
+
+### 58.3 シャドウモード評価
+
+Stage B（Phase 1完了〜Phase 2完了）の間、新ブリッジをshadow modeで稼働:
+- 実プレイ中、既存Deep CFRが表示される
+- 同時に新PokerRLブリッジも推論を実行
+- 両者の出力をログ保存
+- 差分が大きい局面を人間レビュー
+
+## 59. 未実施Sprint計画骨格
+
+実装指令書v1.3 §10から移動。Sprint 1-2は完了/進行中のためsnapshotで管理。
+
+### Sprint 3（Phase 2 GRPO強化学習）
+- PokerKitベース6-max自己対戦環境構築
+- DAPO + OPEFO実装
+- 報酬関数実装（multi-hand bankroll）
+- 100-150h訓練
+- Slumbot評価
+- Go/No-go: §57の閾値
+
+### Sprint 4（推論ブリッジ統合 + Shadow Mode）
+- PokerRLBridge実装（既存I/F完全互換）
+- recommendation_engine.pyにshadow modeロジック追加
+- vLLM/llama.cppの常駐推論プロセスセットアップ
+- Stability Guardsとの統合確認
+- HUDソースラベル更新
+- 全テストpass確認
+
+### Sprint 5（本番切替）
+- Shadow modeログ分析
+- Spot Checks 50シナリオ全pass確認
+- Stage C: HU/Multiway postflopをPokerRLに切替
+- 1週間モニタリング
+
+### Sprint 6（旧コンポーネント削除、オプション）
+- Stage D: Deep CFR Bridge削除
+- Stage D: Rust Solver削除
+- ドキュメント更新
+
