@@ -2350,7 +2350,7 @@ MW戦略をPokerSkill式に転換した理由:
 ```
 
 詳細: DESIGN_NOTES §53（phh-dataset敗者バイアス）、§54（PokerSkill論文分析）、§55（MW方針転換）
-実装計画: 実装指令書v1.3 §3.1.5
+実装計画: 本セクション§9.4.7〜§9.4.18に記載
 
 #### 9.4.7 Board Texture分類
 
@@ -2850,7 +2850,7 @@ weak_overcard_draw:
   ATT: 0.5。
   Flop IP 35%/OOP 25%。Turn IP 15%/OOP 9%。
   Check-raise: fold。
-  Combo bonus: +0.0。
+  Combo bonus: +0.1。
   3BP/4BP+ downgrade: trash。
 ```
 
@@ -2943,6 +2943,10 @@ remaining_def = adjusted_def_budget - def_spent
 #### 9.4.13 MW修正子
 
 PokerSkill HU baseをMultiwayへ拡張するため、active opponent数とpositionでATT/DEFを補正する。
+
+注記: §9.4.13の全数値は初期推定値であり、Phase 0-2テスト（§9.4.18）で実験的に調整する。
+論文（PokerSkill）はHU専用であり、MW修正子の「正解値」は存在しない。
+初期値が大きすぎる/小さすぎる場合はPhase 0の5件テストで早期発見し調整する。
 補正はbase budget算出後、pressure subtraction前に適用する。
 
 ```text
