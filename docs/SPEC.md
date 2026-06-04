@@ -2247,32 +2247,39 @@ confidence判定:
 
 ### 9.4 Multiway Postflop
 
-Multiway postflopは2層構造で判断する。
+Multiway postflopは、PokerSkill式Context Engine + LLMで判断する。
+Context Engineは決定論的に局面ラベル、ATT/DEF budget、viable actionを算出し、
+LLMは制約された行動空間内で最終アクションとサイジングを選ぶ。
 
-基本:
+適用条件:
 
 ```text
 active_player_count >= 3
 phase in {flop, turn, river}
+hero_in_current_hand == true
 ```
 
 #### 9.4.1 第1層: PokerSkill式Context Engine（決定論的、訓練不要）
 
-GameStateから以下のラベルを決定論的に計算する。
+GameStateから以下の特徴量を決定論的に計算する。
 
 ```text
-- board texture: dry / dynamic / wet / monotone / paired / connected
-- hand class: 23分類（16 Made-Hand + 8 Draw、PokerSkill論文 Appendix E準拠）
+- board texture: dry / slightly_wet / wet / very_wet + special board labels
+- hand class: Made-Hand 15クラス + Draw 8クラス
+- pot type: limp / SRP / 3BP / 4BP+
+- position: IP / OOP / sandwich / closing_action
+- initiative: preflop_aggressor / caller / postflop_aggressor / defender
 - SPR bucket: low (<3) / medium (3-10) / deep (>10)
-- ATT/DEF budget: hand classごとの攻撃予算・防御予算
-- pressure weight累積: 各actionの重み（25%pot≈0.3, 50%pot≈0.5, 100%pot≈1.0）
-- MW修正子: 追加プレイヤーによるATT/DEF調整（実験的に決定）
+- ATT/DEF base budget: hand classごとの攻撃予算・防御予算
+- pressure weight累積: street内および複数streetのbet/raise圧力
+- MW修正子: active opponent数、sandwich、背後人数、pot typeによる補正
+- viable actions: fold / check / call / bet / raise / all-in の許可リスト
 ```
 
 Context Engineの出力は構造化プロンプトとしてLLMに渡される。
 Context Engine自体はPythonスクリプトであり、モデル推論を行わない。
 
-実装ファイル: strategy/pokerrl_prompt_builder.py（既存骨格を拡張）
+実装ファイル: `strategy/pokerrl_prompt_builder.py`（既存骨格を拡張）
 
 設計根拠: DESIGN_NOTES §54（PokerSkill論文分析）、§55（MW方針転換）
 
@@ -2290,12 +2297,14 @@ LLM候補:
 行動制約:
 
 ```text
-- 残ATT > 0 → bet/raise可能
-- 残DEF > 0 → call可能
-- 残ATT ≤ 0 and 残DEF ≤ 0 → fold推奨
+- viable_actionsに含まれないactionを出力してはならない
+- 残ATT > 0 → bet/raiseを候補に含めてよい
+- 残DEF > 0 → callを候補に含めてよい
+- 残ATT <= 0 and 残DEF <= 0 → fold/check優先
+- draw classはDEF budgetではなくpot-odds thresholdでcall可否を判定する
 ```
 
-LLMはATT/DEF制約内で最終アクションとサイジングを決定する。
+LLM出力はJSONのみとし、validatorで合法アクションに補正する。
 
 #### 9.4.3 eval7数理補助
 
@@ -2304,6 +2313,7 @@ eval7はequity補助情報として維持する。
 ```text
 - hero equity計算
 - required equity計算（pot odds）
+- all-in時のequity >= pot odds判定
 - LLM fold時の数理ガード（hero_equity >> required_equityならCALLへ補正）
 ```
 
@@ -2341,6 +2351,883 @@ MW戦略をPokerSkill式に転換した理由:
 
 詳細: DESIGN_NOTES §53（phh-dataset敗者バイアス）、§54（PokerSkill論文分析）、§55（MW方針転換）
 実装計画: 実装指令書v1.3 §3.1.5
+
+#### 9.4.7 Board Texture分類
+
+入力はboard cards（3〜5枚）。board parserはrank/suitを正規化し、以下の多次元分類を
+決定論的に計算する。streetによって存在しない分類は`false`にする。
+
+Suit分類:
+
+```text
+rainbow: flopで全スート異なる
+two_tone: flopで2枚が同スート、またはturn/riverで最大同スート数が2
+monotone: flopで3枚が同スート
+three_flush: turn/riverで3枚同スート（flush possible）
+four_flush: 4枚同スート（one-card flush danger）
+five_flush: 5枚同スート（board flush）
+```
+
+Rank分類:
+
+```text
+paired: board上に同ランク2枚
+trips_board: board上に同ランク3枚
+quads_board: board上に同ランク4枚
+double_paired: board上に2組のペア
+straight_possible: 任意の2-card comboでストレート完成可能
+one_card_straight: 1枚でストレート完成可能
+one_card_straight_open_ended: 両端の1枚でストレート完成可能
+one_card_straight_gutshot: 内側の1枚でストレート完成可能
+board_straight: board 5枚のみでストレート成立
+```
+
+Texture総合ラベル:
+
+```text
+dry:
+  rainbow, no straight_possible, no paired, high-card dominated
+slightly_wet:
+  two_tone or straight comboが1種類
+wet:
+  flush draw + straight drawが共存、または複数straight combo
+very_wet:
+  monotone, three_flush + straight pressure, four_flush, board_straight,
+  multiple straight + flush combos
+```
+
+Special board typesは通常ロジックをoverrideする。
+
+```text
+trips_board
+double_paired
+quads_board
+board_full_house
+board_flush
+board_straight
+```
+
+Special boardでは§9.4.11のATT/DEF override tableを優先し、通常のpair/high-card分類を
+そのまま適用してはならない。
+
+#### 9.4.8 Hand Class分類（23クラス）
+
+入力はhero hole cards + board cards。eval7でhand evaluationを行い、絶対役とdrawを
+別々に分類する。hero handがmade-hand + drawの両方に該当する場合はCombo ruleを適用する。
+
+Made-Hand Classes（15クラス）:
+
+```text
+nuts:
+  Full house+, Nut flush, Nut straight(safe board), Set(safe board)
+flush:
+  Non-nut flush。3-flush board / paired board / one-card flush boardで細分化
+straight:
+  Two-card straight / One-card straight（top-end / low-end）
+set:
+  Pocket pair hits board。board danger別に分類
+trips:
+  Board pair + one hole card
+two_pair:
+  No board pair。10段階rank + board texture condition-matrix
+overpair:
+  Pocket pair above all board cards
+top_pair:
+  Top board card paired with hole card。kicker: TPTK / TPSK / 3rd〜other
+second_pair:
+  1 board overcard above hero's pair
+third_pair:
+  2 board overcards above hero's pair
+fourth_fifth_pair:
+  3-4 board overcards above hero's pair
+nuts_high:
+  A-high（highest rank not on board）
+second_high:
+  K/Q-high（2nd-highest rank, kicker T+）
+weak_showdown:
+  Low-kicker high card or very marginal unpaired hand
+trash:
+  No pair, no overcard, no draw
+```
+
+Draw Classes（8クラス）:
+
+```text
+strong_draw:
+  combo draw on non-flushy / nut+ flush draw on flushy /
+  flush draw rank>=J on non-flushy / OESD on rainbow non-straighty
+medium_strong_draw:
+  flush draw rank<J on non-flushy / OESD on rainbow+straighty /
+  OESD on two-tone non-straighty
+medium_draw:
+  decent flush draw on flushy / OESD on two-tone+straighty / gutshot + overcards
+medium_weak_draw:
+  non-flushy 2-card gutshot / moderate flush draw rank 6+ on flushy
+weak_draw:
+  bottom gutshot / very small flush draw rank 2-5 on flushy
+strong_overcard_draw:
+  AK/AQ two premium overcards / KQ or AJ + backdoor
+medium_overcard_draw:
+  naked dual overcards rank sum > 19 / single overcard T+ with dual backdoor
+weak_overcard_draw:
+  naked dual overcards rank sum <= 19 / single overcard T+ with BD but no between-pair
+```
+
+Combo rule:
+
+```text
+- made-hand ATT base + draw ATT bonusを比較し、高い方をATT採用
+- made-hand DEF base + draw combo bonusをDEF候補にする
+- made-hand DEF単体とcombo DEF候補を比較し、高い方をDEF採用
+- draw単体がmade-handより強いATT/DEFを持つ場合はdraw側を採用
+- riverでは未完成drawのDEF thresholdを無効化し、made-hand/high-card分類だけで判定する
+```
+
+#### 9.4.9 ATT/DEF Budget Table（Made-Hand）
+
+以下の表はHU論文（PokerSkill Appendix E）のbase値。MW修正子は§9.4.13で別途定義する。
+`∞`は実装上のsentinel（例: `float("inf")`）で表す。
+
+nuts:
+
+```text
+ATT ∞ / DEF ∞。常にcall/raise。pot積極構築。
+low SPR → 1 street slow-play可。
+river IP nuts → 必ずraise。
+```
+
+flush:
+
+```text
+3-FLUSH BOARD:
+  Nut flush ATT/DEF ∞。
+  Big flush(high>9) ATT 5/DEF 6。
+  Small flush(high<=9) ATT 4/DEF 5。
+PAIRED BOARD:
+  Nut flush ATT 5/DEF 6。
+  Big flush ATT 4.3/DEF 5.3。
+  Small flush ATT 3.5/DEF 4.5。
+ONE-CARD FLUSH BOARD(4+ same suit):
+  Nut ∞。
+  2nd ATT 4/DEF 5。
+  3rd ATT 3/DEF 4。
+  4th ATT 2.4/DEF 3.5。
+  5th ATT 2/DEF 3。
+  6-7th ATT 1.5/DEF 2.5。
+  8-9th ATT 1/DEF 2。
+  PAIRED BOARD: nut ATT 4.5/DEF 5.5、others ATT/DEF -0.5。
+```
+
+straight:
+
+```text
+TWO-CARD STRAIGHT:
+  No flush ATT 5.5/DEF 6.5。
+  Flush possible(3-flush) ATT 3.5/DEF 4.5。
+  4+ flush ATT 0/DEF 1。
+  PAIRED BOARD: nut+no flush ATT 5/DEF 6、otherwise ATT/DEF -0.4。
+ONE-CARD STRAIGHT TOP-END:
+  No flush → NUTS。
+  3-flush ATT 2.5/DEF 3.5。
+  4+flush ATT 0/DEF 1。
+ONE-CARD STRAIGHT LOW-END:
+  No flush ATT 2.5/DEF 3.5。
+  3-flush ATT 1.5/DEF 2.5。
+  4+flush ATT 0/DEF 0.5。
+  PAIRED BOARD: ATT/DEF -0.6。
+```
+
+set:
+
+```text
+No flush, no straight possible → NUTS (ATT/DEF ∞)。
+No flush, 2-card straight:
+  1 possibility ATT 5.5/DEF 6.5。
+  2 possibilities ATT 4.5/DEF 5.5。
+  3+ possibilities ATT 4/DEF 5。
+3-flush(no OCS): ATT 3.8/DEF 4.8、each additional straight -0.3。
+OCS 1 type: ATT 2.5/DEF 3.7。
+OCS 2+: ATT 1.5/DEF 2.7。
+OCS+3-flush: ATT/DEF -0.8 from OCS base。
+OCS+4+flush: ATT 0/DEF 0.5。
+4+ flush(no OCS): ATT 0/DEF 1。
+```
+
+trips:
+
+```text
+Dry board(no flush/OCS):
+  ATT 4(2-kicker)〜4.5(A-kicker)/DEF 5.5、each 2-card str -0.3。
+3-flush(no OCS):
+  ATT 3〜3.5/DEF 4.5、each 2-card str -0.3。
+OCS 1 type:
+  ATT 2.1〜2.4/DEF 3.5。
+OCS 2+:
+  ATT 1.1〜1.4/DEF 2.5。
+OCS+3-flush:
+  ATT/DEF -0.7 from OCS base。
+OCS+4+flush:
+  ATT 0/DEF 0.5。
+4+ flush(no OCS):
+  ATT 0/DEF 1。
+Kicker scales proportionally: 2→base, A→max。
+```
+
+two_pair:
+
+```text
+優先度順condition-matrix:
+4+FLUSH+OCS:
+  ATT 0/DEF 0.5。
+4+FLUSH no OCS:
+  ATT 0/DEF 1。
+OCS+3-FLUSH:
+  1 type ATT 1.7/DEF 2.8。
+  2+ ATT 0.7/DEF 1.9。
+OCS no flush:
+  1 type ATT 2.2/DEF 3.3。
+  2+ ATT 1.2/DEF 2.4。
+3-FLUSH no OCS:
+  rank-based ATT 2.7(r10)〜3.6(r1)/DEF 3.7(r10)〜4.7(r1)。
+  each 2-card str -0.3。
+DRY BOARD:
+  R1 ATT 5/DEF 6.5。
+  R2 4.7/6。
+  R3 4.5/5.7。
+  R4 4.3/5.5。
+  R5 4.1/5.3。
+  R6 3.9/5.1。
+  R7 3.8/5。
+  R8 3.7/4.9。
+  R9 3.6/4.8。
+  R10 3.5/4.7。
+  Each 2-card str -0.3。
+```
+
+overpair:
+
+```text
+SRP:
+  AA ATT 3.5/DEF 4.5。
+  KK 3.4/4.4。
+  QQ 3.3/4.3。
+  JJ 3.2/4.2。
+  Others 3.1/4.1。
+3BP:
+  AA 3.4/4.5。
+  KK 3.2/4.3。
+  QQ 3.0/4.1。
+  JJ 2.8/3.8。
+  TT 2.6/3.7。
+  Others 2.5/3.5。
+4BP:
+  AA 3.4/4.5。
+  KK 3.1/4.2。
+  QQ 2.7/3.7。
+  JJ 2.4/3.4。
+  Others 2.1/3.1。
+Board modifiers:
+  SAFE BOARD: triple barrel for value。
+  PAIRED: ATT/DEF -0.5。Turn pairing → CHECK that street。
+  ONE-CARD FLUSH(4+suit, no flush): ATT 0/DEF capped 0.6。
+  OCS OPEN-ENDED: drop 2.5 levels → WEAK SHOWDOWN。
+  OCS GUTSHOT: drop 1.5 levels → THIN VALUE。
+  FLUSH POSSIBLE(3+suit): drop 1.1(flop)/0.9(turn)/0.7(river)。
+  STRAIGHT POSSIBLE multi: drop 0.6(flop)/0.5(turn)/0.4(river)。
+  STRAIGHT POSSIBLE 1 combo: drop 0.4(flop)/0.3(turn)/0.2(river)。
+  NOTE: FLUSH POSSIBLEとONE-CARD FLUSHは重複しない（重い方適用）。
+        STRAIGHT系も同様。他のmodifiersはスタック。
+```
+
+top_pair:
+
+```text
+SRP:
+  TPTK ATT 3/DEF 4。
+  TPSK 2.8/3.8。
+  3rd kicker 2.6/3.6。
+  4th 2.4/3.4。
+  5th 2.2/3.2。
+  Other 2.1/3.1。
+3BP:
+  TPTK 2.9/3.9。
+  TPSK 2.6/3.6。
+  3rd 2.2/3.2。
+  Other 1.9/2.9。
+4BP+:
+  TPTK 2.6/3.6。
+  TPSK 2.2/3.2。
+  3rd 1.8/2.8。
+  Other 1.6/2.6。
+Board modifiers:
+  overpairと同一。
+  PAIRED -0.5。
+  OCF drop 3.5。
+  OCS OE drop 2.5。
+  OCS GS drop 1.5。
+  FLUSH POSSIBLE/STRAIGHT POSSIBLEのスタック式penalty。
+```
+
+second_pair:
+
+```text
+SRP:
+  PP/top kicker ATT 1.8/DEF 2.8。
+  2nd 1.7/2.7。
+  3rd 1.6/2.6。
+  Other 1.5/2.5。
+3BP:
+  PP 1.3/2.5。
+  Top kicker 1.5/2.3。
+  2nd 1.3/2.1。
+  Other 1.2/2.0。
+4BP+:
+  PP 0/2。
+  Top kicker 1/1.8。
+  Other 0.9/1.6。
+Board modifiers:
+  PAIRED -0.4。
+  OCF drop 3.5。
+  OCS OE drop 2.5。
+  FLUSH POSSIBLE/STRAIGHT POSSIBLEスタック。
+```
+
+third_pair:
+
+```text
+SRP:
+  Top kicker/PP ATT 1.2/DEF 2.2。
+  Other 1.0/2.0。
+3BP:
+  DEF 1.5。
+4BP+:
+  DEF 1.2。
+3BP+ board-hit:
+  ATT 1.5（stab <=30% pot）。
+PP:
+  ATT 0/DEF 0.6(3BP)/0.3(4BP+)。
+Board modifiers:
+  PAIRED -0.3。
+  OCF drop 3.5。
+  OCS OE drop 2.5。
+  FLUSH POSSIBLE/STRAIGHT POSSIBLEスタック。
+```
+
+fourth_fifth_pair:
+
+```text
+SRP:
+  4th pair ATT 0.8/DEF 1.8。
+  5th pair 0.5/1.5。
+3BP:
+  DEF 1.0。
+4BP+:
+  DEF 0.7。
+3BP+ board-hit:
+  ATT 1.5。
+PP:
+  ATT 0/DEF 0.3(3BP)/0(4BP+)。
+Board modifiers:
+  PAIRED -0.3。
+  OCF drop 3.5。
+  OCS OE drop 2.5。
+  FLUSH POSSIBLE/STRAIGHT POSSIBLEスタック。
+```
+
+nuts_high (A-high):
+
+```text
+ATT 0。
+DEF:
+  Limp 0.8〜1.2。
+  SRP 0.6〜1.0。
+  3BP 0.4〜0.7。
+  4BP+ 0.1〜0.4。
+  kicker position依存、高い方がDEF大。
+PAIRED BOARD: DEF ×1.35。
+OCF/OCS: DEF → 0。
+FLUSH POSSIBLE: penalty -1.0(flop)/-0.7(turn)/-0.4(river)。
+STRAIGHT POSSIBLE multi: -0.5(flop)/-0.4(turn)/-0.2(river)。
+STRAIGHT POSSIBLE 1 combo: -0.3(flop)/-0.2(turn)/-0.1(river)。
+```
+
+second_high (K/Q-high):
+
+```text
+ATT 0。
+DEF:
+  Limp 0.4〜0.7。
+  SRP 0.3〜0.5。
+  3BP 0.1〜0.3。
+  4BP+ 0。
+Board modifiers: nuts_highと同一。
+```
+
+weak_showdown:
+
+```text
+ATT 0。
+DEF:
+  Limp/SRP 0.8。
+  3BP 0.4。
+  4BP+ 0.2。
+OCF drop 3.5 → TRASH。
+OCS OE drop 2.5 → TRASH。
+FLUSH POSSIBLE/STRAIGHT POSSIBLEスタック。
+```
+
+trash:
+
+```text
+ATT 0〜1（flop/turn stab/c-bet small sizing）。
+DEF 0。
+IP STAB:
+  high frequency。flop/turn 20-30% pot。river polarized bluff >60% pot。
+OOP:
+  range bet 20-30% pot。river bluff >60% pot。
+```
+
+#### 9.4.10 ATT/DEF Budget Table（Draw）
+
+Draw classはDEFをpot-odds threshold方式で管理する。累積budgetではなく、
+各streetで相手betサイズの%potと現在equityを比較してcall可否を判定する。
+
+```text
+strong_draw:
+  ATT: 4+。
+  Flop IP 500%/OOP 400%。Turn IP 190%/OOP 150%。
+  All-in: equity >= 60% pot odds。
+  Check-raise: CALL。
+  Combo bonus: +2.0 to made-hand DEF baseline。
+
+medium_strong_draw:
+  ATT: 3+。
+  Flop IP 250%/OOP 200%。Turn IP 100%/OOP 75%。
+  All-in: equity >= pot odds。
+  Flop check-raise: IP 150%/OOP 100%。
+  Turn check-raise: IP 60%/OOP 40%。
+  Combo bonus: +1.2。
+
+medium_draw:
+  ATT: 1.5-3。
+  Flop IP 150%/OOP 120%。Turn IP 60%/OOP 40%。
+  Flop check-raise: IP 100%/OOP 75%。
+  Turn check-raise: IP 40%/OOP 28%。
+  Combo bonus: +0.8。
+
+medium_weak_draw:
+  ATT: 1-2。
+  Flop IP 94%/OOP 78%。Turn IP 40%/OOP 26%。
+  Flop check-raise: IP 60%/OOP 42%。
+  Turn check-raise: IP 20%/OOP 14%。
+  Combo bonus: +0.7。
+
+weak_draw:
+  ATT: 0.5-1。
+  Flop IP 68%/OOP 56%。Turn IP 24%/OOP 16%。
+  Flop check-raise: IP 40%/OOP 28%。
+  Turn check-raise: fold。
+  Combo bonus: +0.4。
+
+strong_overcard_draw:
+  ATT: 1。
+  Flop IP 80%/OOP 65%。Turn IP 35%/OOP 25%。
+  Flop check-raise: IP 55%/OOP 35%。Turn: fold。
+  Combo bonus: +0.3。
+  3BP downgrade: AK, AQ/KQ/AJ+BD flush, AJ/KJ/AT+BD flush+BD straightは維持。
+                 その他overcardsは1 tier downgrade。
+  4BP+ downgrade: AK+BD flushのみ維持。その他は1 tier downgradeまたはtrash。
+
+medium_overcard_draw:
+  ATT: 0.5-1。
+  Flop IP 58%/OOP 45%。Turn IP 23%/OOP 15%。
+  Flop check-raise: IP 28%/OOP 18%。Turn: fold。
+  Combo bonus: +0.2。
+  3BP downgrade: weak_overcard_draw。
+  4BP+ downgrade: weak_overcard_drawまたはtrash。
+
+weak_overcard_draw:
+  ATT: 0.5。
+  Flop IP 35%/OOP 25%。Turn IP 15%/OOP 9%。
+  Check-raise: fold。
+  Combo bonus: +0.0。
+  3BP/4BP+ downgrade: trash。
+```
+
+Texture downgrade:
+
+```text
+- flushy boardでflush drawを持たないovercardは1 tier downgrade
+- straighty boardでstraight/backdoorを持たないovercardは1 tier downgrade
+- riverでは未完成drawをtrashまたはhigh-card showdownに再分類する
+```
+
+#### 9.4.11 Special Board Override Table
+
+Special boardでは通常hand classよりoverrideを優先する。
+
+```text
+trips_board:
+  Quads/full-house are nuts。
+  nut kicker ATT 0.5/DEF 1.5。
+  second kicker DEF 0.8。
+  lower kickers mostly trash。
+
+double_paired:
+  Higher-pair full house is nuts。
+  lower full house ATT 2.5/DEF 3.5。
+  flush/straight ATT 2/DEF 3。
+  kicker-only tiersは3BP/4BPでdowngrade。
+
+trips_plus_side_cards:
+  Quads are nuts。
+  matching side card or pocket pair forms full-house tiers。
+  flush/straightはfull houseより下にdowngrade。
+
+quads_board:
+  kickerで判定。
+  nuts high is nuts。
+  second high ATT 1.5/DEF 2.5。
+  third high ATT 0.5/DEF 1.5。
+
+board_full_house:
+  多くのhandはboard full houseを共有。
+  quadsまたはboardより上のfull house interactionのみ積極プレイ。
+
+board_flush:
+  heroの最高private suited card rankで分類。
+  2nd highest ATT 3/DEF 4。
+  no suited private card ATT 0/DEF 1.5。
+  間のrankは線形またはtableで補間。
+
+board_straight:
+  通常はchop想定。
+  top-endを改善するprivate cardがある場合のみvalue。
+  flush contextがある場合はflush優先で再評価。
+```
+
+#### 9.4.12 Pressure Weight Table
+
+Weighted pressureは、その時点のpotに対するbet/raiseサイズ（%pot）を重みに変換し、
+streetをまたいで累積する。実装は46-entry piecewise-linear tableを持ってよいが、
+最小実装では以下の代表thresholdを使用する。
+
+```text
+Threshold (% pot): <5  <20  <32  <50  <67  <85  <100  <122  <150
+Weight:            0.04 0.30 0.50 0.70 0.85 1.00 1.10  1.25  1.40
+
+Threshold (% pot): <195 <300 <400 <500 <700 <1000 <1500 >=1500
+Weight:             1.60 2.00 2.30 2.50 2.90  3.40  4.00   4.00
+```
+
+計算ルール:
+
+```text
+bet_percent = bet_or_raise_to_call / pot_before_action * 100
+pressure_weight = lookup_weight(bet_percent)
+att_spent = sum(hero proactive bet/raise weights in current line)
+def_spent = sum(opponent bet/raise weights hero has faced and continued against)
+remaining_att = adjusted_att_budget - att_spent
+remaining_def = adjusted_def_budget - def_spent
+```
+
+複数相手の同一street圧力:
+
+```text
+- heroが直面している最終call額だけでなく、raise回数をpressure_eventとして保持する
+- multiwayでbet + raiseが発生した場合、最後のcall額weightにraise_count_bonusを加える
+- raise_count_bonus = 0.25 * max(0, raise_count_on_street - 1)
+- capは+0.75
+```
+
+#### 9.4.13 MW修正子
+
+PokerSkill HU baseをMultiwayへ拡張するため、active opponent数とpositionでATT/DEFを補正する。
+補正はbase budget算出後、pressure subtraction前に適用する。
+
+```text
+opponents_remaining = active_player_count - 1
+extra_opponents = max(0, opponents_remaining - 1)
+```
+
+基本MW補正:
+
+```text
+made hand:
+  ATT -= 0.35 * extra_opponents
+  DEF -= 0.25 * extra_opponents
+draw:
+  ATT -= 0.25 * extra_opponents
+  DEF threshold *= (1.0 - 0.08 * extra_opponents)
+high-card / weak_showdown:
+  ATT unchanged（原則0）
+  DEF -= 0.35 * extra_opponents
+trash:
+  DEF remains 0
+```
+
+Position補正:
+
+```text
+IP and closing_action:
+  ATT +0.15
+  DEF +0.20
+sandwich:
+  ATT -0.30
+  DEF -0.45
+OOP with players behind:
+  ATT -0.20
+  DEF -0.30
+```
+
+Pot type補正:
+
+```text
+limp:
+  second_pair以下 DEF +0.20
+  value hand ATT +0.10
+SRP:
+  補正なし
+3BP:
+  top_pair以下 ATT -0.20
+  top_pair以下 DEF -0.30
+  two_pair+ ATT +0.20
+4BP+:
+  low SPR commitmentを優先
+  top_pair weak kicker以下 DEF -0.40
+  overpair+ ATT +0.20
+```
+
+Wet multiway補正:
+
+```text
+wet / very_wet and opponents_remaining >= 2:
+  one-pair ATT -0.40
+  one-pair DEF -0.40
+  strong_draw ATT +0.20（semi-bluff equityがある場合のみ）
+  weak_draw DEF threshold *= 0.85
+monotone / four_flush:
+  no-flush made-handは該当hand class tableの重いpenaltyを優先
+```
+
+下限・上限:
+
+```text
+finite ATT/DEFは0未満にしない
+∞はMW補正対象外
+draw thresholdは0%未満にしない
+```
+
+#### 9.4.14 Budget計算順序
+
+Context Engineは以下の順序でbudgetを計算する。
+
+```text
+1. board texture / special boardを分類
+2. made-hand classとdraw classを分類
+3. made-hand base ATT/DEFを§9.4.9から取得
+4. draw ATT/threshold/combo bonusを§9.4.10から取得
+5. special boardなら§9.4.11でoverride
+6. board modifierを適用
+7. pot type / position / SPR / MW修正子を適用
+8. pressure weightを累積
+9. remaining_att / remaining_defを算出
+10. viable action logicへ渡す
+```
+
+数値丸め:
+
+```text
+budgetは小数第2位で保持し、prompt表示は小数第1位に丸める
+threshold %potは整数に丸める
+validator判定は丸め前の内部値を使う
+```
+
+#### 9.4.15 Viable Action Logic
+
+Viable actionは単純なlookupではなく、position、street、SPR、role、board texture、draw status、
+remaining ATT/DEF、legal actionsを組み合わせて計算する。
+
+共通ルール:
+
+```text
+if check is legal:
+  check is always viable unless nuts river IP raise spot
+if facing bet and remaining_def <= 0 and no draw threshold call:
+  call is not viable
+if remaining_att <= 0:
+  bet/raise is not viable except trash river bluff and forced low-SPR value jam
+if action not in GameState.legal_actions:
+  remove from viable_actions
+```
+
+Bet/Raise候補:
+
+```text
+value bet:
+  remaining_att >= 1.0 and made_hand >= top_pair
+thin value:
+  0.4 <= remaining_att < 1.0 and safe board and IP/closing_action
+semi-bluff:
+  draw ATT > 0 and fold equity exists and not sandwich
+trash stab:
+  checked to hero, remaining_att >= 0, flop/turn 20-30% pot
+river bluff:
+  no showdown value, blocker advantage or villain weakness, sizing >60% pot
+```
+
+Call候補:
+
+```text
+made-hand:
+  facing bet and remaining_def > 0
+draw:
+  facing bet and bet_percent <= street_position_draw_threshold
+all-in:
+  equity >= pot odds（strong_drawのみ equity >= 60% pot odds）
+high-card:
+  paired board bonus適用後 remaining_def > 0 and bet size small
+```
+
+Raise候補:
+
+```text
+nuts:
+  always viable when legal
+strong value:
+  remaining_att >= 2.0 and board not dominated by special-board danger
+strong_draw:
+  flop check-raise viable unless sandwich or SPR too low
+OOP check-raise:
+  IP raiseより1 tier強いhand/drawを要求
+multiway raise:
+  opponents_remaining >= 2ではvalue-heavyに制限
+```
+
+Low-SPR commitment:
+
+```text
+SPR <= 1.5:
+  nuts/two_pair+/overpair strong kicker/strong_draw equity sufficient → all-in viable
+  marginal made-hand → call or checkを残し、raiseを削除
+SPR <= 0.7:
+  top_pair+ and sufficient equity → foldを削除してcommit
+```
+
+Paired-board / special-board override:
+
+```text
+- paired/trips/double-pairedではthin value betを削除しやすくする
+- board_full_house/board_straight/board_flushではchopまたはkicker-onlyを明示
+- special board overrideでATT <= 0なら通常value bet候補は出さない
+```
+
+#### 9.4.16 Prompt Format
+
+Context EngineはLLMへ以下の構造化プロンプトを渡す。通常ログにprompt全文を出してはならない。
+
+```text
+SYSTEM:
+You are a poker decision assistant. Choose only from viable_actions.
+Return JSON only. Do not explain unless "reason" field is requested.
+
+SITUATION:
+street: {flop|turn|river}
+pot_bb: {pot}
+effective_stack_bb: {effective_stack}
+spr: {spr}
+hero_position: {position}
+active_players: {active_player_count}
+hero_cards: {hero_cards}
+board_cards: {board_cards}
+legal_actions: {legal_actions}
+action_history: {compact_action_history}
+
+COMPUTED_CONTEXT:
+pot_type: {limp|SRP|3BP|4BP+}
+initiative: {initiative}
+board_texture: {dry|slightly_wet|wet|very_wet}
+board_flags: {board_flags}
+special_board: {special_board_or_none}
+made_hand_class: {made_hand_class}
+draw_class: {draw_class_or_none}
+kicker_class: {kicker_class_or_none}
+mw_context: {ip|oop|sandwich|closing_action, players_behind}
+
+BUDGET:
+base_att: {base_att}
+base_def: {base_def}
+adjusted_att: {adjusted_att}
+adjusted_def: {adjusted_def}
+pressure_att_spent: {att_spent}
+pressure_def_spent: {def_spent}
+remaining_att: {remaining_att}
+remaining_def: {remaining_def}
+draw_threshold: {draw_threshold_or_none}
+budget_verdict: {short_verdict}
+
+SKILL_GUIDANCE:
+{selected_hand_class_guidance}
+{selected_board_texture_guidance}
+{selected_line_guidance}
+{river_bluffcatch_guidance_if_river}
+
+VIABLE_ACTIONS:
+{numbered viable action list with sizing bounds}
+
+OUTPUT_SCHEMA:
+{"action":"fold|check|call|bet|raise|all_in","amount_bb":number|null,"reason":"short"}
+```
+
+LLMに渡す`VIABLE_ACTIONS`は最大5個に制限する。候補が多い場合は次の優先度で圧縮する。
+
+```text
+1. mandatory action（nuts raise、forced call/fold）
+2. value action
+3. pot-control action
+4. draw/semi-bluff action
+5. exploitative bluff action
+```
+
+#### 9.4.17 Output Validation
+
+LLM出力は必ずvalidatorを通す。
+
+```text
+- JSON parse失敗 → フォールバック
+- actionがviable_actions外 → 最も近いviable actionへ補正
+- amount_bbがlegal sizing外 → min/maxへclip
+- fold/check/callのamount_bbはnullへ正規化
+- all_inはeffective_stack_bb以内へclip
+- reasonはHUD表示に使わず、debug logのみ（通常ログでは短縮）
+```
+
+補正優先順位:
+
+```text
+invalid bet/raise with call viable → call
+invalid bet/raise with check viable → check
+invalid call with fold viable → fold
+invalid action and no safe fallback → 推奨なし
+```
+
+#### 9.4.18 テスト要件
+
+Context Engine実装時は以下をpytestで検証する。
+
+```text
+- board texture分類: rainbow/two_tone/monotone/three_flush/four_flush/special board
+- straight_possible / one_card_straight open-ended / gutshot分類
+- 23 hand class分類
+- made-hand ATT/DEF table lookup
+- draw threshold lookup
+- combo rule
+- pressure weight lookup
+- MW修正子
+- viable action filtering
+- promptにlegal_actions外のactionが含まれないこと
+- validatorが不正JSON/不正action/不正sizingを補正すること
+```
 
 ---
 
