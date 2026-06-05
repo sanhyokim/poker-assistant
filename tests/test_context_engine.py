@@ -6,6 +6,7 @@ import pytest
 
 from strategy.context_engine import (
     apply_mw_modifiers,
+    build_context_prompt,
     calculate_cumulative_pressure,
     calculate_pressure_weight,
     classify_board_texture,
@@ -15,6 +16,7 @@ from strategy.context_engine import (
     get_draw_budget,
     get_made_hand_budget,
     get_special_board_override,
+    validate_llm_output,
 )
 
 
@@ -705,3 +707,249 @@ def test_viable_actions_check_always_viable() -> None:
     )
 
     assert "check" in actions
+
+
+def test_build_prompt_contains_all_sections() -> None:
+    """Prompt contains all required SPEC sections."""
+    budget_result = compute_full_budget(
+        hero_cards=["Ah", "Kd"],
+        board_cards=["As", "7c", "2d"],
+        pot_type="SRP",
+        position="IP",
+        active_player_count=3,
+        street="flop",
+        action_history=[],
+        hero_seat=0,
+        pot_history=[],
+    )
+    game_context = {
+        "street": "flop",
+        "pot_bb": 6.0,
+        "effective_stack_bb": 100.0,
+        "spr": 16.7,
+        "hero_position": "BTN",
+        "active_players": 3,
+        "hero_cards": ["Ah", "Kd"],
+        "board_cards": ["As", "7c", "2d"],
+        "legal_actions": ["fold", "check", "bet"],
+        "action_history": "BB check, CO check",
+        "initiative": "preflop_aggressor",
+        "players_behind": 0,
+    }
+
+    prompt = build_context_prompt(budget_result, game_context)
+
+    assert "SYSTEM:" in prompt
+    assert "SITUATION:" in prompt
+    assert "COMPUTED_CONTEXT:" in prompt
+    assert "BUDGET:" in prompt
+    assert "VIABLE_ACTIONS:" in prompt
+    assert "OUTPUT_SCHEMA:" in prompt
+
+
+def test_build_prompt_viable_actions_max_5() -> None:
+    """Prompt VIABLE_ACTIONS section contains at most five numbered actions."""
+    budget_result = compute_full_budget(
+        hero_cards=["Ah", "Kd"],
+        board_cards=["As", "7c", "2d"],
+        pot_type="SRP",
+        position="IP",
+        active_player_count=3,
+        street="flop",
+        action_history=[],
+        hero_seat=0,
+        pot_history=[],
+    )
+    game_context = {
+        "street": "flop",
+        "pot_bb": 6.0,
+        "effective_stack_bb": 100.0,
+        "spr": 16.7,
+        "hero_position": "BTN",
+        "active_players": 3,
+        "hero_cards": ["Ah", "Kd"],
+        "board_cards": ["As", "7c", "2d"],
+        "legal_actions": ["fold", "check", "call", "bet", "raise", "all_in"],
+        "action_history": "",
+        "initiative": "preflop_aggressor",
+        "players_behind": 0,
+    }
+
+    prompt = build_context_prompt(budget_result, game_context)
+    viable_section = prompt.split("VIABLE_ACTIONS:")[1].split("OUTPUT_SCHEMA:")[0]
+    numbered_lines = [
+        line for line in viable_section.splitlines() if line.strip()[:2] in {"1.", "2.", "3.", "4.", "5."}
+    ]
+
+    assert len(numbered_lines) <= 5
+
+
+def test_build_prompt_infinity_display() -> None:
+    """Infinite budgets are displayed as infinity symbol."""
+    budget_result = compute_full_budget(
+        hero_cards=["Ah", "Kh"],
+        board_cards=["Qh", "Jh", "Th"],
+        pot_type="SRP",
+        position="IP",
+        active_player_count=3,
+        street="flop",
+        action_history=[],
+        hero_seat=0,
+        pot_history=[],
+    )
+    game_context = {
+        "street": "flop",
+        "pot_bb": 6.0,
+        "effective_stack_bb": 100.0,
+        "spr": 16.7,
+        "hero_position": "BTN",
+        "active_players": 3,
+        "hero_cards": ["Ah", "Kh"],
+        "board_cards": ["Qh", "Jh", "Th"],
+        "legal_actions": ["fold", "check", "bet"],
+        "action_history": "",
+        "initiative": "preflop_aggressor",
+        "players_behind": 0,
+    }
+
+    prompt = build_context_prompt(budget_result, game_context)
+
+    assert "∞" in prompt
+
+
+def test_build_prompt_no_illegal_actions() -> None:
+    """Prompt viable action lines exclude actions outside legal_actions."""
+    budget_result = compute_full_budget(
+        hero_cards=["2h", "3d"],
+        board_cards=["Ks", "Qc", "Jd"],
+        pot_type="SRP",
+        position="OOP",
+        active_player_count=3,
+        street="flop",
+        action_history=[],
+        hero_seat=0,
+        pot_history=[],
+    )
+    game_context = {
+        "street": "flop",
+        "pot_bb": 6.0,
+        "effective_stack_bb": 100.0,
+        "spr": 16.7,
+        "hero_position": "BB",
+        "active_players": 3,
+        "hero_cards": ["2h", "3d"],
+        "board_cards": ["Ks", "Qc", "Jd"],
+        "legal_actions": ["fold", "call"],
+        "action_history": "CO bet 3BB",
+        "initiative": "defender",
+        "players_behind": 0,
+    }
+
+    prompt = build_context_prompt(budget_result, game_context)
+    viable_section = prompt.split("VIABLE_ACTIONS:")[1].split("OUTPUT_SCHEMA:")[0]
+
+    for illegal in ["check", "bet", "raise", "all_in"]:
+        assert f". {illegal}" not in viable_section.lower()
+
+
+def test_validate_valid_json() -> None:
+    """Valid JSON action passes without correction."""
+    result = validate_llm_output(
+        '{"action": "bet", "amount_bb": 4.0, "reason": "value bet"}',
+        viable_actions=["check", "bet"],
+        legal_actions=["fold", "check", "bet"],
+        effective_stack_bb=100.0,
+    )
+
+    assert result["is_valid"] is True
+    assert result["action"] == "bet"
+    assert result["amount_bb"] == pytest.approx(4.0)
+
+
+def test_validate_invalid_json() -> None:
+    """JSON parse failure falls back to a safe viable action."""
+    result = validate_llm_output(
+        "not json at all",
+        viable_actions=["check", "fold"],
+        legal_actions=["fold", "check"],
+        effective_stack_bb=100.0,
+    )
+
+    assert result["is_valid"] is False
+    assert result["action"] in ["check", "fold"]
+
+
+def test_validate_action_not_viable_bet_to_call() -> None:
+    """Non-viable bet is corrected to call when call is viable."""
+    result = validate_llm_output(
+        '{"action": "bet", "amount_bb": 5.0, "reason": "bluff"}',
+        viable_actions=["call", "fold"],
+        legal_actions=["fold", "call"],
+        effective_stack_bb=100.0,
+    )
+
+    assert result["action"] == "call"
+    assert result["is_valid"] is False
+    assert result["correction_applied"] is not None
+
+
+def test_validate_action_not_viable_bet_to_check() -> None:
+    """Non-viable bet is corrected to check when call is unavailable."""
+    result = validate_llm_output(
+        '{"action": "bet", "amount_bb": 5.0, "reason": "bluff"}',
+        viable_actions=["check"],
+        legal_actions=["fold", "check"],
+        effective_stack_bb=100.0,
+    )
+
+    assert result["action"] == "check"
+
+
+def test_validate_amount_clipped() -> None:
+    """Bet amount above effective stack is clipped."""
+    result = validate_llm_output(
+        '{"action": "bet", "amount_bb": 200.0, "reason": "overbet"}',
+        viable_actions=["check", "bet"],
+        legal_actions=["fold", "check", "bet"],
+        effective_stack_bb=100.0,
+    )
+
+    assert result["amount_bb"] <= 100.0
+
+
+def test_validate_fold_amount_null() -> None:
+    """Fold amount is normalized to None."""
+    result = validate_llm_output(
+        '{"action": "fold", "amount_bb": 50, "reason": "give up"}',
+        viable_actions=["fold", "call"],
+        legal_actions=["fold", "call"],
+        effective_stack_bb=100.0,
+    )
+
+    assert result["amount_bb"] is None
+
+
+def test_validate_reason_truncated() -> None:
+    """Long reasons are truncated to 200 characters."""
+    long_reason = "x" * 500
+    result = validate_llm_output(
+        f'{{"action": "check", "amount_bb": null, "reason": "{long_reason}"}}',
+        viable_actions=["check"],
+        legal_actions=["fold", "check"],
+        effective_stack_bb=100.0,
+    )
+
+    assert len(result["reason"]) <= 200
+
+
+def test_validate_empty_viable_returns_none() -> None:
+    """Empty viable actions returns no recommendation."""
+    result = validate_llm_output(
+        '{"action": "bet", "amount_bb": 5.0, "reason": "bluff"}',
+        viable_actions=[],
+        legal_actions=[],
+        effective_stack_bb=100.0,
+    )
+
+    assert result["action"] is None
+    assert result["is_valid"] is False

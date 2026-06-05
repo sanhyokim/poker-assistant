@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections import Counter
 from itertools import combinations
+import json
 import math
 from typing import TypedDict
 
@@ -301,6 +302,60 @@ MADE_HAND_STRENGTH: dict[str, int] = {
     "flush": 13,
     "nuts": 14,
 }
+SKILL_GUIDANCE_TEMPLATES: dict[str, str] = {
+    "nuts": (
+        "You hold the nuts or near-nuts. Build the pot aggressively. "
+        "Consider slow-play only at low SPR."
+    ),
+    "flush": (
+        "You have a flush. On 3-flush boards, bet for value but watch for higher "
+        "flushes. On paired boards, be cautious of full houses."
+    ),
+    "straight": (
+        "You have a straight. Watch for flush draws on the board. Two-card "
+        "straights are stronger than one-card straights."
+    ),
+    "set": (
+        "You have a set. This is a strong hand but vulnerable to flush/straight "
+        "draws. Bet to deny equity on wet boards."
+    ),
+    "overpair": (
+        "You have an overpair. Good for value on safe boards. Reduce aggression "
+        "on wet/paired boards."
+    ),
+    "top_pair": (
+        "You have top pair. Kicker strength matters. Bet for thin value on safe "
+        "boards; pot-control on wet boards."
+    ),
+    "second_pair": (
+        "You have second pair. Mostly a defensive hand. Check-call on safe boards; "
+        "fold to heavy pressure."
+    ),
+    "trash": (
+        "No made hand or draw. Look for bluff opportunities on favorable boards; "
+        "fold to any aggression."
+    ),
+    "strong_draw": "Strong combo draw. Semi-bluff aggressively, especially with fold equity.",
+    "medium_draw": "Decent draw. Call if pot odds are right; semi-bluff only with good fold equity.",
+    "weak_draw": "Weak draw. Only continue with direct pot odds; don't invest more than the threshold.",
+}
+BOARD_GUIDANCE_TEMPLATES: dict[str, str] = {
+    "dry": "Dry board favors the preflop aggressor. C-bets are effective. Draws are unlikely.",
+    "wet": "Wet board with multiple draws. Made hands should bet to protect. Draws have good equity.",
+    "very_wet": (
+        "Very wet board. Be cautious with marginal holdings. Strong draws can "
+        "semi-bluff effectively."
+    ),
+    "paired": "Paired board. Thin value bets are risky. Trips/full house are possible.",
+}
+VIABLE_ACTION_PRIORITY: tuple[str, ...] = (
+    "all_in",
+    "raise",
+    "bet",
+    "call",
+    "check",
+    "fold",
+)
 
 
 class BoardTexture(TypedDict):
@@ -1072,6 +1127,340 @@ def determine_viable_actions(
         viable.discard("fold")
 
     return [action for action in legal_actions if action in viable]
+
+
+def build_context_prompt(
+    budget_result: dict[str, object],
+    game_context: dict[str, object],
+) -> str:
+    """Build the structured Context Engine prompt for the LLM policy proposer.
+
+    Args:
+        budget_result: Result dictionary from :func:`compute_full_budget`.
+        game_context: GameState-derived context values used in SPEC.md section 9.4.16.
+
+    Returns:
+        Complete prompt string. No API call is performed.
+    """
+    board_texture = _dict_value(budget_result, "board_texture")
+    hand_class = _dict_value(budget_result, "hand_class")
+    legal_actions = _list_str_value(game_context.get("legal_actions"))
+    viable_actions = _filter_legal_viable_actions(
+        _list_str_value(budget_result.get("viable_actions")),
+        legal_actions,
+    )
+    compressed_actions = _compress_viable_actions(viable_actions)
+    board_flags = _board_flags(board_texture)
+    made_hand_class = str(hand_class.get("made_hand_class"))
+    draw_class = _object_as_optional_str(hand_class.get("draw_class"))
+    hand_guidance = _hand_guidance(made_hand_class, draw_class)
+    board_guidance = _board_guidance(board_texture)
+    pot_bb = _float_context(game_context, "pot_bb")
+
+    return "\n".join(
+        [
+            "SYSTEM:",
+            "You are a poker decision assistant. Choose only from viable_actions.",
+            'Return JSON only. Do not explain unless "reason" field is requested.',
+            "",
+            "SITUATION:",
+            f"street: {game_context.get('street')}",
+            f"pot_bb: {_format_prompt_number(pot_bb)}",
+            f"effective_stack_bb: {_format_prompt_number(_float_context(game_context, 'effective_stack_bb'))}",
+            f"spr: {_format_prompt_number(_float_context(game_context, 'spr'))}",
+            f"hero_position: {game_context.get('hero_position')}",
+            f"active_players: {game_context.get('active_players')}",
+            f"hero_cards: {game_context.get('hero_cards')}",
+            f"board_cards: {game_context.get('board_cards')}",
+            f"legal_actions: {legal_actions}",
+            f"action_history: {game_context.get('action_history')}",
+            "",
+            "COMPUTED_CONTEXT:",
+            f"pot_type: {game_context.get('pot_type', 'unknown')}",
+            f"initiative: {game_context.get('initiative')}",
+            f"board_texture: {board_texture.get('overall_texture')}",
+            f"board_flags: {board_flags}",
+            f"special_board: {board_texture.get('special_board')}",
+            f"made_hand_class: {made_hand_class}",
+            f"draw_class: {draw_class}",
+            f"kicker_class: {hand_class.get('kicker_class')}",
+            (
+                f"mw_context: {game_context.get('position', game_context.get('hero_position'))}, "
+                f"players_behind={game_context.get('players_behind')}"
+            ),
+            "",
+            "BUDGET:",
+            f"base_att: {_format_budget_for_prompt(budget_result.get('base_att'))}",
+            f"base_def: {_format_budget_for_prompt(budget_result.get('base_def'))}",
+            f"adjusted_att: {_format_budget_for_prompt(budget_result.get('adjusted_att'))}",
+            f"adjusted_def: {_format_budget_for_prompt(budget_result.get('adjusted_def'))}",
+            f"pressure_att_spent: {_format_budget_for_prompt(budget_result.get('att_spent'))}",
+            f"pressure_def_spent: {_format_budget_for_prompt(budget_result.get('def_spent'))}",
+            f"remaining_att: {_format_budget_for_prompt(budget_result.get('remaining_att'))}",
+            f"remaining_def: {_format_budget_for_prompt(budget_result.get('remaining_def'))}",
+            f"draw_threshold: {_format_draw_threshold(budget_result.get('draw_threshold'))}",
+            f"budget_verdict: {budget_result.get('budget_verdict')}",
+            "",
+            "SKILL_GUIDANCE:",
+            hand_guidance,
+            board_guidance,
+            "",
+            "VIABLE_ACTIONS:",
+            *_format_viable_action_lines(compressed_actions, pot_bb),
+            "",
+            "OUTPUT_SCHEMA:",
+            '{"action":"fold|check|call|bet|raise|all_in","amount_bb":number|null,"reason":"short"}',
+        ]
+    )
+
+
+def validate_llm_output(
+    raw_json_str: str,
+    viable_actions: list[str],
+    legal_actions: list[str],
+    effective_stack_bb: float,
+) -> dict[str, object]:
+    """Validate and correct an LLM action JSON payload.
+
+    Args:
+        raw_json_str: Raw LLM response string.
+        viable_actions: Actions allowed by Context Engine logic.
+        legal_actions: Actions legal in the current GameState.
+        effective_stack_bb: Effective stack used to clip bet sizes.
+
+    Returns:
+        Corrected action dictionary with validity and correction metadata.
+    """
+    safe_viable_actions = [action for action in viable_actions if action in legal_actions]
+    if not safe_viable_actions:
+        return _validator_result(None, None, "", False, "no_viable_actions")
+
+    try:
+        parsed = json.loads(raw_json_str)
+    except json.JSONDecodeError:
+        fallback = _fallback_action(safe_viable_actions)
+        return _validator_result(
+            fallback,
+            None,
+            "",
+            False,
+            "json_parse_failed",
+        )
+    if not isinstance(parsed, dict):
+        fallback = _fallback_action(safe_viable_actions)
+        return _validator_result(fallback, None, "", False, "json_not_object")
+
+    action = _normalize_action(parsed.get("action"))
+    amount_bb = parsed.get("amount_bb")
+    reason = _truncate_reason(parsed.get("reason"))
+    correction: str | None = None
+    is_valid = True
+
+    if action not in safe_viable_actions:
+        corrected_action = _correct_invalid_action(action, safe_viable_actions)
+        if corrected_action is None:
+            corrected_action = _fallback_action(safe_viable_actions)
+            correction = "fallback_action"
+        else:
+            correction = f"action_corrected_to_{corrected_action}"
+        action = corrected_action
+        is_valid = False
+
+    normalized_amount, amount_correction = _normalize_llm_amount(
+        action,
+        amount_bb,
+        effective_stack_bb,
+    )
+    if amount_correction is not None:
+        correction = amount_correction if correction is None else f"{correction}; {amount_correction}"
+        is_valid = False
+
+    return _validator_result(action, normalized_amount, reason, is_valid, correction)
+
+
+def _dict_value(container: dict[str, object], key: str) -> dict[str, object]:
+    value = container.get(key)
+    if isinstance(value, dict):
+        return value
+    return {}
+
+
+def _list_str_value(value: object) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value]
+
+
+def _float_context(container: dict[str, object], key: str) -> float:
+    value = container.get(key, 0.0)
+    if isinstance(value, int | float):
+        return float(value)
+    return 0.0
+
+
+def _filter_legal_viable_actions(
+    viable_actions: list[str],
+    legal_actions: list[str],
+) -> list[str]:
+    legal_action_set = set(legal_actions)
+    return [action for action in viable_actions if action in legal_action_set]
+
+
+def _compress_viable_actions(viable_actions: list[str]) -> list[str]:
+    viable_action_set = set(viable_actions)
+    ordered = [action for action in VIABLE_ACTION_PRIORITY if action in viable_action_set]
+    return ordered[:5]
+
+
+def _board_flags(board_texture: dict[str, object]) -> list[str]:
+    flags: list[str] = []
+    for key in ("suit_texture", "overall_texture", "special_board"):
+        value = board_texture.get(key)
+        if value is not None:
+            flags.append(str(value))
+    for key in ("paired", "flush_possible", "straight_possible"):
+        if bool(board_texture.get(key)):
+            flags.append(key)
+    rank_texture = board_texture.get("rank_texture")
+    if isinstance(rank_texture, list):
+        flags.extend(str(item) for item in rank_texture)
+    return flags
+
+
+def _hand_guidance(made_hand_class: str, draw_class: str | None) -> str:
+    if made_hand_class in SKILL_GUIDANCE_TEMPLATES:
+        return SKILL_GUIDANCE_TEMPLATES[made_hand_class]
+    if draw_class in SKILL_GUIDANCE_TEMPLATES:
+        return SKILL_GUIDANCE_TEMPLATES[draw_class]
+    return "Use the computed budget and viable actions. Prefer lower variance with marginal hands."
+
+
+def _board_guidance(board_texture: dict[str, object]) -> str:
+    if bool(board_texture.get("paired")):
+        return BOARD_GUIDANCE_TEMPLATES["paired"]
+    texture = str(board_texture.get("overall_texture", "dry"))
+    return BOARD_GUIDANCE_TEMPLATES.get(texture, BOARD_GUIDANCE_TEMPLATES["dry"])
+
+
+def _format_prompt_number(value: float) -> str:
+    return f"{value:.1f}"
+
+
+def _format_budget_for_prompt(value: object) -> str:
+    if isinstance(value, int | float):
+        float_value = float(value)
+        if math.isinf(float_value):
+            return "∞"
+        return f"{float_value:.1f}"
+    return "None"
+
+
+def _format_draw_threshold(value: object) -> str:
+    if isinstance(value, int | float):
+        return f"{round(float(value))}%pot"
+    return "None"
+
+
+def _format_viable_action_lines(actions: list[str], pot_bb: float) -> list[str]:
+    if not actions:
+        return ["1. no_action"]
+    return [
+        f"{index}. {_format_action_hint(action, pot_bb)}"
+        for index, action in enumerate(actions, start=1)
+    ]
+
+
+def _format_action_hint(action: str, pot_bb: float) -> str:
+    small_size = pot_bb * 0.30
+    large_size = pot_bb * 0.50
+    if action == "bet":
+        return f"bet {small_size:.1f}-{large_size:.1f} BB (30-50% pot)"
+    if action == "raise":
+        return f"raise {large_size:.1f}-{pot_bb:.1f} BB (50-100% pot)"
+    if action == "all_in":
+        return "all_in effective stack"
+    if action == "call":
+        return "call current bet"
+    return action
+
+
+def _normalize_action(action: object) -> str | None:
+    if action is None:
+        return None
+    normalized = str(action).strip().lower().replace("-", "_")
+    if normalized == "allin":
+        return "all_in"
+    return normalized
+
+
+def _correct_invalid_action(action: str | None, viable_actions: list[str]) -> str | None:
+    if action in {"bet", "raise", "all_in"}:
+        if "call" in viable_actions:
+            return "call"
+        if "check" in viable_actions:
+            return "check"
+    if action == "call" and "fold" in viable_actions:
+        return "fold"
+    return None
+
+
+def _fallback_action(viable_actions: list[str]) -> str:
+    for action in ("check", "fold", "call"):
+        if action in viable_actions:
+            return action
+    return viable_actions[0]
+
+
+def _truncate_reason(reason: object) -> str:
+    if reason is None:
+        return ""
+    return str(reason)[:200]
+
+
+def _normalize_llm_amount(
+    action: str | None,
+    amount_bb: object,
+    effective_stack_bb: float,
+) -> tuple[float | None, str | None]:
+    if action in {None, "fold", "check", "call"}:
+        return None, None if amount_bb is None else "amount_normalized_to_none"
+    if action == "all_in":
+        return max(0.0, effective_stack_bb), "amount_clipped_to_stack"
+
+    parsed_amount = _parse_optional_amount(amount_bb)
+    if parsed_amount is None:
+        return None, "amount_missing"
+    clipped_amount = min(max(0.0, parsed_amount), max(0.0, effective_stack_bb))
+    if clipped_amount != parsed_amount:
+        return clipped_amount, "amount_clipped_to_stack"
+    return clipped_amount, None
+
+
+def _parse_optional_amount(amount_bb: object) -> float | None:
+    if isinstance(amount_bb, int | float):
+        return float(amount_bb)
+    if isinstance(amount_bb, str):
+        try:
+            return float(amount_bb)
+        except ValueError:
+            return None
+    return None
+
+
+def _validator_result(
+    action: str | None,
+    amount_bb: float | None,
+    reason: str,
+    is_valid: bool,
+    correction_applied: str | None,
+) -> dict[str, object]:
+    return {
+        "action": action,
+        "amount_bb": amount_bb,
+        "reason": reason,
+        "is_valid": is_valid,
+        "correction_applied": correction_applied,
+    }
 
 
 def _parse_card(card_str: str) -> eval7.Card:
