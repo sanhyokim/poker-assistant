@@ -7,11 +7,20 @@ SPEC.md セクション6.2, 6.3 準拠。
 from __future__ import annotations
 
 import logging
+import os
 import random
+import time
 from itertools import combinations
 from typing import Any
 
+import requests
+
 from core.game_state import ActionRecord, GameState
+from strategy.context_engine import (
+    build_context_prompt,
+    compute_full_budget,
+    validate_llm_output,
+)
 from strategy.llm_pipeline import LLMPipeline, sanitize_llm_reason
 
 
@@ -31,7 +40,10 @@ class MultiwayEngine:
             config: Full config.yaml dictionary.
         """
         self.llm = llm_pipeline
+        llm_config = config.get("llm", {})
         self.blind_bb: int = int(config.get("game", {}).get("blind_bb", 100))
+        self.mw_model: str = str(llm_config.get("mw_model", "openai/gpt-5.4-mini"))
+        self.llm_timeout_sec: float = float(llm_config.get("timeout_sec", 15))
         self.sample_threshold_low: int = int(
             config.get("preflop_delta", {}).get("sample_threshold_low", 50)
         )
@@ -80,7 +92,7 @@ class MultiwayEngine:
             num_opponents,
             opponent_range,
         )
-        opponent_profiles = self._format_opponent_profiles(opponent_stats_list)
+        _ = self._format_opponent_profiles(opponent_stats_list)
 
         # 数理メトリクス計算
         metrics = self._compute_metrics(game_state)
@@ -128,31 +140,54 @@ class MultiwayEngine:
         llm_result: JsonDict = {}
         llm_error: str | None = None
         try:
-            llm_result = self.llm.decide_multiway(
-                game_state=game_state,
-                hero_equity=equity,
-                opponent_profiles=opponent_profiles,
-                call_amount=metrics["call_amount"],
-                facing_bet=metrics["facing_bet"],
-                pot_after_call=metrics["pot_after_call"],
-                required_equity=metrics["required_equity"],
-                raw_call_amount=metrics["raw_call_amount"],
-                effective_call_amount=metrics["effective_call_amount"],
-                hero_call_is_all_in=metrics["hero_call_is_all_in"],
-                spr=metrics["spr"],
-                hero_ip_or_oop=hero_ip_or_oop,
-                preflop_actions=preflop_actions,
-                current_street_actions=full_street_actions,
+            game_context = self._build_game_context(game_state)
+            action_history = self._action_records_to_dicts(
+                list(game_state.current_street_actions or [])
             )
+            budget_result = compute_full_budget(
+                hero_cards=hero_cards,
+                board_cards=board,
+                pot_type=self._detect_pot_type(game_state),
+                position=str(game_context.get("position", "OOP")),
+                active_player_count=int(game_context["active_players"]),
+                street=str(game_context["street"]),
+                action_history=action_history,
+                hero_seat=int(game_state.hero.seat or 1),
+                pot_history=self._estimate_pot_history(game_state, action_history),
+            )
+            prompt = build_context_prompt(budget_result, game_context)
+            raw_response, latency_ms = self._call_mw_llm(prompt)
+            legal_actions = self._get_legal_actions(game_state)
+            viable_actions = [
+                str(action) for action in budget_result.get("viable_actions", [])
+            ]
+            validated = validate_llm_output(
+                raw_response,
+                viable_actions=viable_actions,
+                legal_actions=legal_actions,
+                effective_stack_bb=float(game_context["effective_stack_bb"]),
+            )
+            if raw_response and validated.get("action"):
+                llm_result = {
+                    "action": validated.get("action"),
+                    "size": self._amount_bb_to_chips(validated.get("amount_bb")),
+                    "confidence": "medium",
+                    "reasoning": str(validated.get("reason", "")),
+                    "raw_response": raw_response,
+                    "latency_ms": latency_ms,
+                    "validated": validated,
+                }
         except Exception as error:
-            self.logger.warning("Multiway LLM decision failed: %s", error)
+            self.logger.warning("Context Engine multiway decision failed: %s", error)
             llm_error = str(error)
 
         guard_applied = False
         original_action: str | None = None
 
         if isinstance(llm_result, dict) and llm_result.get("action"):
-            original_action = str(llm_result["action"]).lower()
+            original_action = str(llm_result["action"]).lower().replace("_", "")
+            if original_action == "allin":
+                original_action = "all_in"
             parsed_action = original_action
             parsed_size = llm_result.get("size")
             parsed_reasoning = sanitize_llm_reason(
@@ -251,6 +286,212 @@ class MultiwayEngine:
         if guard_applied:
             result["guard_applied"] = True
         return result
+
+    def _build_game_context(self, game_state: GameState) -> JsonDict:
+        """Build Context Engine input values from the current GameState."""
+        effective_stack = self._effective_stack(game_state)
+        pot = int(game_state.pot or 0)
+        pot_type = self._detect_pot_type(game_state)
+        position = self._context_position(game_state)
+        return {
+            "street": game_state.phase,
+            "pot_bb": pot / self.blind_bb if self.blind_bb > 0 else 0.0,
+            "effective_stack_bb": (
+                effective_stack / self.blind_bb if self.blind_bb > 0 else 0.0
+            ),
+            "spr": effective_stack / max(pot, 1),
+            "hero_position": game_state.hero.position or "Unknown",
+            "active_players": game_state.active_player_count,
+            "hero_cards": game_state.hero.cards or [],
+            "board_cards": game_state.board,
+            "legal_actions": self._get_legal_actions(game_state),
+            "action_history": self._format_action_history(game_state),
+            "initiative": self._detect_initiative(game_state),
+            "players_behind": self._count_players_behind(game_state),
+            "pot_type": pot_type,
+            "position": position,
+        }
+
+    def _get_legal_actions(self, game_state: GameState) -> list[str]:
+        """Return currently legal actions from button state and bet context."""
+        if game_state.buttons is not None:
+            actions: list[str] = []
+            if game_state.buttons.fold:
+                actions.append("fold")
+            call_or_check = game_state.buttons.call_or_check
+            if call_or_check:
+                normalized = str(call_or_check).strip().lower()
+                if normalized in {"call", "check"}:
+                    actions.append(normalized)
+            raise_or_bet = game_state.buttons.raise_or_bet
+            if raise_or_bet:
+                normalized = str(raise_or_bet).strip().lower()
+                if normalized in {"raise", "bet"}:
+                    actions.append(normalized)
+            if actions:
+                return actions
+
+        metrics = self._compute_metrics(game_state)
+        if int(metrics["call_amount"]) > 0:
+            return ["fold", "call", "raise"]
+        return ["fold", "check", "bet"]
+
+    def _detect_initiative(self, game_state: GameState) -> bool:
+        """Return whether Hero made the latest aggressive previous action."""
+        actions = (
+            game_state.preflop_actions
+            if game_state.phase == "flop"
+            else game_state.current_street_actions
+        )
+        for action in reversed(list(actions or [])):
+            if str(action.action).upper() in {"BET", "RAISE"}:
+                return int(action.seat) == int(game_state.hero.seat or 1)
+        return False
+
+    def _count_players_behind(self, game_state: GameState) -> int:
+        """Approximate how many active players act after Hero."""
+        active_players = max(1, int(game_state.active_player_count or 1))
+        position = game_state.hero.position or "Unknown"
+        position_counts = {
+            "BTN": 0,
+            "CO": min(1, active_players - 1),
+            "MP": min(2, active_players - 1),
+            "UTG": min(3, active_players - 1),
+            "BB": max(0, active_players - 1),
+            "SB": max(0, active_players - 1),
+        }
+        return position_counts.get(position, max(0, active_players - 1))
+
+    def _call_mw_llm(self, prompt: str) -> tuple[str, float]:
+        """Call OpenRouter for a Context Engine multiway decision."""
+        api_key = os.environ.get("OPENROUTER_API_KEY")
+        call_start = time.perf_counter()
+        if not api_key:
+            return "", 0.0
+
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": self.mw_model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "max_tokens": 200,
+        }
+        try:
+            response = requests.post(
+                "https://openrouter.ai/api/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=(5, self.llm_timeout_sec),
+            )
+            latency_ms = (time.perf_counter() - call_start) * 1000
+            response.raise_for_status()
+            data = response.json()
+            content = data["choices"][0]["message"].get("content")
+            return (content.strip() if isinstance(content, str) else ""), latency_ms
+        except (
+            requests.RequestException,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+        ) as error:
+            latency_ms = (time.perf_counter() - call_start) * 1000
+            self.logger.warning("Context Engine OpenRouter call failed: %s", error)
+            return "", latency_ms
+
+    def _detect_pot_type(self, game_state: GameState) -> str:
+        """Detect preflop pot type from preflop actions."""
+        raise_count = 0
+        limp_seen = False
+        for action in game_state.preflop_actions or []:
+            action_name = str(action.action).upper()
+            if action_name in {"BET", "RAISE"}:
+                raise_count += 1
+            elif action_name in {"CALL", "LIMP"}:
+                limp_seen = True
+
+        if raise_count == 0:
+            return "limp" if limp_seen else "SRP"
+        if raise_count == 1:
+            return "SRP"
+        if raise_count == 2:
+            return "3BP"
+        return "4BP+"
+
+    def _format_action_history(self, game_state: GameState) -> str:
+        """Format current street actions for the Context Engine prompt."""
+        actions = list(game_state.current_street_actions or [])
+        if not actions:
+            return "No recent actions."
+        return ", ".join(
+            f"S{action.seat} {str(action.action).lower()} {action.amount}"
+            for action in actions
+        )
+
+    def _effective_stack(self, game_state: GameState) -> int:
+        """Return the smallest active stack relevant to Hero."""
+        stacks = [int(game_state.hero.stack or 0)]
+        for player in game_state.players.values():
+            if player.in_current_hand and player.stack is not None:
+                stacks.append(int(player.stack))
+        positive_stacks = [stack for stack in stacks if stack > 0]
+        return min(positive_stacks) if positive_stacks else 0
+
+    def _context_position(self, game_state: GameState) -> str:
+        """Return the Context Engine multiway position label."""
+        players_behind = self._count_players_behind(game_state)
+        if players_behind == 0:
+            return "closing_action"
+        hero_position = game_state.hero.position or "Unknown"
+        if hero_position in {"BTN", "CO"}:
+            return "IP"
+        if players_behind < max(0, int(game_state.active_player_count or 0) - 1):
+            return "sandwich"
+        return "OOP"
+
+    @staticmethod
+    def _action_records_to_dicts(actions: list[ActionRecord]) -> list[JsonDict]:
+        """Convert action records to Context Engine pressure events."""
+        return [
+            {
+                "seat": action.seat,
+                "action": action.action,
+                "amount": action.amount,
+                "confidence": action.confidence,
+            }
+            for action in actions
+        ]
+
+    @staticmethod
+    def _estimate_pot_history(
+        game_state: GameState,
+        action_history: list[JsonDict],
+    ) -> list[int]:
+        """Estimate pot-before-action values when exact history is unavailable."""
+        if not action_history:
+            return []
+        current_pot = int(game_state.pot or 0)
+        total_action_amount = sum(
+            int(action.get("amount", 0) or 0) for action in action_history
+        )
+        running_pot = max(1, current_pot - total_action_amount)
+        pot_history = []
+        for action in action_history:
+            pot_history.append(max(1, running_pot))
+            running_pot += int(action.get("amount", 0) or 0)
+        return pot_history
+
+    def _amount_bb_to_chips(self, amount_bb: object) -> int | None:
+        """Convert a validated BB amount to chips."""
+        if amount_bb is None:
+            return None
+        try:
+            return int(round(float(amount_bb) * self.blind_bb))
+        except (TypeError, ValueError):
+            return None
 
     @staticmethod
     def _compute_metrics(game_state: GameState) -> JsonDict:

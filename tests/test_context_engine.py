@@ -2,8 +2,17 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
+from core.game_state import (
+    ActionRecord,
+    ButtonState,
+    GameState,
+    HeroState,
+    PlayerState,
+)
 from strategy.context_engine import (
     apply_mw_modifiers,
     build_context_prompt,
@@ -18,6 +27,7 @@ from strategy.context_engine import (
     get_special_board_override,
     validate_llm_output,
 )
+from strategy.multiway_engine import MultiwayEngine
 
 
 dry_board = {
@@ -953,3 +963,144 @@ def test_validate_empty_viable_returns_none() -> None:
 
     assert result["action"] is None
     assert result["is_valid"] is False
+
+
+def _make_multiway_state() -> GameState:
+    """Create a representative postflop multiway GameState."""
+    players = GameState.create_default_players()
+    players["2"] = PlayerState(
+        name="villain_2",
+        stack=4000,
+        bet=0,
+        is_seated=True,
+        in_current_hand=True,
+    )
+    players["3"] = PlayerState(
+        name="villain_3",
+        stack=4500,
+        bet=0,
+        is_seated=True,
+        in_current_hand=True,
+    )
+    return GameState(
+        phase="flop",
+        hero=HeroState(
+            seat=1,
+            position="BTN",
+            cards=["Ah", "Kd"],
+            stack=5000,
+            bet=0,
+            is_my_turn=True,
+            in_current_hand=True,
+        ),
+        board=["As", "7c", "2d"],
+        board_card_count=3,
+        pot=600,
+        players=players,
+        dealer_seat=1,
+        active_player_count=3,
+        buttons=ButtonState(
+            fold=True,
+            call_or_check="check",
+            raise_or_bet="bet",
+        ),
+        preflop_actions=[
+            ActionRecord(seat=3, action="RAISE", amount=300),
+            ActionRecord(seat=2, action="CALL", amount=300),
+            ActionRecord(seat=1, action="CALL", amount=300),
+        ],
+    )
+
+
+def _make_multiway_engine() -> MultiwayEngine:
+    """Create a MultiwayEngine with external calls mocked by tests."""
+    engine = MultiwayEngine(
+        MagicMock(),
+        {
+            "game": {"blind_bb": 100},
+            "llm": {"mw_model": "test/model", "timeout_sec": 1},
+            "preflop_delta": {"sample_threshold_low": 50},
+        },
+    )
+    engine.calculate_equity = MagicMock(return_value=0.55)  # type: ignore[method-assign]
+    return engine
+
+
+def test_build_game_context() -> None:
+    """MultiwayEngine builds all Context Engine game context keys."""
+    engine = _make_multiway_engine()
+    context = engine._build_game_context(_make_multiway_state())
+
+    expected_keys = {
+        "street",
+        "pot_bb",
+        "effective_stack_bb",
+        "spr",
+        "hero_position",
+        "active_players",
+        "hero_cards",
+        "board_cards",
+        "legal_actions",
+        "action_history",
+        "initiative",
+        "players_behind",
+    }
+
+    assert expected_keys.issubset(context.keys())
+    assert context["street"] == "flop"
+    assert context["pot_bb"] == pytest.approx(6.0)
+    assert context["legal_actions"] == ["fold", "check", "bet"]
+
+
+def test_detect_pot_type() -> None:
+    """MultiwayEngine detects limp, SRP, 3BP, and 4BP+ from preflop actions."""
+    engine = _make_multiway_engine()
+    state = _make_multiway_state()
+
+    state.preflop_actions = [ActionRecord(seat=2, action="CALL", amount=100)]
+    assert engine._detect_pot_type(state) == "limp"
+
+    state.preflop_actions = [ActionRecord(seat=3, action="RAISE", amount=300)]
+    assert engine._detect_pot_type(state) == "SRP"
+
+    state.preflop_actions = [
+        ActionRecord(seat=3, action="RAISE", amount=300),
+        ActionRecord(seat=4, action="RAISE", amount=900),
+    ]
+    assert engine._detect_pot_type(state) == "3BP"
+
+    state.preflop_actions = [
+        ActionRecord(seat=3, action="RAISE", amount=300),
+        ActionRecord(seat=4, action="RAISE", amount=900),
+        ActionRecord(seat=5, action="RAISE", amount=2200),
+    ]
+    assert engine._detect_pot_type(state) == "4BP+"
+
+
+def test_evaluate_with_context_engine_mock() -> None:
+    """evaluate() uses the Context Engine pipeline and mocked MW LLM response."""
+    engine = _make_multiway_engine()
+    engine._call_mw_llm = MagicMock(  # type: ignore[method-assign]
+        return_value=('{"action": "bet", "amount_bb": 3.0, "reason": "value"}', 25.0)
+    )
+
+    result = engine.evaluate(_make_multiway_state(), [])
+
+    assert result["action"] == "bet"
+    assert result["size"] == 300
+    assert result["source"] == "multiway_engine"
+    assert result["confidence"] == "medium"
+    engine._call_mw_llm.assert_called_once()
+
+
+def test_evaluate_fallback_on_llm_error() -> None:
+    """evaluate() falls back to the existing heuristic when MW LLM is empty."""
+    engine = _make_multiway_engine()
+    engine.calculate_equity = MagicMock(return_value=0.70)  # type: ignore[method-assign]
+    engine._call_mw_llm = MagicMock(return_value=("", 10.0))  # type: ignore[method-assign]
+
+    result = engine.evaluate(_make_multiway_state(), [])
+
+    assert result["source"] == "multiway_heuristic_fallback"
+    assert result["action"] == "bet"
+    assert result["size"] == "60%"
