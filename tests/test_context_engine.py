@@ -5,10 +5,13 @@ from __future__ import annotations
 import pytest
 
 from strategy.context_engine import (
+    apply_mw_modifiers,
     calculate_cumulative_pressure,
     calculate_pressure_weight,
     classify_board_texture,
     classify_hand,
+    compute_full_budget,
+    determine_viable_actions,
     get_draw_budget,
     get_made_hand_budget,
     get_special_board_override,
@@ -433,3 +436,272 @@ def test_cumulative_pressure_hero_bet_and_called_raise() -> None:
 
     assert result["att_spent"] == pytest.approx(0.70, abs=0.01)
     assert result["def_spent"] > 0.0
+
+
+def test_mw_modifier_3way_made_hand() -> None:
+    """3way made hand gets MW and IP modifiers."""
+    result = apply_mw_modifiers(3.0, 4.0, "top_pair", None, dry_board, 3, "IP", "SRP")
+
+    assert result["adjusted_att"] == pytest.approx(3.0 - 0.35 + 0.15, abs=0.01)
+    assert result["adjusted_def"] == pytest.approx(4.0 - 0.25 + 0.20, abs=0.01)
+
+
+def test_mw_modifier_4way_made_hand() -> None:
+    """4way made hand uses two extra opponents."""
+    result = apply_mw_modifiers(3.0, 4.0, "top_pair", None, dry_board, 4, "IP", "SRP")
+
+    assert result["adjusted_att"] == pytest.approx(3.0 - 0.70 + 0.15, abs=0.01)
+
+
+def test_mw_modifier_sandwich() -> None:
+    """Sandwich position applies ATT and DEF penalties."""
+    result = apply_mw_modifiers(
+        3.0,
+        4.0,
+        "top_pair",
+        None,
+        dry_board,
+        3,
+        "sandwich",
+        "SRP",
+    )
+
+    assert result["adjusted_att"] == pytest.approx(3.0 - 0.35 - 0.30, abs=0.01)
+    assert result["adjusted_def"] == pytest.approx(4.0 - 0.25 - 0.45, abs=0.01)
+
+
+def test_mw_modifier_3bp_top_pair() -> None:
+    """3BP top pair and weaker hands receive pot-type penalties."""
+    result = apply_mw_modifiers(3.0, 4.0, "top_pair", None, dry_board, 3, "IP", "3BP")
+
+    assert result["adjusted_att"] == pytest.approx(
+        3.0 - 0.35 + 0.15 - 0.20,
+        abs=0.01,
+    )
+
+
+def test_mw_modifier_infinite_untouched() -> None:
+    """Infinite budget is not modified by MW adjustments."""
+    result = apply_mw_modifiers(
+        float("inf"),
+        float("inf"),
+        "nuts",
+        None,
+        dry_board,
+        4,
+        "IP",
+        "SRP",
+    )
+
+    assert result["adjusted_att"] == float("inf")
+    assert result["adjusted_def"] == float("inf")
+
+
+def test_mw_modifier_clamp_zero() -> None:
+    """ATT/DEF never go below zero."""
+    result = apply_mw_modifiers(
+        0.5,
+        0.5,
+        "fourth_fifth_pair",
+        None,
+        dry_board,
+        5,
+        "sandwich",
+        "4BP+",
+    )
+
+    assert result["adjusted_att"] >= 0.0
+    assert result["adjusted_def"] >= 0.0
+
+
+def test_mw_modifier_wet_multiway_one_pair() -> None:
+    """Wet 3way one-pair hand receives the wet multiway penalty."""
+    wet_board = {
+        "suit_texture": "two_tone",
+        "rank_texture": ["straight_possible"],
+        "overall_texture": "wet",
+        "special_board": None,
+        "flush_possible": True,
+        "straight_possible": True,
+        "paired": False,
+    }
+
+    result = apply_mw_modifiers(3.0, 4.0, "top_pair", None, wet_board, 3, "IP", "SRP")
+
+    assert result["adjusted_att"] == pytest.approx(
+        3.0 - 0.35 + 0.15 - 0.40,
+        abs=0.01,
+    )
+
+
+def test_mw_modifier_draw_threshold() -> None:
+    """Draw class receives a multiway threshold multiplier."""
+    result = apply_mw_modifiers(
+        2.0,
+        3.0,
+        "top_pair",
+        "medium_draw",
+        dry_board,
+        4,
+        "IP",
+        "SRP",
+    )
+
+    assert result["draw_threshold_multiplier"] == pytest.approx(0.84, abs=0.01)
+
+
+def test_compute_full_budget_basic() -> None:
+    """Basic dry-board SRP IP 3way pipeline returns budget context."""
+    result = compute_full_budget(
+        hero_cards=["Ah", "Kd"],
+        board_cards=["As", "7c", "2d"],
+        pot_type="SRP",
+        position="IP",
+        active_player_count=3,
+        street="flop",
+        action_history=[],
+        hero_seat=0,
+        pot_history=[],
+    )
+
+    assert "remaining_att" in result
+    assert "remaining_def" in result
+    assert "viable_actions" in result
+    assert result["hand_class"]["made_hand_class"] == "top_pair"
+    assert result["remaining_att"] > 0
+
+
+def test_compute_full_budget_nuts() -> None:
+    """Nuts hand yields a nuts budget verdict."""
+    result = compute_full_budget(
+        hero_cards=["Ah", "Kh"],
+        board_cards=["Qh", "Jh", "Th"],
+        pot_type="SRP",
+        position="IP",
+        active_player_count=3,
+        street="flop",
+        action_history=[],
+        hero_seat=0,
+        pot_history=[],
+    )
+
+    assert result["budget_verdict"] == "nuts"
+
+
+def test_compute_full_budget_trash() -> None:
+    """Trash hand yields a fold-lean budget verdict."""
+    result = compute_full_budget(
+        hero_cards=["2h", "3d"],
+        board_cards=["Ks", "Qc", "Jd"],
+        pot_type="SRP",
+        position="OOP",
+        active_player_count=4,
+        street="flop",
+        action_history=[],
+        hero_seat=0,
+        pot_history=[],
+    )
+
+    assert result["budget_verdict"] == "fold_lean"
+
+
+def test_viable_actions_nuts_always_raise() -> None:
+    """Nuts can always raise when raise is legal."""
+    actions = determine_viable_actions(
+        remaining_att=float("inf"),
+        remaining_def=float("inf"),
+        draw_threshold=None,
+        draw_class=None,
+        made_hand_class="nuts",
+        board_texture=dry_board,
+        position="IP",
+        street="river",
+        spr=5.0,
+        legal_actions=["fold", "call", "raise"],
+        is_nuts=True,
+        active_player_count=3,
+    )
+
+    assert "raise" in actions
+
+
+def test_viable_actions_no_att_no_bet() -> None:
+    """When remaining ATT is zero, bet is not viable."""
+    actions = determine_viable_actions(
+        remaining_att=0.0,
+        remaining_def=2.0,
+        draw_threshold=None,
+        draw_class=None,
+        made_hand_class="second_pair",
+        board_texture=dry_board,
+        position="IP",
+        street="flop",
+        spr=5.0,
+        legal_actions=["fold", "check", "bet"],
+        is_nuts=False,
+        active_player_count=3,
+    )
+
+    assert "bet" not in actions
+    assert "check" in actions
+
+
+def test_viable_actions_no_def_no_call() -> None:
+    """When DEF is zero and no draw threshold exists, call is not viable."""
+    actions = determine_viable_actions(
+        remaining_att=0.0,
+        remaining_def=0.0,
+        draw_threshold=None,
+        draw_class=None,
+        made_hand_class="trash",
+        board_texture=dry_board,
+        position="OOP",
+        street="turn",
+        spr=5.0,
+        legal_actions=["fold", "call"],
+        is_nuts=False,
+        active_player_count=3,
+    )
+
+    assert "call" not in actions
+    assert "fold" in actions
+
+
+def test_viable_actions_low_spr_commit() -> None:
+    """Low SPR with top pair or better removes fold."""
+    actions = determine_viable_actions(
+        remaining_att=1.0,
+        remaining_def=1.0,
+        draw_threshold=None,
+        draw_class=None,
+        made_hand_class="top_pair",
+        board_texture=dry_board,
+        position="IP",
+        street="flop",
+        spr=0.5,
+        legal_actions=["fold", "call", "raise"],
+        is_nuts=False,
+        active_player_count=3,
+    )
+
+    assert "fold" not in actions
+
+
+def test_viable_actions_check_always_viable() -> None:
+    """Check remains viable when legal."""
+    actions = determine_viable_actions(
+        remaining_att=0.0,
+        remaining_def=0.0,
+        draw_threshold=None,
+        draw_class=None,
+        made_hand_class="trash",
+        board_texture=dry_board,
+        position="OOP",
+        street="flop",
+        spr=5.0,
+        legal_actions=["check", "bet"],
+        is_nuts=False,
+        active_player_count=3,
+    )
+
+    assert "check" in actions

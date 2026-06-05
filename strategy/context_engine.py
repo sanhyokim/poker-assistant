@@ -263,6 +263,44 @@ DRAW_DOWNGRADE_CHAIN: tuple[str, ...] = (
     "weak_draw",
     "weak_overcard_draw",
 )
+ONE_PAIR_CLASSES: set[str] = {
+    "top_pair",
+    "second_pair",
+    "third_pair",
+    "fourth_fifth_pair",
+    "overpair",
+}
+HIGH_CARD_CLASSES: set[str] = {
+    "nuts_high",
+    "second_high",
+    "weak_showdown",
+    "trash",
+}
+VALUE_HAND_CLASSES: set[str] = {
+    "nuts",
+    "flush",
+    "straight",
+    "set",
+    "trips",
+    "two_pair",
+}
+MADE_HAND_STRENGTH: dict[str, int] = {
+    "trash": 0,
+    "weak_showdown": 1,
+    "second_high": 2,
+    "nuts_high": 3,
+    "fourth_fifth_pair": 4,
+    "third_pair": 5,
+    "second_pair": 6,
+    "top_pair": 7,
+    "overpair": 8,
+    "two_pair": 9,
+    "trips": 10,
+    "set": 11,
+    "straight": 12,
+    "flush": 13,
+    "nuts": 14,
+}
 
 
 class BoardTexture(TypedDict):
@@ -323,6 +361,35 @@ class CumulativePressure(TypedDict):
     att_spent: float
     def_spent: float
     raise_count_bonus: float
+
+
+class MwModifierResult(TypedDict):
+    """Multiway-adjusted budget result."""
+
+    adjusted_att: float
+    adjusted_def: float
+    draw_threshold_multiplier: float
+    modifiers_applied: list[str]
+
+
+class FullBudget(TypedDict):
+    """Full deterministic Context Engine budget pipeline result."""
+
+    board_texture: BoardTexture
+    hand_class: HandClassification
+    base_att: float
+    base_def: float
+    draw_budget: DrawBudget
+    special_override: SpecialBoardOverride | None
+    adjusted_att: float
+    adjusted_def: float
+    att_spent: float
+    def_spent: float
+    remaining_att: float
+    remaining_def: float
+    draw_threshold: float | None
+    viable_actions: list[str]
+    budget_verdict: str
 
 
 def classify_board_texture(board_cards: list[str]) -> BoardTexture:
@@ -684,6 +751,329 @@ def calculate_cumulative_pressure(
     }
 
 
+def apply_mw_modifiers(
+    base_att: float,
+    base_def: float,
+    made_hand_class: str,
+    draw_class: str | None,
+    board_texture: dict[str, object],
+    active_player_count: int,
+    position: str,
+    pot_type: str,
+) -> MwModifierResult:
+    """Apply multiway, position, pot-type, and wet-board budget modifiers.
+
+    Args:
+        base_att: Base ATT budget after made-hand board modifiers.
+        base_def: Base DEF budget after made-hand board modifiers.
+        made_hand_class: Made-hand class from :func:`classify_hand`.
+        draw_class: Draw class from :func:`classify_hand`, if any.
+        board_texture: Board texture dictionary.
+        active_player_count: Active players including hero.
+        position: ``"IP"``, ``"OOP"``, ``"sandwich"``, or ``"closing_action"``.
+        pot_type: One of ``"limp"``, ``"SRP"``, ``"3BP"``, or ``"4BP+"``.
+
+    Returns:
+        Adjusted ATT/DEF, draw threshold multiplier, and modifier labels.
+    """
+    _validate_pot_type(pot_type)
+    _validate_mw_position(position)
+    if _budget_is_infinite(base_att, base_def):
+        return {
+            "adjusted_att": base_att,
+            "adjusted_def": base_def,
+            "draw_threshold_multiplier": 1.0,
+            "modifiers_applied": [],
+        }
+
+    adjusted_att = base_att
+    adjusted_def = base_def
+    draw_threshold_multiplier = 1.0
+    modifiers: list[str] = []
+    opponents_remaining = max(0, active_player_count - 1)
+    extra_opponents = max(0, opponents_remaining - 1)
+
+    if extra_opponents > 0:
+        if made_hand_class == "trash":
+            modifiers.append("mw_trash")
+        elif made_hand_class in HIGH_CARD_CLASSES:
+            adjusted_def -= 0.35 * extra_opponents
+            modifiers.append("mw_high_card")
+        else:
+            adjusted_att -= 0.35 * extra_opponents
+            adjusted_def -= 0.25 * extra_opponents
+            modifiers.append("mw_made_hand")
+        if draw_class is not None:
+            adjusted_att -= 0.25 * extra_opponents
+            draw_threshold_multiplier *= max(0.0, 1.0 - 0.08 * extra_opponents)
+            modifiers.append("mw_draw")
+
+    if position in {"IP", "closing_action"}:
+        adjusted_att += 0.15
+        adjusted_def += 0.20
+        modifiers.append("position_ip")
+    elif position == "sandwich":
+        adjusted_att -= 0.30
+        adjusted_def -= 0.45
+        modifiers.append("position_sandwich")
+    elif position == "OOP":
+        adjusted_att -= 0.20
+        adjusted_def -= 0.30
+        modifiers.append("position_oop")
+
+    if pot_type == "limp":
+        if _is_second_pair_or_weaker(made_hand_class):
+            adjusted_def += 0.20
+            modifiers.append("limp_def")
+        if made_hand_class in VALUE_HAND_CLASSES:
+            adjusted_att += 0.10
+            modifiers.append("limp_value_att")
+    elif pot_type == "3BP":
+        if _is_top_pair_or_weaker(made_hand_class):
+            adjusted_att -= 0.20
+            adjusted_def -= 0.30
+            modifiers.append("3bp_top_pair_or_weaker")
+        elif _is_two_pair_or_better(made_hand_class):
+            adjusted_att += 0.20
+            modifiers.append("3bp_two_pair_plus")
+    elif pot_type == "4BP+":
+        if made_hand_class in {"top_pair", "second_pair", "third_pair", "fourth_fifth_pair"}:
+            adjusted_def -= 0.40
+            modifiers.append("4bp_marginal_def")
+        if made_hand_class in {"overpair"} or _is_two_pair_or_better(made_hand_class):
+            adjusted_att += 0.20
+            modifiers.append("4bp_overpair_plus")
+
+    if (
+        board_texture.get("overall_texture") in {"wet", "very_wet"}
+        and opponents_remaining >= 2
+    ):
+        if made_hand_class in ONE_PAIR_CLASSES:
+            adjusted_att -= 0.40
+            adjusted_def -= 0.40
+            modifiers.append("wet_multiway_one_pair")
+        if draw_class == "strong_draw":
+            adjusted_att += 0.20
+            modifiers.append("wet_multiway_strong_draw")
+        if draw_class == "weak_draw":
+            draw_threshold_multiplier *= 0.85
+            modifiers.append("wet_multiway_weak_draw")
+
+    return {
+        "adjusted_att": _round_budget(max(0.0, adjusted_att)),
+        "adjusted_def": _round_budget(max(0.0, adjusted_def)),
+        "draw_threshold_multiplier": max(0.0, draw_threshold_multiplier),
+        "modifiers_applied": modifiers,
+    }
+
+
+def compute_full_budget(
+    hero_cards: list[str],
+    board_cards: list[str],
+    pot_type: str,
+    position: str,
+    active_player_count: int,
+    street: str,
+    action_history: list[dict[str, object]],
+    hero_seat: int,
+    pot_history: list[int],
+) -> FullBudget:
+    """Run the deterministic Context Engine budget pipeline.
+
+    Args:
+        hero_cards: Two hero cards.
+        board_cards: Three to five board cards.
+        pot_type: One of ``"limp"``, ``"SRP"``, ``"3BP"``, or ``"4BP+"``.
+        position: ``"IP"``, ``"OOP"``, ``"sandwich"``, or ``"closing_action"``.
+        active_player_count: Active players including hero.
+        street: One of ``"flop"``, ``"turn"``, or ``"river"``.
+        action_history: Street action history.
+        hero_seat: Hero seat number.
+        pot_history: Pot before each action.
+
+    Returns:
+        Full budget context including remaining budget, draw threshold, and actions.
+    """
+    board_texture = classify_board_texture(board_cards)
+    hand_class = classify_hand(hero_cards, board_cards)
+    made_hand_class = hand_class["made_hand_class"]
+    draw_class = hand_class["draw_class"]
+    made_budget = get_made_hand_budget(
+        made_hand_class,
+        hand_class["kicker_class"],
+        board_texture,
+        pot_type,
+        street,
+    )
+    draw_position = "IP" if position in {"IP", "closing_action"} else "OOP"
+    draw_budget = get_draw_budget(draw_class, pot_type, street, draw_position)
+    special_override = get_special_board_override(
+        board_texture["special_board"],
+        hand_class,
+        board_texture,
+    )
+    mw_budget = apply_mw_modifiers(
+        made_budget["base_att"],
+        made_budget["base_def"],
+        made_hand_class,
+        draw_class,
+        board_texture,
+        active_player_count,
+        position,
+        pot_type,
+    )
+    adjusted_att = mw_budget["adjusted_att"]
+    adjusted_def = mw_budget["adjusted_def"]
+    if hand_class["combo_applied"]:
+        adjusted_def = _add_budget(adjusted_def, draw_budget["combo_bonus"])
+    adjusted_att = _max_budget(adjusted_att, draw_budget["att"])
+
+    pressure = calculate_cumulative_pressure(action_history, hero_seat, pot_history)
+    remaining_att = _subtract_budget(adjusted_att, pressure["att_spent"])
+    remaining_def = _subtract_budget(adjusted_def, pressure["def_spent"])
+    draw_threshold = _select_draw_threshold(draw_budget, draw_position)
+    if draw_threshold is not None:
+        draw_threshold *= mw_budget["draw_threshold_multiplier"]
+
+    viable_actions = determine_viable_actions(
+        remaining_att=remaining_att,
+        remaining_def=remaining_def,
+        draw_threshold=draw_threshold,
+        draw_class=draw_class,
+        made_hand_class=made_hand_class,
+        board_texture=board_texture,
+        position=position,
+        street=street,
+        spr=5.0,
+        legal_actions=["fold", "check", "call", "bet", "raise", "all_in"],
+        is_nuts=hand_class["is_nuts"],
+        active_player_count=active_player_count,
+    )
+    return {
+        "board_texture": board_texture,
+        "hand_class": hand_class,
+        "base_att": made_budget["base_att"],
+        "base_def": made_budget["base_def"],
+        "draw_budget": draw_budget,
+        "special_override": special_override,
+        "adjusted_att": adjusted_att,
+        "adjusted_def": adjusted_def,
+        "att_spent": pressure["att_spent"],
+        "def_spent": pressure["def_spent"],
+        "remaining_att": remaining_att,
+        "remaining_def": remaining_def,
+        "draw_threshold": draw_threshold,
+        "viable_actions": viable_actions,
+        "budget_verdict": _budget_verdict(
+            made_budget["is_infinite"],
+            remaining_att,
+            remaining_def,
+            draw_threshold,
+        ),
+    }
+
+
+def determine_viable_actions(
+    remaining_att: float,
+    remaining_def: float,
+    draw_threshold: float | None,
+    draw_class: str | None,
+    made_hand_class: str,
+    board_texture: dict[str, object],
+    position: str,
+    street: str,
+    spr: float,
+    legal_actions: list[str],
+    is_nuts: bool,
+    active_player_count: int,
+) -> list[str]:
+    """Determine viable actions from remaining budgets and context.
+
+    Args:
+        remaining_att: Remaining ATT budget.
+        remaining_def: Remaining DEF budget.
+        draw_threshold: Draw call threshold in percent pot, if active.
+        draw_class: Draw class, if any.
+        made_hand_class: Made-hand class.
+        board_texture: Board texture dictionary.
+        position: ``"IP"``, ``"OOP"``, ``"sandwich"``, or ``"closing_action"``.
+        street: One of ``"flop"``, ``"turn"``, or ``"river"``.
+        spr: Stack-to-pot ratio.
+        legal_actions: Legal actions for the current decision.
+        is_nuts: Whether hero currently has the nuts.
+        active_player_count: Active players including hero.
+
+    Returns:
+        Legal viable actions.
+    """
+    legal_action_set = set(legal_actions)
+    viable: set[str] = set()
+    facing_bet = "call" in legal_action_set
+
+    if "fold" in legal_action_set:
+        viable.add("fold")
+    if "check" in legal_action_set:
+        viable.add("check")
+    if facing_bet and (remaining_def > 0 or draw_threshold is not None):
+        viable.add("call")
+
+    can_attack = remaining_att > 0 or is_nuts
+    safe_for_thin_value = not bool(board_texture.get("paired")) and board_texture.get(
+        "special_board"
+    ) is None
+    can_value_bet = can_attack and _is_at_least(made_hand_class, "top_pair")
+    can_thin_value = (
+        0.4 <= remaining_att < 1.0
+        and safe_for_thin_value
+        and position in {"IP", "closing_action"}
+    )
+    can_semi_bluff = draw_class is not None and remaining_att > 0 and position != "sandwich"
+    can_trash_bluff = (
+        made_hand_class == "trash"
+        and remaining_att >= 0
+        and ("check" in legal_action_set or street == "river")
+    )
+    if "bet" in legal_action_set and (
+        can_value_bet or can_thin_value or can_semi_bluff or can_trash_bluff
+    ):
+        viable.add("bet")
+
+    special_board_danger = board_texture.get("special_board") is not None and not is_nuts
+    value_heavy_multiway = active_player_count >= 3 and not _is_at_least(
+        made_hand_class,
+        "two_pair",
+    )
+    can_raise_value = (
+        is_nuts
+        or (
+            remaining_att >= 2.0
+            and not special_board_danger
+            and not value_heavy_multiway
+        )
+    )
+    can_raise_draw = (
+        draw_class == "strong_draw"
+        and street == "flop"
+        and position != "sandwich"
+        and spr > 1.0
+    )
+    if "raise" in legal_action_set and (can_raise_value or can_raise_draw):
+        viable.add("raise")
+
+    low_spr_commit = (
+        is_nuts
+        or _is_at_least(made_hand_class, "two_pair")
+        or made_hand_class == "overpair"
+        or draw_class == "strong_draw"
+    )
+    if "all_in" in legal_action_set and spr <= 1.5 and low_spr_commit:
+        viable.add("all_in")
+    if spr <= 0.7 and _is_at_least(made_hand_class, "top_pair"):
+        viable.discard("fold")
+
+    return [action for action in legal_actions if action in viable]
+
+
 def _parse_card(card_str: str) -> eval7.Card:
     """Convert a card string to an eval7 card."""
     _rank_value(card_str)
@@ -709,6 +1099,11 @@ def _validate_street(street: str) -> None:
 def _validate_position(position: str) -> None:
     if position not in {"IP", "OOP"}:
         raise ValueError(f"Invalid position: {position}")
+
+
+def _validate_mw_position(position: str) -> None:
+    if position not in {"IP", "OOP", "sandwich", "closing_action"}:
+        raise ValueError(f"Invalid MW position: {position}")
 
 
 def _object_as_optional_str(value: object) -> str | None:
@@ -851,6 +1246,71 @@ def _pressure_weight_from_amount(amount: float, pot_before_action: float) -> flo
     if amount <= 0 or pot_before_action <= 0:
         return 0.0
     return calculate_pressure_weight((amount / pot_before_action) * 100.0)
+
+
+def _round_budget(value: float) -> float:
+    if math.isinf(value):
+        return value
+    return round(value, 2)
+
+
+def _add_budget(value: float, addition: float) -> float:
+    if math.isinf(value):
+        return value
+    return _round_budget(value + addition)
+
+
+def _max_budget(first: float, second: float) -> float:
+    if math.isinf(first) or math.isinf(second):
+        return float("inf")
+    return _round_budget(max(first, second))
+
+
+def _subtract_budget(value: float, spent: float) -> float:
+    if math.isinf(value):
+        return value
+    return _round_budget(max(0.0, value - spent))
+
+
+def _is_at_least(made_hand_class: str, minimum_class: str) -> bool:
+    return MADE_HAND_STRENGTH.get(made_hand_class, 0) >= MADE_HAND_STRENGTH[minimum_class]
+
+
+def _is_top_pair_or_weaker(made_hand_class: str) -> bool:
+    return MADE_HAND_STRENGTH.get(made_hand_class, 0) <= MADE_HAND_STRENGTH["top_pair"]
+
+
+def _is_second_pair_or_weaker(made_hand_class: str) -> bool:
+    return MADE_HAND_STRENGTH.get(made_hand_class, 0) <= MADE_HAND_STRENGTH["second_pair"]
+
+
+def _is_two_pair_or_better(made_hand_class: str) -> bool:
+    return _is_at_least(made_hand_class, "two_pair")
+
+
+def _select_draw_threshold(draw_budget: DrawBudget, position: str) -> float | None:
+    if position == "IP":
+        return draw_budget["threshold_ip"]
+    return draw_budget["threshold_oop"]
+
+
+def _budget_verdict(
+    is_infinite: bool,
+    remaining_att: float,
+    remaining_def: float,
+    draw_threshold: float | None,
+) -> str:
+    if is_infinite:
+        return "nuts"
+    if remaining_att >= 2.0:
+        return "strong_value"
+    if 0.4 <= remaining_att < 2.0:
+        return "thin_value"
+    if draw_threshold is not None:
+        return "draw_continue"
+    if remaining_def > 0:
+        return "marginal_defense"
+    return "fold_lean"
 
 
 def _validate_cards(cards: list[str], min_count: int, max_count: int) -> None:
