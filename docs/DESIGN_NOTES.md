@@ -3966,3 +3966,93 @@ Stage B（Phase 1完了〜Phase 2完了）の間、新ブリッジをshadow mode
 - Stage D: Rust Solver削除
 - ドキュメント更新
 
+## 60. MW Context Engine実装の設計判断（Step 1〜4）
+
+### 60.1 Context Engineを context_engine.py に新規実装した理由
+
+当初の計画では strategy/pokerrl_prompt_builder.py の既存骨格を拡張する予定だった。
+しかし pokerrl_prompt_builder.py はHU SFT用のプロンプト変換に特化しており、
+MW用のboard texture分類、hand class分類、ATT/DEF budget計算、
+pressure weight累積、MW修正子といった決定論的計算を混在させると
+責務が不明確になる。
+
+そのため strategy/context_engine.py を新規作成し、MW Context Engine の
+全決定論的計算を集約した。multiway_engine.py はGameLoop統合と
+LLM呼び出しを担当し、context_engine.py の計算結果を消費する。
+
+### 60.2 GPT-5.4-mini を MW 本採用モデルとして確定した理由
+
+15ケースの比較テスト（scripts/test_llm_comparison.py）で
+GPT-5.4-miniとPhi-4-mini（ローカル4bit）を評価した。
+
+GPT-5.4-mini が全指標で優位だった。
+- Corrections 0/15 vs 4/15（補正不要率が圧倒的に高い）
+- Category match 12/15 vs 11/15
+- Avg latency 993ms vs 1811ms + モデルロード5.6秒
+- GPU不要（API呼び出しのみ）
+
+特にCase 2（ウェットフロップ、フラッシュドローOOP 3BP）で
+Phi-4-miniはセミブラフを回避してfoldを選択し、correction入りとなった。
+GPT-5.4-miniは正しくbet（セミブラフ）を選択した。
+
+reasonの質もGPT-5.4-miniの方が具体的で、ポーカー用語の使用が適切だった。
+
+Phi-4-miniはバックアップ候補として残す。将来的にHU SFT完了後の
+ファインチューニング済みPhi-4-miniで再評価する可能性がある。
+
+### 60.3 load_dotenv(override=True) が必要になった経緯
+
+LLM比較テスト実行時に、.envに正しいOpenRouter APIキー（末尾 d7d245）が
+記載されているにもかかわらず、401 User not found エラーが発生した。
+
+調査の結果、プロセス環境変数に古いAPIキー（末尾 4eea）が既に設定されており、
+load_dotenv()のデフォルト動作（既存環境変数を上書きしない）により
+古いキーが使われていた。
+
+load_dotenv(override=True) に変更することで.envの値が確実に使われるようになった。
+この設定は今後のすべてのスクリプトで必須とする。
+
+### 60.4 チェックポイント完全保存を追加した理由
+
+HU SFT訓練（seg_000_offset_26000）の実行中に電源断等でプロセスが終了した場合、
+checkpoint-600からの再開を試みたところ、step 0から再開された。
+
+調査の結果、run_sft_comparison.py のチェックポイント保存は
+model.save_pretrained()（LoRA重みのみ）だけで、
+optimizer.state_dict()、scheduler.state_dict()、trainer_state.json
+（global_step, epoch, micro_step）が保存されていなかった。
+
+これではチェックポイントからの途中再開ができず、
+16時間の訓練が中断のたびにやり直しになる。
+
+修正後は全チェックポイントと final_adapter に
+optimizer.pt、scheduler.pt、trainer_state.json を保存する。
+
+### 60.5 セグメント間の resume ロジックを区別した理由
+
+チェックポイント完全保存の導入後、新しい問題が発生した。
+
+run_sft_sequential.py が seg_000_offset_36000 を開始する際、
+前セグメントの final_adapter から --resume_from で重みを引き継いだが、
+trainer_state.json も読み込まれてしまい、step 939/epoch 2 から
+スキップしようとした。新しいデータセットなのに939ステップ分を
+空回りし、実質的に訓練が行われなかった。
+
+解決: Path(config.resume_from).parent == config.output_dir の場合のみ
+trainer_state を復元する。異なるディレクトリの場合は重みのみ引き継ぎ、
+step 0から開始する。
+
+これにより「同一セグメント内の中断→再開」と
+「別セグメントからの重み引き継ぎ」を自動的に区別できるようになった。
+
+### 60.6 二重プロセスが正常動作である記録
+
+run_sft_sequential.py 実行時に4つのPythonプロセスが表示され、
+二重訓練が疑われた。調査の結果、.venv\Scripts\python.exe が
+システムPythonへのラッパーであり、各スクリプト実行で
+「ラッパー（数MB）→ システムPython（実作業）」の親子ペアが
+生成されることが判明した。
+
+GPU訓練を実行しているのは末端の1プロセスのみ。
+この構造は正常動作であり、二重訓練ではない。
+

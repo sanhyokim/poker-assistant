@@ -1,6 +1,6 @@
 # ポーカーAIアシスタントシステム — SPEC.md
-**Version:** 3.6  
-**Updated:** 2026-06-03 JST  
+**Version:** 3.8  
+**Updated:** 2026-06-06 JST  
 **Purpose:** 現在の正仕様のみを記載する。過去の経緯・判断理由・採用しなかった案は `DESIGN_NOTES.md`、現在地点と次タスクは `snapshot.md` に分離する。
 
 
@@ -145,6 +145,8 @@ Windows 10/11
 | HU/Multiway推論 | PokerRL+GRPO（Deep CFRはLegacy fallback） |
 | Solver連携 | Rust postflop CLI（廃止予定） |
 | LLM | OpenRouter API（exploit補正用途のみ） |
+| ローカルLLM推論 | transformers 5.10.2（Phi-4-mini ローカル推論用） |
+| 量子化 | bitsandbytes（4bit量子化用） |
 | テスト | pytest |
 
 
@@ -2279,7 +2281,9 @@ GameStateから以下の特徴量を決定論的に計算する。
 Context Engineの出力は構造化プロンプトとしてLLMに渡される。
 Context Engine自体はPythonスクリプトであり、モデル推論を行わない。
 
-実装ファイル: `strategy/pokerrl_prompt_builder.py`（既存骨格を拡張）
+実装ファイル: `strategy/context_engine.py`（Step 1〜3で新規実装済み）
+統合ファイル: `strategy/multiway_engine.py`（Step 4でGameLoop統合済み）
+テスト: `tests/test_context_engine.py`（82テスト PASS）
 
 設計根拠: DESIGN_NOTES §54（PokerSkill論文分析）、§55（MW方針転換）
 
@@ -2287,11 +2291,27 @@ Context Engine自体はPythonスクリプトであり、モデル推論を行わ
 
 Context Engineが生成した構造化プロンプトを受け取り、最終判断を行う。
 
-LLM候補:
+LLM本採用:
 
 ```text
-- GPT-5.4-mini（OpenRouter API経由）
-- Phi-4-mini（ローカルSFTモデル、HU SFT完了後に検証）
+- GPT-5.4-mini（OpenRouter API経由） ★ MW本採用モデル確定（2026-06-06）
+```
+
+LLMバックアップ:
+
+```text
+- Phi-4-mini（ローカル4bit推論）
+```
+
+選定根拠（15ケース比較テスト結果）:
+
+```text
+- GPT-5.4-mini: JSON parse 15/15, Category match 12/15 (80%), Corrections 0/15, Avg latency 993ms
+- Phi-4-mini: JSON parse 15/15, Category match 11/15 (73%), Corrections 4/15, Avg latency 1811ms
+- GPT-5.4-miniが判断精度・reason品質・レイテンシ・GPU不要の4点で優位
+- 結果ファイル: scripts/llm_comparison_results.json
+
+load_dotenv(override=True) を使用すること（環境変数に古いキーが残る場合があるため）
 ```
 
 行動制約:
@@ -2335,6 +2355,20 @@ Deep CFRは品質不合格であり、MW判断にはContext Engine + LLMが代�
 
 ```text
 POKERRL THINKING...（Context Engine + LLM処理中）
+```
+
+MW Context Engine パイプライン（実装完了、Step 1〜4）:
+
+```text
+GameState → multiway_engine.evaluate()
+  → _build_game_context() → game_context dict構築
+  → _detect_pot_type() → SRP/3BP/4BP/LIMP判定
+  → compute_full_budget() → ATT/DEF budget計算
+  → build_context_prompt() → 構造化プロンプト生成
+  → _call_mw_llm() → GPT-5.4-mini (OpenRouter)
+  → validate_llm_output() → 補正済み action/amount/reason
+  → fold_guard / value_bet_guard 適用
+  → Recommendation として返却
 ```
 
 #### 9.4.6 背景
@@ -3504,6 +3538,16 @@ Context Engine実装時は以下をpytestで検証する。
 - viable action filtering
 - promptにlegal_actions外のactionが含まれないこと
 - validatorが不正JSON/不正action/不正sizingを補正すること
+```
+
+実施状況（2026-06-06時点）:
+
+```text
+- Step 1（board texture, hand class, draw）: 34テスト PASS
+- Step 2a（ATT/DEF budget, pressure, MW修正子）: 50テスト PASS
+- Step 3（prompt builder, output validator）: 78テスト PASS
+- Step 4（GameLoop統合）: 82テスト PASS
+- LLM比較テスト: 15ケース完了、GPT-5.4-mini採用確定
 ```
 
 ---
@@ -5324,6 +5368,7 @@ llm:
   provider: openrouter
   model_default: openai/gpt-5.4-mini
   model_premium: openai/gpt-5.4-mini
+  mw_model: openai/gpt-5.4-mini    # MW Context Engine用LLMモデル
   timeout_sec: 15.0
   openrouter_provider_order: OpenAI
   openrouter_allow_fallbacks: false
@@ -5810,6 +5855,9 @@ teacherとして使わない:
 ```text
 pytest -q
 1441 passed, 0 failed
+
+pytest tests/test_context_engine.py -q
+82 passed
 ```
 
 
