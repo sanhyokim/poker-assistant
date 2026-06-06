@@ -1,4 +1,4 @@
-capture:
+﻿capture:
   method: capture_card
   device_index: 0
   width: 1920
@@ -46,6 +46,7 @@ llm:
   timeout_sec: 15
   total_timeout_sec: 15
   retry_count: 0
+  mw_model: openai/gpt-5.4-mini
 
 hud:
   enabled: true
@@ -116,3 +117,4 @@ deep_cfr:
   model_path: models/deep_cfr/best_checkpoint.pt
   device: cuda
   fallback_to_solver: true
+
