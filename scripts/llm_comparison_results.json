@@ -1,0 +1,618 @@
+{
+    "timestamp": "2026-06-05T14:20:30",
+    "models": {
+        "gpt-5.4-mini": {
+            "cases": [
+                {
+                    "name": "Dry flop TPGK IP SRP",
+                    "expected_category": "value",
+                    "raw_response": "{\"action\":\"bet\",\"amount_bb\":4.0,\"reason\":\"thin value, dry board, top pair top kicker\"}",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":4.0,\"reason\":\"thin value, dry board, top pair top kicker\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 4.0,
+                    "reason": "thin value, dry board, top pair top kicker",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1269,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Wet flop flush draw OOP 3BP",
+                    "expected_category": "aggressive",
+                    "raw_response": "{\"action\":\"bet\",\"amount_bb\":8.0,\"reason\":\"thin_value + equity\"}",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":8.0,\"reason\":\"thin_value + equity\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 8.0,
+                    "reason": "thin_value + equity",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 963,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Paired board trips turn IP",
+                    "expected_category": "value",
+                    "raw_response": "{\"action\":\"bet\",\"amount_bb\":6.0,\"reason\":\"value and protection with top set on a wet board\"}",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":6.0,\"reason\":\"value and protection with top set on a wet board\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 6.0,
+                    "reason": "value and protection with top set on a wet board",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1097,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "River weak showdown facing bet OOP",
+                    "expected_category": "cautious",
+                    "raw_response": "{\"action\":\"fold\",\"amount_bb\":null,\"reason\":\"second pair on a wet board facing heavy river pressure; no remaining defense budget\"}",
+                    "json_payload": "{\"action\":\"fold\",\"amount_bb\":null,\"reason\":\"second pair on a wet board facing heavy river pressure; no remaining defense budget\"}",
+                    "json_parse": true,
+                    "action": "fold",
+                    "amount_bb": null,
+                    "reason": "second pair on a wet board facing heavy river pressure; no remaining defense budget",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": false,
+                    "latency_ms": 793,
+                    "viable_actions": [
+                        "fold"
+                    ]
+                },
+                {
+                    "name": "Monotone flop nut flush IP",
+                    "expected_category": "value",
+                    "raw_response": "{\"action\":\"bet\",\"amount_bb\":5.6,\"reason\":\"value and protection on monotone wet board\"}",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":5.6,\"reason\":\"value and protection on monotone wet board\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 5.6,
+                    "reason": "value and protection on monotone wet board",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1027,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Dry flop overpair OOP SRP",
+                    "expected_category": "value",
+                    "raw_response": "{\"action\":\"bet\",\"amount_bb\":4.5,\"reason\":\"Overpair on a dry flop in a SRP; value-bet for protection and thin value.\"}",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":4.5,\"reason\":\"Overpair on a dry flop in a SRP; value-bet for protection and thin value.\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 4.5,
+                    "reason": "Overpair on a dry flop in a SRP; value-bet for protection and thin value.",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 990,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Wet flop gutshot overcards IP 4way",
+                    "expected_category": "value",
+                    "raw_response": "{\"action\":\"check\",\"amount_bb\":null,\"reason\":\"nutty draw, but no viable bet action and in-position multiway on dry board prefers checking\"}",
+                    "json_payload": "{\"action\":\"check\",\"amount_bb\":null,\"reason\":\"nutty draw, but no viable bet action and in-position multiway on dry board prefers checking\"}",
+                    "json_parse": true,
+                    "action": "check",
+                    "amount_bb": null,
+                    "reason": "nutty draw, but no viable bet action and in-position multiway on dry board prefers checking",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": false,
+                    "latency_ms": 982,
+                    "viable_actions": [
+                        "fold",
+                        "check"
+                    ]
+                },
+                {
+                    "name": "Turn two pair facing bet OOP",
+                    "expected_category": "continue",
+                    "raw_response": "{\"action\":\"call\",\"amount_bb\":null,\"reason\":\"strong_value\"}",
+                    "json_payload": "{\"action\":\"call\",\"amount_bb\":null,\"reason\":\"strong_value\"}",
+                    "json_parse": true,
+                    "action": "call",
+                    "amount_bb": null,
+                    "reason": "strong_value",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 791,
+                    "viable_actions": [
+                        "fold",
+                        "call",
+                        "raise"
+                    ]
+                },
+                {
+                    "name": "Flop trash no initiative OOP 3BP",
+                    "expected_category": "passive",
+                    "raw_response": "{\"action\":\"fold\",\"amount_bb\":null,\"reason\":\"No made hand or draw on a dry 3-bet pot board; out of position with no initiative and fold-lean budget.\"}",
+                    "json_payload": "{\"action\":\"fold\",\"amount_bb\":null,\"reason\":\"No made hand or draw on a dry 3-bet pot board; out of position with no initiative and fold-lean budget.\"}",
+                    "json_parse": true,
+                    "action": "fold",
+                    "amount_bb": null,
+                    "reason": "No made hand or draw on a dry 3-bet pot board; out of position with no initiative and fold-lean budget.",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1031,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "River top pair facing all-in IP",
+                    "expected_category": "cautious",
+                    "raw_response": "{\"action\":\"call\",\"amount_bb\":null,\"reason\":\"top pair is likely good enough to continue despite wet board and marginal defense requirements\"}",
+                    "json_payload": "{\"action\":\"call\",\"amount_bb\":null,\"reason\":\"top pair is likely good enough to continue despite wet board and marginal defense requirements\"}",
+                    "json_parse": true,
+                    "action": "call",
+                    "amount_bb": null,
+                    "reason": "top pair is likely good enough to continue despite wet board and marginal defense requirements",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 892,
+                    "viable_actions": [
+                        "fold",
+                        "call"
+                    ]
+                },
+                {
+                    "name": "Flop set on wet board IP 3way",
+                    "expected_category": "value",
+                    "raw_response": "{\"action\":\"bet\",\"amount_bb\":4.8,\"reason\":\"Value/protection on a wet straight-heavy board with a set.\"}",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":4.8,\"reason\":\"Value/protection on a wet straight-heavy board with a set.\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 4.8,
+                    "reason": "Value/protection on a wet straight-heavy board with a set.",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 867,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Turn flush completed missed draw OOP",
+                    "expected_category": "value",
+                    "raw_response": "{\"action\":\"bet\",\"amount_bb\":6.0,\"reason\":\"strong value\"}",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":6.0,\"reason\":\"strong value\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 6.0,
+                    "reason": "strong value",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 811,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Flop OESD IP limp 5way",
+                    "expected_category": "value",
+                    "raw_response": "{\"action\":\"bet\",\"amount_bb\":2,\"reason\":\"semi-bluff with decent draw and weak showdown value on a dry board; small sizing applies pressure while keeping risk controlled\"}",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":2,\"reason\":\"semi-bluff with decent draw and weak showdown value on a dry board; small sizing applies pressure while keeping risk controlled\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 2.0,
+                    "reason": "semi-bluff with decent draw and weak showdown value on a dry board; small sizing applies pressure while keeping risk controlled",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1705,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Turn second pair check-check IP",
+                    "expected_category": "value",
+                    "raw_response": "{\"action\":\"check\",\"amount_bb\":null,\"reason\":\"second pair with top kicker, in position, on a wet board; take the free card/control line\"}",
+                    "json_payload": "{\"action\":\"check\",\"amount_bb\":null,\"reason\":\"second pair with top kicker, in position, on a wet board; take the free card/control line\"}",
+                    "json_parse": true,
+                    "action": "check",
+                    "amount_bb": null,
+                    "reason": "second pair with top kicker, in position, on a wet board; take the free card/control line",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": false,
+                    "latency_ms": 896,
+                    "viable_actions": [
+                        "fold",
+                        "check"
+                    ]
+                },
+                {
+                    "name": "River bluff catcher small bet OOP",
+                    "expected_category": "cautious",
+                    "raw_response": "{\"action\":\"call\",\"amount_bb\":null,\"reason\":\"thin_value\"}",
+                    "json_payload": "{\"action\":\"call\",\"amount_bb\":null,\"reason\":\"thin_value\"}",
+                    "json_parse": true,
+                    "action": "call",
+                    "amount_bb": null,
+                    "reason": "thin_value",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 777,
+                    "viable_actions": [
+                        "fold",
+                        "call"
+                    ]
+                }
+            ],
+            "summary": {
+                "total": 15,
+                "json_parse": 15,
+                "action_viable": 15,
+                "category_match": 12,
+                "corrections": 0,
+                "avg_latency_ms": 993
+            }
+        },
+        "phi-4-mini": {
+            "cases": [
+                {
+                    "name": "Dry flop TPGK IP SRP",
+                    "expected_category": "value",
+                    "raw_response": "```json\n{\"action\":\"bet\",\"amount_bb\":3.6}\n```",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":3.6}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 3.6,
+                    "reason": "",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1369,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Wet flop flush draw OOP 3BP",
+                    "expected_category": "aggressive",
+                    "raw_response": "```json\n{\"action\":\"call\",\"amount_bb\":900,\"reason\":\"pot odds favorable\"}\n```",
+                    "json_payload": "{\"action\":\"call\",\"amount_bb\":900,\"reason\":\"pot odds favorable\"}",
+                    "json_parse": true,
+                    "action": "fold",
+                    "amount_bb": null,
+                    "reason": "pot odds favorable",
+                    "valid": false,
+                    "correction": "action_corrected_to_fold; amount_normalized_to_none",
+                    "action_viable": true,
+                    "category_match": false,
+                    "latency_ms": 1300,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Paired board trips turn IP",
+                    "expected_category": "value",
+                    "raw_response": "```json\n{\"action\":\"bet\",\"amount_bb\":5.4}\n```",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":5.4}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 5.4,
+                    "reason": "",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1024,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "River weak showdown facing bet OOP",
+                    "expected_category": "cautious",
+                    "raw_response": "```json\n{\"action\":\"fold\",\"amount_bb\":null,\"reason\":\"second_pair_defensive_hand_on_wet_board_with_multiple_draws\"}\n```",
+                    "json_payload": "{\"action\":\"fold\",\"amount_bb\":null,\"reason\":\"second_pair_defensive_hand_on_wet_board_with_multiple_draws\"}",
+                    "json_parse": true,
+                    "action": "fold",
+                    "amount_bb": null,
+                    "reason": "second_pair_defensive_hand_on_wet_board_with_multiple_draws",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": false,
+                    "latency_ms": 1833,
+                    "viable_actions": [
+                        "fold"
+                    ]
+                },
+                {
+                    "name": "Monotone flop nut flush IP",
+                    "expected_category": "value",
+                    "raw_response": "```json\n{\"action\":\"bet\",\"amount_bb\":4.8,\"reason\":\"flush on very wet board, bet for value\"}\n```",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":4.8,\"reason\":\"flush on very wet board, bet for value\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 4.8,
+                    "reason": "flush on very wet board, bet for value",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1822,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Dry flop overpair OOP SRP",
+                    "expected_category": "value",
+                    "raw_response": "```json\n{\"action\":\"bet\",\"amount_bb\":3.6,\"reason\":\"dry board favors preflop aggressor, good value bet\"}\n```",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":3.6,\"reason\":\"dry board favors preflop aggressor, good value bet\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 3.6,
+                    "reason": "dry board favors preflop aggressor, good value bet",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 2022,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Wet flop gutshot overcards IP 4way",
+                    "expected_category": "value",
+                    "raw_response": "```json\n{\"action\":\"check\",\"amount_bb\":null,\"reason\":\"dry board favors preflop aggressor, draw unlikely, pot odds favorable for call\"}\n```",
+                    "json_payload": "{\"action\":\"check\",\"amount_bb\":null,\"reason\":\"dry board favors preflop aggressor, draw unlikely, pot odds favorable for call\"}",
+                    "json_parse": true,
+                    "action": "check",
+                    "amount_bb": null,
+                    "reason": "dry board favors preflop aggressor, draw unlikely, pot odds favorable for call",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": false,
+                    "latency_ms": 2297,
+                    "viable_actions": [
+                        "fold",
+                        "check"
+                    ]
+                },
+                {
+                    "name": "Turn two pair facing bet OOP",
+                    "expected_category": "continue",
+                    "raw_response": "```json\n{\"action\":\"call\",\"amount_bb\":300,\"reason\":\"effective hand on dry board, preflop aggression\"}\n```",
+                    "json_payload": "{\"action\":\"call\",\"amount_bb\":300,\"reason\":\"effective hand on dry board, preflop aggression\"}",
+                    "json_parse": true,
+                    "action": "call",
+                    "amount_bb": null,
+                    "reason": "effective hand on dry board, preflop aggression",
+                    "valid": false,
+                    "correction": "amount_normalized_to_none",
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1802,
+                    "viable_actions": [
+                        "fold",
+                        "call",
+                        "raise"
+                    ]
+                },
+                {
+                    "name": "Flop trash no initiative OOP 3BP",
+                    "expected_category": "passive",
+                    "raw_response": "```json\n{\"action\":\"fold\",\"amount_bb\":null,\"reason\":\"no made hand or draw, dry board favors preflop aggressor, fold to any aggression\"}\n```",
+                    "json_payload": "{\"action\":\"fold\",\"amount_bb\":null,\"reason\":\"no made hand or draw, dry board favors preflop aggressor, fold to any aggression\"}",
+                    "json_parse": true,
+                    "action": "fold",
+                    "amount_bb": null,
+                    "reason": "no made hand or draw, dry board favors preflop aggressor, fold to any aggression",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 2192,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "River top pair facing all-in IP",
+                    "expected_category": "cautious",
+                    "raw_response": "{\n  \"action\": \"call\",\n  \"amount_bb\": 800,\n  \"reason\": \"Top pair with third kicker on wet board, pot-control bet.\"\n}",
+                    "json_payload": "{\n  \"action\": \"call\",\n  \"amount_bb\": 800,\n  \"reason\": \"Top pair with third kicker on wet board, pot-control bet.\"\n}",
+                    "json_parse": true,
+                    "action": "call",
+                    "amount_bb": null,
+                    "reason": "Top pair with third kicker on wet board, pot-control bet.",
+                    "valid": false,
+                    "correction": "amount_normalized_to_none",
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 2304,
+                    "viable_actions": [
+                        "fold",
+                        "call"
+                    ]
+                },
+                {
+                    "name": "Flop set on wet board IP 3way",
+                    "expected_category": "value",
+                    "raw_response": "```json\n{\"action\":\"bet\",\"amount_bb\":3.6,\"reason\":\"set on wet board, bet to protect equity\"}\n```",
+                    "json_payload": "{\"action\":\"bet\",\"amount_bb\":3.6,\"reason\":\"set on wet board, bet to protect equity\"}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 3.6,
+                    "reason": "set on wet board, bet to protect equity",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1939,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Turn flush completed missed draw OOP",
+                    "expected_category": "value",
+                    "raw_response": "{\n  \"action\": \"bet\",\n  \"amount_bb\": 5.4\n}",
+                    "json_payload": "{\n  \"action\": \"bet\",\n  \"amount_bb\": 5.4\n}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 5.4,
+                    "reason": "",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1287,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Flop OESD IP limp 5way",
+                    "expected_category": "value",
+                    "raw_response": "{\n  \"action\": \"bet\",\n  \"amount_bb\": 2.5,\n  \"reason\": \"Dry board favors preflop aggressor, effective C-bet.\"\n}",
+                    "json_payload": "{\n  \"action\": \"bet\",\n  \"amount_bb\": 2.5,\n  \"reason\": \"Dry board favors preflop aggressor, effective C-bet.\"\n}",
+                    "json_parse": true,
+                    "action": "bet",
+                    "amount_bb": 2.5,
+                    "reason": "Dry board favors preflop aggressor, effective C-bet.",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 2429,
+                    "viable_actions": [
+                        "fold",
+                        "check",
+                        "bet"
+                    ]
+                },
+                {
+                    "name": "Turn second pair check-check IP",
+                    "expected_category": "value",
+                    "raw_response": "{\n  \"action\": \"check\",\n  \"amount_bb\": null,\n  \"reason\": \"safe board, second pair\"\n}",
+                    "json_payload": "{\n  \"action\": \"check\",\n  \"amount_bb\": null,\n  \"reason\": \"safe board, second pair\"\n}",
+                    "json_parse": true,
+                    "action": "check",
+                    "amount_bb": null,
+                    "reason": "safe board, second pair",
+                    "valid": true,
+                    "correction": null,
+                    "action_viable": true,
+                    "category_match": false,
+                    "latency_ms": 1697,
+                    "viable_actions": [
+                        "fold",
+                        "check"
+                    ]
+                },
+                {
+                    "name": "River bluff catcher small bet OOP",
+                    "expected_category": "cautious",
+                    "raw_response": "{\n  \"action\": \"call\",\n  \"amount_bb\": 300,\n  \"reason\": \"Safe board texture and draw unlikely.\"\n}",
+                    "json_payload": "{\n  \"action\": \"call\",\n  \"amount_bb\": 300,\n  \"reason\": \"Safe board texture and draw unlikely.\"\n}",
+                    "json_parse": true,
+                    "action": "call",
+                    "amount_bb": null,
+                    "reason": "Safe board texture and draw unlikely.",
+                    "valid": false,
+                    "correction": "amount_normalized_to_none",
+                    "action_viable": true,
+                    "category_match": true,
+                    "latency_ms": 1844,
+                    "viable_actions": [
+                        "fold",
+                        "call"
+                    ]
+                }
+            ],
+            "summary": {
+                "total": 15,
+                "json_parse": 15,
+                "action_viable": 15,
+                "category_match": 11,
+                "corrections": 4,
+                "avg_latency_ms": 1811,
+                "model_load_ms": 5609
+            }
+        }
+    }
+}
