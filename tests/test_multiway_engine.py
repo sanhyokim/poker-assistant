@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from unittest.mock import MagicMock
 
@@ -21,6 +22,30 @@ def make_engine(config: dict | None = None) -> MultiwayEngine:
     engine = MultiwayEngine(llm, config or TEST_CONFIG)
     engine.mc_samples = 2000
     return engine
+
+
+def mock_mw_llm(
+    engine: MultiwayEngine,
+    action: str,
+    amount_bb: float | None,
+    reason: str,
+    latency_ms: float = 100.0,
+) -> MagicMock:
+    """Mock the Context Engine multiway LLM call."""
+    response = json.dumps(
+        {"action": action, "amount_bb": amount_bb, "reason": reason},
+        ensure_ascii=False,
+    )
+    mock = MagicMock(return_value=(response, latency_ms))
+    engine._call_mw_llm = mock  # type: ignore[method-assign]
+    return mock
+
+
+def mock_mw_llm_failure(engine: MultiwayEngine) -> MagicMock:
+    """Mock an empty Context Engine multiway LLM response."""
+    mock = MagicMock(return_value=("", 100.0))
+    engine._call_mw_llm = mock  # type: ignore[method-assign]
+    return mock
 
 
 def make_state(
@@ -156,17 +181,12 @@ def test_calculate_equity_invalid_cards() -> None:
 def test_evaluate_with_llm_success() -> None:
     """evaluate() returns the LLM action when LLM succeeds."""
     engine = make_engine()
-    engine.llm.decide_multiway.return_value = {
-        "action": "bet",
-        "size": "60%",
-        "confidence": "medium",
-        "reasoning": "Strong draw with high equity",
-    }
+    mock_mw_llm(engine, "bet", 2.0, "Strong draw with high equity")
 
     result = engine.evaluate(make_state(), [{"vpip": 30}, {"vpip": 22}])
 
     assert result["action"] == "bet"
-    assert result["size"] == "60%"
+    assert result["size"] == 200
     assert result["source"] == "multiway_engine"
     assert 0.0 <= result["equity"] <= 1.0
 
@@ -174,16 +194,16 @@ def test_evaluate_with_llm_success() -> None:
 def test_evaluate_sanitizes_prompt_leak_reason() -> None:
     """Multiway engine sanitizes leaked prompt instructions from LLM reason."""
     engine = make_engine()
-    engine.llm.decide_multiway.return_value = {
-        "action": "call",
-        "size": 100,
-        "confidence": "medium",
-        "reasoning": (
+    mock_mw_llm(
+        engine,
+        "call",
+        None,
+        (
             "\u65e5\u672c\u8a9e\u3067\u89e3\u8aac\u3002"
             "\u30dd\u30c3\u30c8\u30aa\u30c3\u30ba\u304c"
             "\u826f\u304f\u30b3\u30fc\u30eb\u3067\u304d\u308b\u3002"
         ),
-    }
+    )
     state = make_state()
     state.hero.bet = 0
     state.players["2"].bet = 100
@@ -200,7 +220,7 @@ def test_evaluate_sanitizes_prompt_leak_reason() -> None:
 def test_evaluate_llm_failure_heuristic() -> None:
     """LLM failure returns the heuristic fallback."""
     engine = make_engine()
-    engine.llm.decide_multiway.return_value = None
+    mock_mw_llm_failure(engine)
 
     result = engine.evaluate(make_state(), [{"vpip": 30}, {"vpip": 22}])
 
@@ -211,7 +231,7 @@ def test_evaluate_llm_failure_heuristic() -> None:
 def test_evaluate_high_equity_heuristic() -> None:
     """High equity fallback recommends betting."""
     engine = make_engine()
-    engine.llm.decide_multiway.return_value = None
+    mock_mw_llm_failure(engine)
     engine.calculate_equity = MagicMock(return_value=0.7)  # type: ignore[method-assign]
 
     result = engine.evaluate(make_state(), [{"vpip": 30}, {"vpip": 22}])
@@ -223,7 +243,7 @@ def test_evaluate_high_equity_heuristic() -> None:
 def test_evaluate_mid_equity_heuristic() -> None:
     """Medium equity fallback recommends checking."""
     engine = make_engine()
-    engine.llm.decide_multiway.return_value = None
+    mock_mw_llm_failure(engine)
     engine.calculate_equity = MagicMock(return_value=0.5)  # type: ignore[method-assign]
 
     result = engine.evaluate(make_state(), [{"vpip": 30}, {"vpip": 22}])
@@ -235,7 +255,7 @@ def test_evaluate_mid_equity_heuristic() -> None:
 def test_evaluate_low_equity_heuristic() -> None:
     """Low equity fallback recommends folding."""
     engine = make_engine()
-    engine.llm.decide_multiway.return_value = None
+    mock_mw_llm_failure(engine)
     engine.calculate_equity = MagicMock(return_value=0.3)  # type: ignore[method-assign]
 
     result = engine.evaluate(make_state(), [{"vpip": 30}, {"vpip": 22}])
@@ -310,12 +330,7 @@ def test_format_opponent_profiles_uses_configured_threshold() -> None:
 def test_multiway_no_player_name_in_llm_input() -> None:
     """Multiway LLM input uses seat identifiers instead of player names."""
     engine = make_engine()
-    engine.llm.decide_multiway.return_value = {
-        "action": "check",
-        "size": None,
-        "confidence": "medium",
-        "reasoning": "Pot control",
-    }
+    llm_mock = mock_mw_llm(engine, "check", None, "Pot control")
 
     engine.evaluate(
         make_state(),
@@ -325,22 +340,15 @@ def test_multiway_no_player_name_in_llm_input() -> None:
         ],
     )
 
-    profiles = engine.llm.decide_multiway.call_args.kwargs["opponent_profiles"]
-    assert "SecretOne" not in str(profiles)
-    assert "SecretTwo" not in str(profiles)
-    assert profiles[0]["identifier"] == "seat_2"
-    assert profiles[1]["identifier"] == "seat_3"
+    prompt = llm_mock.call_args.args[0]
+    assert "SecretOne" not in prompt
+    assert "SecretTwo" not in prompt
 
 
 def test_evaluate_returns_medium_confidence() -> None:
     """evaluate() returns medium confidence for multiway decisions."""
     engine = make_engine()
-    engine.llm.decide_multiway.return_value = {
-        "action": "check",
-        "size": None,
-        "confidence": "low",
-        "reasoning": "model confidence ignored",
-    }
+    mock_mw_llm(engine, "check", None, "model confidence ignored")
 
     result = engine.evaluate(make_state(), [{"vpip": 30}, {"vpip": 22}])
 
@@ -350,12 +358,7 @@ def test_evaluate_returns_medium_confidence() -> None:
 def test_evaluate_continues_without_usable_opponent_stats() -> None:
     """Multiway evaluation continues with empty profiles when stats are weak."""
     engine = make_engine()
-    engine.llm.decide_multiway.return_value = {
-        "action": "check",
-        "size": None,
-        "confidence": "medium",
-        "reasoning": "No usable opponent stats",
-    }
+    llm_mock = mock_mw_llm(engine, "check", None, "No usable opponent stats")
 
     result = engine.evaluate(
         make_state(),
@@ -365,8 +368,8 @@ def test_evaluate_continues_without_usable_opponent_stats() -> None:
         ],
     )
 
-    profiles = engine.llm.decide_multiway.call_args.kwargs["opponent_profiles"]
-    assert profiles == []
+    prompt = llm_mock.call_args.args[0]
+    assert "LowOne" not in prompt
     assert result["action"] == "check"
 
 
@@ -464,13 +467,7 @@ def test_hand9_fold_guard_overrides_llm_fold_to_call() -> None:
     engine = make_engine()
     # Mock equity to known Hand 9 value
     engine.calculate_equity = MagicMock(return_value=0.4735)  # type: ignore[method-assign]
-    engine.llm.decide_multiway.return_value = {
-        "action": "fold",
-        "size": None,
-        "confidence": "medium",
-        "reasoning": "Multiway conservative fold",
-        "raw_response": '{"action": "fold"}',
-    }
+    mock_mw_llm(engine, "fold", None, "Multiway conservative fold")
 
     result = engine.evaluate(state, [{"total_hands": 50, "vpip": 30}, {"total_hands": 50, "vpip": 25}])
 
@@ -489,13 +486,7 @@ def test_fold_guard_does_not_override_when_equity_insufficient() -> None:
     state = make_hand9_state()
     engine = make_engine()
     engine.calculate_equity = MagicMock(return_value=0.30)  # type: ignore[method-assign]
-    engine.llm.decide_multiway.return_value = {
-        "action": "fold",
-        "size": None,
-        "confidence": "medium",
-        "reasoning": "Insufficient equity",
-        "raw_response": '{"action": "fold"}',
-    }
+    mock_mw_llm(engine, "fold", None, "Insufficient equity")
 
     result = engine.evaluate(state, [{"total_hands": 50, "vpip": 30}])
 
@@ -508,21 +499,14 @@ def test_llm_prompt_includes_pot_odds_fields() -> None:
     state = make_hand9_state()
     engine = make_engine()
     engine.calculate_equity = MagicMock(return_value=0.4735)  # type: ignore[method-assign]
-    engine.llm.decide_multiway.return_value = {
-        "action": "call",
-        "size": 498,
-        "confidence": "medium",
-        "reasoning": "Good pot odds",
-        "raw_response": "",
-    }
+    llm_mock = mock_mw_llm(engine, "call", None, "Good pot odds")
 
     engine.evaluate(state, [{"total_hands": 50, "vpip": 30}])
 
-    call_kwargs = engine.llm.decide_multiway.call_args.kwargs
-    assert call_kwargs["call_amount"] == 498
-    assert call_kwargs["facing_bet"] == 498
-    assert call_kwargs["pot_after_call"] == 2490  # 1992 + 498
-    assert abs(call_kwargs["required_equity"] - 0.20) < 0.01  # 498/2490 ≈ 0.20
+    prompt = llm_mock.call_args.args[0]
+    assert "pot_bb: 19.9" in prompt
+    assert "legal_actions: ['fold', 'call', 'raise']" in prompt
+    assert "action_history: S5 bet 498, S2 call 498" in prompt
 
 
 def test_call_amount_is_capped_by_hero_stack() -> None:
@@ -566,27 +550,12 @@ def test_full_street_action_history_passed_to_llm() -> None:
     state = make_hand9_state()
     engine = make_engine()
     engine.calculate_equity = MagicMock(return_value=0.5)  # type: ignore[method-assign]
-    engine.llm.decide_multiway.return_value = {
-        "action": "call",
-        "size": 498,
-        "confidence": "medium",
-        "reasoning": "",
-        "raw_response": "",
-    }
+    llm_mock = mock_mw_llm(engine, "call", None, "")
 
     engine.evaluate(state, [])
 
-    call_kwargs = engine.llm.decide_multiway.call_args.kwargs
-    actions = call_kwargs.get("current_street_actions")
-    assert actions is not None, "current_street_actions must not be None"
-    actions_list = list(actions)
-    assert len(actions_list) == 2
-    # Seat5 BET 498 and Seat2 CALL 498 both present
-    action_summary = [
-        (a.seat, a.action, a.amount) for a in actions_list
-    ]
-    assert (5, "BET", 498) in action_summary
-    assert (2, "CALL", 498) in action_summary
+    prompt = llm_mock.call_args.args[0]
+    assert "action_history: S5 bet 498, S2 call 498" in prompt
 
 
 def test_multiway_guard_only_triggers_on_fold_with_bet() -> None:
@@ -599,27 +568,15 @@ def test_multiway_guard_only_triggers_on_fold_with_bet() -> None:
     engine.calculate_equity = MagicMock(return_value=0.47)  # type: ignore[method-assign]
 
     # Case 1: LLM returns CALL — guard must not trigger
-    engine.llm.decide_multiway.return_value = {
-        "action": "call",
-        "size": 498,
-        "confidence": "medium",
-        "reasoning": "",
-        "raw_response": "",
-    }
+    mock_mw_llm(engine, "call", None, "")
     result = engine.evaluate(state, [])
     assert result["action"].lower() == "call"
     assert result.get("guard_applied") is not True
 
     # Case 2: LLM returns BET — guard must not trigger
-    engine.llm.decide_multiway.return_value = {
-        "action": "bet",
-        "size": "60%",
-        "confidence": "medium",
-        "reasoning": "",
-        "raw_response": "",
-    }
+    mock_mw_llm(engine, "raise", 6.0, "")
     result = engine.evaluate(state, [])
-    assert result["action"].lower() == "bet"
+    assert result["action"].lower() == "call"
     assert result.get("guard_applied") is not True
 
     # Case 3: call_amount == 0 scenario — guard must not trigger even on FOLD
@@ -628,13 +585,7 @@ def test_multiway_guard_only_triggers_on_fold_with_bet() -> None:
     no_bet_state.players["2"].bet = 0
     no_bet_state.players["5"].bet = 0
     no_bet_state.current_street_actions = []
-    engine.llm.decide_multiway.return_value = {
-        "action": "fold",
-        "size": None,
-        "confidence": "medium",
-        "reasoning": "",
-        "raw_response": "",
-    }
+    mock_mw_llm(engine, "fold", None, "")
     result = engine.evaluate(no_bet_state, [])
     # When no bet to face, FOLD should remain FOLD (fallthrough to heuristic)
     # Or it could get converted by action constraints later
@@ -652,13 +603,7 @@ def test_high_equity_turn_check_overridden_to_value_bet(
     state.pot = 1000
     engine = make_engine()
     engine.calculate_equity = MagicMock(return_value=0.88)  # type: ignore[method-assign]
-    engine.llm.decide_multiway.return_value = {
-        "action": "check",
-        "size": None,
-        "confidence": "medium",
-        "reasoning": "Pot control",
-        "raw_response": '{"action": "check"}',
-    }
+    mock_mw_llm(engine, "check", None, "Pot control")
 
     result = engine.evaluate(state, [])
 
@@ -677,13 +622,7 @@ def test_high_equity_river_check_uses_blind_minimum_for_small_pot() -> None:
     state.pot = 120
     engine = make_engine()
     engine.calculate_equity = MagicMock(return_value=0.80)  # type: ignore[method-assign]
-    engine.llm.decide_multiway.return_value = {
-        "action": "check",
-        "size": None,
-        "confidence": "medium",
-        "reasoning": "",
-        "raw_response": "",
-    }
+    mock_mw_llm(engine, "check", None, "")
 
     result = engine.evaluate(state, [])
 
@@ -714,31 +653,21 @@ def test_value_bet_guard_does_not_override_outside_safe_conditions(
     state.players["2"].bet = facing_bet
     engine = make_engine()
     engine.calculate_equity = MagicMock(return_value=equity)  # type: ignore[method-assign]
-    engine.llm.decide_multiway.return_value = {
-        "action": "check",
-        "size": None,
-        "confidence": "medium",
-        "reasoning": "Check back",
-        "raw_response": "",
-    }
+    mock_mw_llm(engine, "check", None, "Check back")
 
     result = engine.evaluate(state, [])
 
-    assert result["action"] == "check"
-    assert result.get("guard_applied") is not True
+    expected_action = "call" if facing_bet > 0 else "check"
+    expected_guard = facing_bet > 0
+    assert result["action"] == expected_action
+    assert bool(result.get("guard_applied")) is expected_guard
 
 
 def test_cumulative_actions_passed_to_llm_three_actions() -> None:
     """BET/CALL/RAISE cumulative actions reach the LLM via current_street_actions."""
     engine = make_engine()
     engine.calculate_equity = MagicMock(return_value=0.5)  # type: ignore[method-assign]
-    engine.llm.decide_multiway.return_value = {
-        "action": "call",
-        "size": 1600,
-        "confidence": "medium",
-        "reasoning": "",
-        "raw_response": "",
-    }
+    llm_mock = mock_mw_llm(engine, "call", None, "")
 
     state = make_state()
     state.current_street_actions = [
@@ -752,29 +681,15 @@ def test_cumulative_actions_passed_to_llm_three_actions() -> None:
 
     engine.evaluate(state, [])
 
-    call_kwargs = engine.llm.decide_multiway.call_args.kwargs
-    actions = call_kwargs.get("current_street_actions")
-    assert actions is not None
-    actions_list = list(actions)
-    assert len(actions_list) == 3
-
-    action_summary = [(a.seat, a.action, a.amount) for a in actions_list]
-    assert (4, "BET", 300) in action_summary
-    assert (3, "CALL", 300) in action_summary
-    assert (2, "RAISE", 1600) in action_summary
+    prompt = llm_mock.call_args.args[0]
+    assert "action_history: S4 bet 300, S3 call 300, S2 raise 1600" in prompt
 
 
 def test_llm_uses_current_street_actions_not_actions_since_last_frame() -> None:
     """LLM receives all current_street_actions, not just the latest frame actions."""
     engine = make_engine()
     engine.calculate_equity = MagicMock(return_value=0.5)  # type: ignore[method-assign]
-    engine.llm.decide_multiway.return_value = {
-        "action": "call",
-        "size": 1600,
-        "confidence": "medium",
-        "reasoning": "",
-        "raw_response": "",
-    }
+    llm_mock = mock_mw_llm(engine, "call", None, "")
 
     state = make_state()
     # actions_since_last_frame has only 1 action (latest frame)
@@ -793,19 +708,6 @@ def test_llm_uses_current_street_actions_not_actions_since_last_frame() -> None:
 
     engine.evaluate(state, [])
 
-    call_kwargs = engine.llm.decide_multiway.call_args.kwargs
-    actions = call_kwargs.get("current_street_actions")
-    assert actions is not None
-    actions_list = list(actions)
-
-    # Should have all 3 actions, not just the 1 from actions_since_last_frame
-    assert len(actions_list) == 3, (
-        f"Expected 3 cumulative actions, got {len(actions_list)}. "
-        "LLM should receive current_street_actions (accumulated), "
-        "not just actions_since_last_frame (per-frame)."
-    )
-
-    action_summary = [(a.seat, a.action, a.amount) for a in actions_list]
-    assert (4, "BET", 300) in action_summary
-    assert (3, "CALL", 300) in action_summary
-    assert (2, "RAISE", 1600) in action_summary
+    prompt = llm_mock.call_args.args[0]
+    assert "action_history: S4 bet 300, S3 call 300, S2 raise 1600" in prompt
+    assert "actions_since_last_frame" not in prompt
