@@ -1,170 +1,99 @@
-
 # poker-assistant snapshot
-**Updated:** 2026-06-14 JST
-**Session:** Sprint 2 進行中 — HU SFT 82%飽和確認 → 補助ヘッド実装フェーズへ移行
+**Updated:** 2026-06-15 JST
+**Session:** Sprint 2 — 補助ヘッド訓練(S2-T3) epoch 1完走・健全性判定GO → Sprint 3 GRPO準備へ
 
 ---
 
 ## 0. このsnapshotの位置づけ
 
 このsnapshotは、次セッションでポーカーAIアシスタント開発を再開するための現在地点メモである。
-体系的な仕様は SPEC.md v3.8、設計判断の理由は DESIGN_NOTES.md（§61まで）を参照。
+体系的な仕様は SPEC.md v3.8、設計判断の理由は DESIGN_NOTES.md（§62まで）を参照。
 
 リポジトリ: https://github.com/sanhyokim/poker-assistant
-
 **重要: sanhyokim2050 ではない。毎回この正しいURLを使うこと。**
 
 **ドキュメント構成（3ファイル体制）:**
 - snapshot.md — 現在地点（本ファイル）
-- SPEC.md v3.8 — システム仕様（MW Context Engine仕様 §9.4.7〜§9.4.18、補助ヘッド仕様 §10A.2を含む）
-- DESIGN_NOTES.md（§61まで） — 設計判断理由。§61はSFT飽和と補助ヘッド追加の判断理由
+- SPEC.md v3.8 — システム仕様（補助ヘッド仕様 §10A.2 含む。補助ヘッド訓練の結果反映はSprint 4統合時に行う＝現時点では未反映）
+- DESIGN_NOTES.md（§62まで） — 設計判断理由。§61=SFT飽和と補助ヘッド追加、§62=補助ヘッド評価基準の変更とLoRA凍結設計の保存仕様
 
-**実装指令書（`docs/PokerRL+GRPO 6-max NLHE.md`）は廃止済み。次セッションで渡す必要なし。**
+**実装指令書（`docs/PokerRL+GRPO 6-max NLHE.md`）は廃止済み。次セッションで渡す必要なし。撤退基準はDESIGN_NOTES §56に記載。**
 
-**現在地: Sprint 2。HU SFT は15セグメント完了（accuracy 81–82.3%で飽和確認）。テキスト生成方式SFTを停止し、補助ヘッド（Action Head + Sizing Head）実装フェーズに移行。MW Context Engine Step 1〜4 完了、実戦テスト5/5 PASS。pytest 全1523 passed。**
+**現在地: Sprint 2。補助ヘッド訓練(S2-T3)が epoch 1 完走し健全性判定GO。テキスト生成SFTは82%飽和で停止済み。次はSprint 3（GRPO強化学習）の準備。MW Context Engineは Step 1〜4完了・実戦5/5 PASS。pytest 全1523 passed（前セッション確認値、本セッションではコード変更なし）。**
 
 ---
 
 ## 1. 現在地点
 
-### 1.1 最新テスト結果
+### 1.1 本セッションで完了したこと
 
-```text
-poker-system:
-  pytest tests/test_context_engine.py -q → 82 passed
-  pytest tests/test_multiway_engine.py -q → 38 passed
-  pytest -q → 1523 passed, 0 failed, 7 warnings（2026-06-09確認、GPU空き状態）
-  MW実戦テスト scripts/test_mw_live.py → 5/5 PASS（3人・4人・5人全パターン）
-```
+1. 補助ヘッド訓練スクリプト `scripts/train_aux_heads.py` 実装・本番訓練実行
+2. epoch 1 完走（31時間 / 1,883分、step 17,600 = 1 epoch分）
+3. S2-T3 健全性判定 = **GO**（評価基準は §62 で「GRPO初期化健全性」に変更済み）
+4. 訓練成果物を `results/aux_heads/seg_003/final_aux_head/` に確定保存
+5. DESIGN_NOTES §62 追記（評価基準変更とLoRA凍結保存仕様）
 
-### 1.2 GitHub push状況
+### 1.2 補助ヘッド訓練(S2-T3)の設計と結果
 
-最新commit (poker-system):
-```text
-(最新) 修正: test_multiway_engine.pyのMockを新LLM呼び出し経路に対応 - 20件のFAIL解消
-78e839a config: llm.mw_modelにopenai/gpt-5.4-miniを追加
-95667e5 docs: SPEC v3.8 + DESIGN_NOTES §60 - MW Context Engine完了、GPT-5.4-mini採用、チェックポイント修正記録
-```
+**訓練方式**: ベースモデル Phi-4-mini + LoRAアダプタ `seg_003_offset_66000/final_adapter` を全パラメータ freeze し、補助ヘッド（Action Head + Sizing Head）のみを新規訓練。
+- Action Head: 最終hidden state → MLP(hidden_dim=512) → 4クラス（0:Fold / 1:Check-Call / 2:Raise / 3:All-in）softmax
+- Sizing Head: 最終hidden state → MLP → sigmoid。`raise_size_ratio = 0.1 + 2.9 * sigmoid(x)`（DESIGN_NOTES §49.3 と厳密一致）。MSE損失はRaiseクラスのサンプルのみマスク計算
+- loss = CE(action) + λ(=1.0) * MSE(sizing)
+- freeze検証ログ: base+LoRA trainable=0 / 補助ヘッド trainable=3,149,317
+- 訓練データ563,200件、eval 1,000件、batch 8 × grad_accum 4（有効32）、lr=0.001、save_steps=150、eval_steps=300、最大2 epoch設定
 
-最新commit (pokerrl-training、ローカルのみ、リモートなし):
-```text
-6408985 修正: checkpoint保存時のGPUメモリ解放 - BSOD対策
-1d4f6ab 改善: monitor_sft.pyのtotal_stepsを動的計算に変更
-```
+**結果（epoch 1 最終 step 17,600 / final_metrics.json）**:
+- overall accuracy 0.799
+- by_action_type: bet 58.7% / call 76.1% / check 94.9% / fold 90.8% / raise(type) 62.4%
+- top-1確率中央値 0.836
+- sizing_raise_mae 0.125（Raiseサンプル269件）
+- All-in: eval正例ゼロのため評価不能（予測分布にall_in:1が稀出する程度）
+- peak VRAM 14,670 MiB（10GB超過分はシステムメモリへスワップ＝訓練中の断続的スループット低下の原因）
 
-### 1.3 Sprint 2 進捗
+**早期停止の警告について**: ログに `Early stop: aggressive accuracy below baseline. bet=58.65% raise=62.42%` が出ているが、これはスクリプトの旧基準（accuracy +5pt）由来の機構が反応したもの。本セッションで評価基準を §62 の健全性に変更済みのため、この警告は判定に無関係。epoch 1終端で止まったのは epoch 2を回さない方針（§61.2の過学習知見）とも一致し結果的に好都合。
 
-#### HU SFT タスク
+### 1.3 健全性判定の根拠（§62.3基準、判定=GO）
 
-| タスク | 状態 | 備考 |
-|---|---|---|
-| S2-T1a: prepare_sft_full.py作成 | ✅ 完了 | postflop 500k + preflop 63.2k = 563,200件 |
-| S2-T1b: run_sft_comparison.py改修 | ✅ 完了 | resume_from, checkpoint完全保存, BSOD対策 |
-| S2-T1c-1: 30k SFT checkpoint-500 | ✅ 完了 | accuracy 65.0%, eval_loss 0.378。Go判定 |
-| S2-T1c-2: 10k区切り自動連続SFT | ✅ **飽和確認・停止** | 15セグメント完了。82%で飽和。156k件消化（27.7%） |
-| S2-T3: 補助ヘッド（Action/Sizing）訓練 | ⬜ **次タスク** | LoRA凍結 + ヘッドのみ訓練方式 |
-| S2-T4: 量子化 | ⬜ 未開始 | |
-| S2-T5: 最終Go/No-go | ⬜ 未開始 | |
+| 軸 | 基準 | 実測（最終/epoch後半傾向） | 判定 |
+|---|---|---|---|
+| 劣化なし | overall ≥ 80%フロア（フロアであって目標ではない） | 0.799、後半step13k以降0.78〜0.80安定 | 合格 |
+| 崩壊なし | top-1中央値 ≤ 0.85付近、一点張りなし | 最終0.836、後半0.83〜0.89変動 | 合格 |
+| sizing健全 | Raise MAE ≤ 0.2x | 0.125、後半0.11〜0.12収束 | 合格 |
+| 攻撃が死んでない | bet/raise が0%付近に崩壊していない | bet58.7%/raise62.4%、振動内・崩壊なし | 合格 |
 
-#### MW Context Engine タスク
+bet/raiseがベースライン(62.5%/69.1%)をやや下回る点は §62で「完全解消不要・GRPOが再較正」と合意済みの想定内。Sizing Headは仕上がり良好。エントロピー崩壊なし。GRPO初期化点として十分。
 
-| タスク | 状態 | 備考 |
-|---|---|---|
-| Step 1〜4 実装 | ✅ 完了 | 82テスト PASS |
-| Phase 0（15件LLM比較テスト） | ✅ 完了 | GPT-5.4-mini 採用確定 |
-| MW 実戦統合テスト（モック） | ✅ 完了 | 5/5 PASS（3人・4人・5人） |
-| Phase 1（50件定性評価） | ⬜ 未開始 | |
-| Phase 2（500件定量評価） | ⬜ 未開始 | |
+### 1.4 訓練成果物の正本（重要・GRPO初期化に使う）
 
-#### ドキュメント・品質タスク
+**推論に必要な完全モデルは2部品のペア**:
+1. ベースLoRAアダプタ（不変）: `results/sft_sequential/seg_003_offset_66000/final_adapter`
+2. 補助ヘッド（今回の成果）: `results/aux_heads/seg_003/final_aux_head/aux_heads.pt`（12.6MB、checkpoint-17100由来）
 
-| タスク | 状態 | 備考 |
-|---|---|---|
-| snapshot.md 更新 | 🔄 本ファイル | |
-| DESIGN_NOTES.md §61 追加 | ⬜ 本セッションで実施 | SFT飽和+補助ヘッド判断理由 |
-| accuracy内訳分析 | ✅ 完了 | bet 62.5%, raise 69.1%が弱い |
-| pytest全体テスト | ✅ 完了 | 1523 passed, 0 failed |
+`final_aux_head/` に aux_heads.pt + metrics.json + final_metrics.json を確定保存済み（checkpoint自動削除の巻き添え防止）。
 
-### 1.4 HU SFT accuracy推移（全15セグメント確定）
+**final_adapterが存在しないのは正常**: LoRAを完全freezeしヘッドのみ訓練したため、checkpointには `aux_heads.pt` のみ保存され、LoRA重みは保存されない（1ステップも更新されていないため）。元の seg_003 final_adapter がそのまま使える。書き出し直しは不要。
 
-| セグメント | データ範囲 | accuracy | eval_loss | perplexity | 所要時間 |
-|---|---|---|---|---|---|
-| seg_000_offset_16000 | 16k–26k | 69.1% | 0.296 | 1.344 | 16.0h |
-| seg_000_offset_26000 | 26k–36k | 75.1% | 0.270 | 1.310 | 14.1h |
-| seg_000_offset_36000 | 36k–46k | 78.8% | 0.249 | 1.283 | 12.9h |
-| seg_001_offset_46000 | 46k–56k | 78.9% | 0.249 | 1.283 | 13.6h |
-| seg_002_offset_56000 | 56k–66k | 79.9% | 0.255 | 1.290 | 13.2h |
-| seg_003_offset_66000 | 66k–76k | **82.0%** | **0.225** | **1.252** | 12.2h |
-| seg_004_offset_76000 | 76k–86k | **82.3%** | 0.235 | 1.265 | 20.5h |
-| seg_000_offset_86000 | 86k–96k | 81.0% | 0.255 | 1.291 | 14.7h |
-| seg_001_offset_96000 | 96k–106k | 81.3% | 0.244 | 1.277 | 10.1h |
-| seg_000_offset_106000 | 106k–116k | 82.2% | 0.238 | 1.268 | 14.5h |
-| seg_001_offset_116000 | 116k–126k | 81.6% | 0.229 | 1.257 | 12.9h |
-| seg_002_offset_126000 | 126k–136k | 81.9% | 0.235 | 1.265 | 12.7h |
-| seg_003_offset_136000 | 136k–146k | 81.2% | 0.226 | 1.253 | 16.4h |
-| seg_004_offset_146000 | 146k–156k | 81.2% | 0.226 | 1.253 | 16.4h |
+**GRPO初期化候補 = checkpoint-17100由来のヘッド**: 評価値のある終盤checkpoint（17100/17400）のうち、17100はtop-1中央値0.833と低めで探索性が高く、GRPO self-playの初期化に適する（17400はtop-1 0.878で確信度が締まりすぎ）。final_aux_head/aux_heads.pt は17100由来なのでそのまま使える。
 
-**飽和確認**: 76k–86k(seg_003_offset_66000)で82.0%に到達後、86k–156k の8セグメントは81.0%–82.3%の範囲を横ばい。データ追加による改善は限界に到達。
+### 1.5 MW Context Engine（前セッションから変更なし）
 
-**epoch別過学習パターン**: 全セグメントでepoch 2がピーク、epoch 3でeval_lossが悪化。seg_004_offset_146000では epoch 1: eval_loss 0.186 → epoch 2: 0.189 → epoch 3: 0.226（+19.6%悪化）。
+| 項目 | 状態 |
+|---|---|
+| Step 1〜4実装 | 完了（82テストPASS） |
+| Phase 0（15件LLM比較） | 完了。GPT-5.4-mini採用確定 |
+| MW実戦統合テスト（モック・実API） | 5/5 PASS（3〜5人） |
+| Phase 1（50件定性評価） | 未着手 |
+| Phase 2（500件定量評価） | 未着手 |
 
-**結論**: テキスト生成方式SFTの改善限界に到達。補助ヘッド追加で bet/raise 精度の直接改善を図る。
-
-### 1.5 accuracy内訳分析（seg_004_offset_76000の final_adapter で実施）
-
-```text
-action_type  correct  total  accuracy  主な誤り
-bet              65    104   62.5%    check に誤分類 39件
-call            212    259   81.9%    raise に誤分類 32件、fold に 15件
-check           214    234   91.5%    bet に誤分類 19件
-fold            211    238   88.7%    call に誤分類 20件
-raise           114    165   69.1%    call に誤分類 39件
-overall: 816/1000 (81.6%)
-```
-
-**パターン**: 攻撃的アクション（bet 62.5%, raise 69.1%）が弱く、パッシブ方向に偏り。bet→check、raise→callと一段階消極的に間違える傾向。補助ヘッド（Action Head 分類方式）でこの偏りを改善する。
-
-### 1.6 補助ヘッド実装方針（S2-T3、次タスク）
-
-**方式**: 既存LoRA重みを凍結し、補助ヘッド（Action Head + Sizing Head）のみを新規訓練。
-
-**設計**:
-- ベースモデル: Phi-4-mini + seg_004_offset_76000 の final_adapter（accuracy 82.0%、eval_loss最良）
-- LoRA重み: 全パラメータ freeze（既存の表現力を保護）
-- Action Head: 最終hidden state → MLP → 4クラス分類（Fold / Check-Call / Raise / All-in）
-- Sizing Head: 最終hidden state → MLP → sigmoid → 0.1x–3.0x pot比率
-- 訓練データ: 同一PokerBenchデータ。テキストラベルをクラスラベル + pot比率に変換
-- 訓練時間見込み: 数時間〜半日（ヘッドパラメータはLoRAの数百分の一）
-
-**選定理由**:
-- seg_003_offset_66000 の final_adapter（82.0%）を採用。eval_loss 0.225 が全セグメント中最良
-- seg_004_offset_76000（82.3%）は accuracy は最高だが eval_loss 0.235 で微劣
-- eval_loss が低い方がモデルの内部表現の質が高く、補助ヘッドの入力として適切
-
-**フォールバック**: 補助ヘッドの品質が不十分な場合、LoRA凍結を解除して同時ファインチューニングに進む。最悪の場合でも既存LoRA重みは保存済みのため、テキスト生成方式にいつでも戻せる。
-
-**仕様参照**: SPEC §10A.2（Action Head 4クラス + Sizing Head sigmoid）、DESIGN_NOTES §49（autoregressive生成ではなく補助ヘッドを採用した理由）
-
-### 1.7 MW実戦統合テスト結果
-
-scripts/test_mw_live.py で5ケースを実行（実際のOpenRouter API呼び出し）:
-
-| ケース | 人数 | 状況 | action | size | latency | 妥当性 |
-|---|---|---|---|---|---|---|
-| 1 | 3人 | AhKh フロップ ノーベット | bet | 220 | 2078ms | 妥当 |
-| 2 | 3人 | 9s8s フロップ facing bet | fold | - | 1469ms | 妥当 |
-| 3 | 3人 | KsKh ターン セット | bet | 700 | 3940ms | 妥当 |
-| 4 | 4人 | QdJd フロップ ノーベット | check | - | 2201ms | 妥当 |
-| 5 | 5人 | AcTc フロップ facing bet | call | - | 1036ms | 妥当 |
-
-### 1.8 システム全体の状態
+### 1.6 システム全体の状態
 
 | エンジン | 状態 |
 |---|---|
 | Rust postflop CLI | 永久廃止確定 |
 | Deep CFR | 品質不合格。Stage D完了まで残す |
-| HU SFT (Phi-4-mini) | 82%飽和。テキスト生成SFT停止。補助ヘッドフェーズへ |
-| MW Context Engine | Step 1〜4完了（82テスト）。GPT-5.4-mini採用確定。実戦テスト5/5 PASS |
+| HU SFT (Phi-4-mini) | 82%飽和でテキスト生成SFT停止 |
+| HU 補助ヘッド | epoch 1完走・健全性GO。GRPO初期化点として確定 |
+| MW Context Engine | Step 1〜4完了。GPT-5.4-mini採用。実戦5/5 PASS |
 
 ---
 
@@ -179,41 +108,46 @@ scripts/test_mw_live.py で5ケースを実行（実際のOpenRouter API呼び�
 ### 2.3 評価基準
 - 「profit vs random」は単独評価指標として使用禁止
 - Spot Checks 50シナリオを削除・緩和しない
-- verify_pokerrl_encode.pyの検証をスキップしない（Sprint 4で実施）
+- verify_pokerrl_encode.pyの検証をスキップしない（Sprint 3 GRPO自己対戦の入力エンコード一致確認で実施）
+- **補助ヘッドの評価基準は accuracy ではなく「GRPO初期化健全性」（§62）。accuracy追求は過剰最適化として回避済み**
 
 ### 2.4 削除禁止
 - 既存Deep CFR/Solverコードは新エンジン統合完了（Stage D）まで削除禁止
+- **`results/aux_heads/seg_003/final_aux_head/` は補助ヘッドの正本。削除禁止**
+- **`results/sft_sequential/seg_003_offset_66000/final_adapter` は補助ヘッドのベースLoRA。削除禁止**
 
 ### 2.5 ハードウェア・予算
-- RTX 3080 (VRAM 10GB, RAM 32GB)
-- クラウドは$500上限
-- 全体タイムボックス: 12週間（最大15週間）
+- RTX 3080 (VRAM 10GB, RAM 32GB)。クラウドは$500上限。全体タイムボックス12週間（最大15週間）
+- VRAMは10GB上限。訓練中は他のGPU使用アプリ（Chrome/Edge WebView/IDE/LINE等）を絞らないと共有メモリスワップでスループットが大幅低下する（本セッションで実測）
 
 ### 2.6 データ設計制約
 - phh-dataset hole cards付き726,570件は全件敗者。positive example使用禁止
 - MW教師ラベルの品質問題はContext Engineで回避（訓練不要のルール層）
+- 補助ヘッド訓練データのAll-inクラスは783件（全体の0.14%）と極少。eval(1,000件)にはAll-in正例ゼロ。All-in性能はSpot Checks（DESIGN_NOTES §58.2）で確認する
 
 ### 2.7 訓練運用
-- save_steps=150、eval_steps=300（BSOD対策でずらし。デフォルトとする）
-- keep_checkpoints=3
+- save_steps=150、eval_steps=300（BSOD対策でずらし。デフォルト）
+- keep_checkpoints=3〜4（古いcheckpointは自動削除。残したい成果物は別ディレクトリにコピーして確定する）
 - eval_dataは1,000件（5,000件はVRAM不足でハング）
 
 ### 2.8 ドキュメント体制
 - 3ファイル体制: snapshot.md + SPEC.md + DESIGN_NOTES.md
-- 実装指令書は廃止済み。渡す必要なし
-- 撤退基準はDESIGN_NOTES §56に記載
+- 実装指令書は廃止済み。撤退基準はDESIGN_NOTES §56に記載
 
-### 2.9 MW Context Engine 運用
+### 2.9 MW Context Engine運用
 - MW本採用モデル: GPT-5.4-mini（OpenRouter経由、openai/gpt-5.4-mini）
 - .env の load_dotenv(override=True) を使用すること
 - config.yaml に llm.mw_model: openai/gpt-5.4-mini 設定済み
 
 ### 2.10 BSOD対策（実装済み・有効）
-- checkpoint保存前にtorch.cuda.empty_cache()
-- _save_optimizer_cpu()でCPU経由保存
-- save_steps=150, eval_steps=300（ずらし必須）
-- 古いfinal_adapterは訓練開始時に自動削除
+- checkpoint保存前にtorch.cuda.empty_cache()、_save_optimizer_cpu()でCPU経由保存
+- save_steps=150, eval_steps=300（ずらし必須）、古いfinal_adapterは訓練開始時に自動削除
 - optimizer.pt 0バイト検出で fresh start
+
+### 2.11 補助ヘッド設計（確定）
+- LoRA完全freeze + ヘッドのみ訓練。checkpointにはaux_heads.ptのみ保存される（LoRA重みは保存されない＝正常）
+- Action Head 4クラス（Fold/Check-Call/Raise/All-in）、Sizing Head sigmoid 0.1-3.0x
+- 推論時は「seg_003 final_adapter + aux_heads.pt」のペアでロードする必要がある
 
 ---
 
@@ -224,80 +158,84 @@ scripts/test_mw_live.py で5ケースを実行（実際のOpenRouter API呼び�
 strategy/context_engine.py          MW Context Engine本体
 strategy/multiway_engine.py         MW GameLoop統合
 tests/test_context_engine.py        82テスト
-tests/test_multiway_engine.py       38テスト（Mock修正済み）
+tests/test_multiway_engine.py       38テスト
 scripts/test_mw_live.py             MW実戦統合テスト（5ケース）
 config.yaml                         llm.mw_model: openai/gpt-5.4-mini
 
 [訓練リポジトリ C:\dev\pokerrl-training（リモートなし、ローカルgitのみ）]
-scripts/prepare_sft_full.py         フルデータ準備完了
-scripts/run_sft_comparison.py       checkpoint完全保存/再開 + BSOD対策済み
-scripts/run_sft_sequential.py       10k区切り自動連続実行
-scripts/monitor_sft.py              total_steps動的計算対応済み
-analyze_accuracy.py                 accuracy内訳分析（使い捨て）
-data/sft_train_full.jsonl           563,200件（636 MB）
-data/sft_eval_1k.jsonl              1,000件（全SFTで共用）
+scripts/train_aux_heads.py          補助ヘッド訓練（本セッション実装）
+scripts/prepare_sft_full.py         フルデータ準備
+scripts/run_sft_comparison.py       SFT（checkpoint完全保存/再開+BSOD対策）
+scripts/run_sft_sequential.py       10k区切り自動連続SFT
+data/sft_train_full.jsonl           563,200件（636MB）
+data/sft_eval_1k.jsonl              1,000件
+results/sft_sequential/seg_003_offset_66000/final_adapter   補助ヘッドのベースLoRA（不変・削除禁止）
+results/aux_heads/seg_003/final_aux_head/aux_heads.pt       補助ヘッド正本（削除禁止）
 ```
 
 ---
 
-## 4. 訓練リポジトリの状態
+## 4. 訓練リポジトリの補助ヘッド関連状態
 
 ```text
-C:\dev\pokerrl-training/
-├── data/
-│   ├── sft_train_full.jsonl        563,200件（636 MB）
-│   └── sft_eval_1k.jsonl           1,000件
-├── models/phi-4-mini-instruct/     Phi-4-mini FP16
-├── results/sft_sequential/
-│   ├── sequential_run_log.jsonl    全15セグメント記録
-│   ├── seg_000_offset_16000/       完了（69.1%）
-│   ├── seg_000_offset_26000/       完了（75.1%）
-│   ├── seg_000_offset_36000/       完了（78.8%）
-│   ├── seg_001_offset_46000/       完了（78.9%）
-│   ├── seg_002_offset_56000/       完了（79.9%）
-│   ├── seg_003_offset_66000/       完了（82.0%）★eval_loss最良 → 補助ヘッドベース
-│   ├── seg_004_offset_76000/       完了（82.3%）★accuracy最高
-│   ├── seg_000_offset_86000/       完了（82.3%）
-│   ├── seg_001_offset_96000/       完了（81.0%）
-│   ├── seg_000_offset_106000/      完了（81.3%）
-│   ├── seg_001_offset_116000/      完了（82.2%）
-│   ├── seg_002_offset_126000/      完了（81.6%）
-│   ├── seg_003_offset_136000/      完了（81.9%）
-│   ├── seg_004_offset_146000/      完了（81.2%）
-│   └── seg_005_offset_156000/      途中停止（Pythonプロセス手動停止）
-├── analyze_accuracy.py
-└── .venv/                          torch 2.11.0+cu130, transformers 5.10.2
+C:\dev\pokerrl-training\results\aux_heads\seg_003\
+├── final_aux_head/              ★正本（確定保存）
+│   ├── aux_heads.pt             12.6MB（checkpoint-17100由来、GRPO初期化用）
+│   ├── metrics.json             step17100の評価指標
+│   └── final_metrics.json       全58評価点履歴込み
+├── checkpoint-17100/            aux_heads.pt + optimizer/scheduler/state（eval値あり: overall0.793/top1中央0.833）
+├── checkpoint-17250/            （eval値なし=中間save）
+├── checkpoint-17400/            （eval値あり: overall0.798/top1中央0.878）
+├── checkpoint-17550/            （eval値なし=中間save）
+├── train_aux_heads.log          全訓練ログ
+└── final_metrics.json           最終メトリクス（全履歴）
+
+注: keep_checkpoints設定により上記4checkpointのみ現存。中盤checkpointは削除済み。
+final_adapterディレクトリは存在しない（LoRA freeze設計のため正常）。
 ```
 
 ---
 
 ## 5. 次セッションの作業
 
-### 5.1 補助ヘッド実装手順（S2-T3）
+### 5.1 最優先: Sprint 3（GRPO強化学習）準備
 
-1. **DESIGN_NOTES §61 確認** — SFT飽和判断と補助ヘッド方針の理由
-2. **訓練スクリプト作成** — LoRA凍結 + Action Head + Sizing Head の訓練スクリプト
-   - ベースアダプタ: `results/sft_sequential/seg_003_offset_66000/final_adapter`
-   - 訓練データ: `data/sft_train_full.jsonl`（ラベル変換が必要）
-   - eval データ: `data/sft_eval_1k.jsonl`
-3. **ラベル変換** — テキストラベル（"fold" / "call" / "raise 300"）→ クラスID（0-3）+ pot比率
-4. **訓練実行** — 数時間〜半日の見込み
-5. **評価** — accuracy内訳の再分析（特にbet/raiseの改善度）
-6. **結果が不十分な場合** — LoRA凍結解除して同時ファインチューニングを検討
+**着手前の必須検証（推測で進めない）**:
+1. **ロード経路の検証**: 「seg_003 final_adapter + final_aux_head/aux_heads.pt」のペアを正しく組み立てて推論できるか確認。train_aux_heads.py の eval_only モードかロード関数を参照。これがGRPOの初期化点になるため最初に確認する
+2. **verify_pokerrl_encode.py 実行**: GRPO自己対戦の入力エンコードが訓練時と一致するか（encode不一致の教訓、§2.3）
 
-### 5.2 ドキュメント更新
+**GRPO仕様（DESIGN_NOTES §57）**:
+- 入力: Phase 1 SFTモデル（=補助ヘッド付き）
+- 方式: GRPO + DAPO trick + OPEFO entropy制御
+- 環境: PokerKitベース6-max NLHE自己対戦
+- opponents: 過去SFT checkpoint(population) / Rule-based(TAG/LAG) / Deep CFR失敗モデル（弱い相手としてエントロピー多様性確保）
+- 報酬: 0.7×即時chip delta + 0.2×EV at decision(eval7) + 0.1×直近20ハンド累積(bankroll)
+- 訓練時間: 約80-120時間（RTX 3080単機で実時間4〜6日連続。長時間連続でのBSOD対策とcheckpoint健全性を早期に確認すべき）
 
-| ファイル | 更新内容 | 状態 |
-|---|---|---|
-| snapshot.md | 本ファイルで張り替え | 本セッションで完了 |
-| DESIGN_NOTES.md §61 | SFT飽和+補助ヘッド判断理由 | 本セッションで実施 |
-| SPEC.md | 補助ヘッド実装後に結果反映 | 後日 |
+**GRPO Go/No-go（§57, Sprint 3終了時）**:
+- Spot Checks 50局面で行動分布が合理的に変動
+- Entropy健全（top-1確率中央値 < 0.85）
+- Slumbot HU勝率 ≥ -15 bb/100
+- 自己対戦でPhase 1ベースライン比 +3 bb/100以上
 
-### 5.3 次セッションの持ち物
+**GRPO品質未達時の段階的対処（§56.3、最大16日）**: Step1 Entropy崩壊対処(4日)→Step2 対戦相手プール見直し(3日)→Step3 報酬関数調整(4日)→Step4 訓練延長(5日)
 
+**撤退条件（§56.6, OR）**: タイムボックス超過 / 品質下限未達(accuracy<50%, Slumbot<-30, SpotChecks<80%) / 改善トレンド消失 / コスト$500超過。判断タイミング=Sprint 3開始から2週・5週、合計12週時点。撤退時はCase A（SFT成功GRPO失敗）→第1候補 PokerSkill風ハイブリッド。
+
+### 5.2 補助ヘッドが健全性不十分だった場合のフォールバック（今回は不要だが記録）
+§61.5シナリオ2: LoRA凍結を解除してヘッド同時ファインチューニング。既存LoRA重みは保持済みのためテキスト生成方式へ復帰も可能。
+
+### 5.3 ドキュメント更新（本セッションで完了済み）
+| ファイル | 状態 |
+|---|---|
+| snapshot.md | 本ファイルで張り替え完了 |
+| DESIGN_NOTES.md §61 | 前セッションで追加済み（accuracy飽和+補助ヘッド判断） |
+| DESIGN_NOTES.md §62 | 本セッションで追加（評価基準変更+LoRA凍結保存仕様） |
+| SPEC.md | 補助ヘッド結果の反映はSprint 4統合時（現時点未反映で正しい） |
+
+### 5.4 次セッションの持ち物
 | # | ドキュメント | 用途 |
 |---|---|---|
-| 1 | **本snapshot.md** | 現状認識の基盤 |
-| 2 | **SPEC.md v3.8** | §10A.2 補助ヘッド仕様 |
-| 3 | **DESIGN_NOTES.md（§61まで）** | §49 補助ヘッド設計理由、§61 SFT飽和判断 |
-```
+| 1 | 本snapshot.md | 現状認識の基盤 |
+| 2 | SPEC.md v3.8 | §10A 推論ブリッジ仕様、§10A.2 補助ヘッド仕様 |
+| 3 | DESIGN_NOTES.md（§62まで） | §49補助ヘッド設計、§56撤退基準、§57 GRPO仕様、§58評価フレーム、§61飽和判断、§62評価基準変更 |

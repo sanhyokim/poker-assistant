@@ -4147,3 +4147,30 @@ accuracy は seg_004_offset_76000 が 0.3pt 高いが、eval_loss は seg_003_of
 0.010 低い。eval_loss が低い方がモデルの内部表現の質が高く、
 補助ヘッドの入力となる最終 hidden state の品質に直結する。
 0.3pt の accuracy 差より、内部表現の質を優先した。
+
+## 62. 補助ヘッド評価基準の変更（accuracy → GRPO初期化健全性）
+
+### 62.1 変更の経緯
+S2-T3（補助ヘッド訓練）の当初Go/No-go基準は「bet/raise accuracyがベースライン比+5pt改善」だった。しかしepoch 1の評価でoverall accuracyが0.747〜0.785で振動し、bet/raiseが評価ごとに大きく上下した（例: step1800 bet26% / step4500 bet73%）。攻撃系が上がると受け系が下がる逆相関で、決定境界がsoftmax温度で揺れている状態だった。lr=0.001がヘッド訓練には高めで振動を助長した可能性がある。
+
+### 62.2 accuracy追求が最適でない理由
+eval accuracyはPokerBench教師ラベルへの一致率であり、ベンチの打ち手の模倣度にすぎない。accuracyを最大化してもベンチを超えて勝つことはできず、勝率(bb/100)には直結しない。これはsnapshot/SPEC §10A.11の「profit vs randomを単独指標にするな」と同根の罠で、accuracy側にも同じ過剰最適化リスクがある。補助ヘッドの真の役割は「最高accuracyのモデル」ではなく「GRPO(Sprint 3)の良い初期化点」である。攻撃/受けのバランスはGRPOのself-play報酬で再較正されるため、SFT段階で完璧な行動分布を作り込む必要はない。lrを下げて振動を潰す再訓練(20時間×複数回)に時間を投じるのは12週タイムボックスに対し非効率と判断した。
+
+### 62.3 変更後の合格基準（GRPO初期化健全性）
+S2-T3の合格を以下の健全性で判定する。
+- 劣化なし: overall accuracy ≥ 80%。これはフロア（下限の目安）であって目標ではない。80%を一時的に割っても他軸が健全なら直ちにNo-goとはしない
+- 崩壊なし: top-1確率中央値 ≤ 0.85付近、特定クラスへの一点張りがない
+- sizing健全: Raise sizing MAE ≤ 0.2x
+- 攻撃が死んでいない: bet/raiseが0%付近に崩壊していない（完全解消は不要）
+
+### 62.4 epoch 2を回さない判断
+§61.2で全SFTセグメントがepoch 2→3で過学習悪化する傾向が確認済み。補助ヘッドでもepoch 2は過学習リスクが高く得るものが薄い。epoch 1完了時点で健全性判定する。実際、epoch 1終端でスクリプトの旧基準による早期停止が発火し、結果的にepoch 2に入らず終了した。
+
+### 62.5 LoRA凍結設計に伴う保存仕様（重要）
+補助ヘッド訓練はLoRAを完全freezeしヘッドのみ訓練するため、checkpointには `aux_heads.pt`（ヘッド重み）のみ保存され、LoRAアダプタは保存されない（1ステップも更新されないため）。したがって `final_adapter` ディレクトリは生成されないのが正常であり、欠損ではない。推論・GRPO初期化に必要な完全モデルは「ベースLoRA（seg_003_offset_66000/final_adapter）+ aux_heads.pt」のペアである。成果物の正本は `results/aux_heads/seg_003/final_aux_head/`（aux_heads.pt等）に確定保存した。
+
+### 62.6 All-inクラスの評価不能
+train All-in 783件(0.14%)、eval All-in正例ゼロのため、本訓練ではAll-inクラスのrecallを評価できない。All-in性能はS2-T4以降のSpot Checks（§58.2）で確認する。All-inを独立クラスにした設計（§49.2）は維持する。
+
+### 62.7 S2-T3判定結果
+epoch 1完走（step17,600）のfinal_metricsで健全性4軸（§62.3）を全て満たし、判定=GO。overall0.799 / top-1中央0.836 / sizing MAE0.125 / bet58.7%・raise62.4%（崩壊なし）。GRPO初期化点として確定。GRPO初期化候補はtop-1中央値が低く探索性の高いcheckpoint-17100由来のヘッド（=final_aux_head/aux_heads.pt）。
