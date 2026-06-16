@@ -9,6 +9,7 @@
 このsnapshotは、`C:\dev\pokerrl-training` でSprint 3（GRPO準備）を次セッションへ引き継ぐための現在地点メモである。次セッションはこのファイル単体で Task 2（`verify_pokerrl_encode.py`）に着手できる状態を目標にする。
 
 本リポジトリはローカルのみ（リモートなし）。poker-assistant本体リポジトリの体系的な仕様は `SPEC.md v3.8`、設計判断の理由は `DESIGN_NOTES.md` を参照する。
+docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
 
 現在地:
 - Sprint 2: 補助ヘッド訓練 S2-T3 完了。GRPO初期化点は `seg_003 final_adapter + final_aux_head/aux_heads.pt`。
@@ -318,6 +319,8 @@ PokerKit operation型:
    - Task 1追加前から `tools/poker_datasets_ref/...` の `ModuleNotFoundError: No module named 'poker_datasets'` が出る。
    - Task 1の合否は `pytest tests/test_pokerbench_prompt.py -q` を正とする。
 
+8. **ドキュメント配置ルール（確定）**: 仕様書・設計ノート・snapshot（SPEC.md / DESIGN_NOTES.md / snapshot.md）は `C:\Users\user\Desktop\dev\poker-system\docs` に一元管理する。訓練コード・実験スクリプトは `C:\dev\pokerrl-training`。**docsを訓練リポジトリに置かない**（2026-06-16にsnapshotを訓練リポジトリへ誤保存した事例あり。Builderへ保存場所を指示する際は必ずフルパスで `...\poker-system\docs\` を明記する）。
+
 ---
 
 ## 9. TODO
@@ -417,4 +420,3 @@ git log --oneline -5
    - preflop chips揺れのみnormalize。
    - tokenizer呼び出し条件（`add_special_tokens`、`truncation`、`max_length`、padding/attention_mask）が訓練時と一致。
    - GRPO自己対戦入力が補助ヘッド訓練入力と同じprompt仕様で作れる。
-
