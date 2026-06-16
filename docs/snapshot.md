@@ -1,12 +1,12 @@
 # pokerrl-training snapshot
-**Updated:** 2026-06-16 JST
-**Session:** Sprint 3 Task 2 完了 — verify_pokerrl_encode.py 新規作成 / 生成器・teacher・訓練tokenize整合検証基盤確立
+**Updated:** 2026-06-17 JST
+**Session:** Sprint 3 Task 3 完了 — 6-max自己対戦環境骨格 + state正本化 + スモークランPASS
 
 ---
 
 ## 1. このsnapshotの位置づけ
 
-このsnapshotは、`C:\dev\pokerrl-training` でSprint 3（GRPO準備）を次セッションへ引き継ぐための現在地点メモである。次セッションはこのファイル単体で Task 3 に着手できる状態を目標にする。
+このsnapshotは、`C:\dev\pokerrl-training` でSprint 3（GRPO準備）を次セッションへ引き継ぐための現在地点メモである。次セッションはこのファイル単体で Task 4（報酬関数の本実装）に着手できる状態を目標にする。
 
 本リポジトリはローカルのみ（リモートなし）。poker-assistant本体リポジトリの体系的な仕様は `SPEC.md v3.8`、設計判断の理由は `DESIGN_NOTES.md` を参照する。
 docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
@@ -16,7 +16,8 @@ docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
 - Sprint 3 準備: 検証1（補助ヘッド正本ペアのロードforward）はクローズ済み。
 - Sprint 3 Task 1: PokerKit state → PokerBench形式prompt生成器を新規実装し、teacher照合テスト4件を含む単体テストがPASS。
 - Sprint 3 Task 2: `verify_pokerrl_encode.py` を新規作成し、生成器・teacher・訓練tokenizeの整合検証がPASS。
-- 次は Sprint 3 Task 3。内容は次セッションで DESIGN_NOTES.md §56-59 / SPEC.md §9.4・§10A を確認して確定する。
+- Sprint 3 Task 3: PokerKitベース6-max自己対戦環境骨格、state正本化、スモークランゲートがPASS。
+- 次は Sprint 3 Task 4: 報酬関数の本実装。DESIGN_NOTES §57 / §58、SPEC §10A を正とする。
 
 ---
 
@@ -63,6 +64,19 @@ docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
    - forward shape: `pooled_shape=(1, 3072)` / `action_logits_shape=(1, 4)` / `raise_size_ratio_shape=(1,)`
    - 既存テスト: `pytest tests/test_pokerbench_prompt.py -q` は `10 passed` を維持。
    - 実装は `tests/test_pokerbench_prompt.py` のteacherヘルパと、`scripts/train_aux_heads.py` のtokenizer条件・`AuxCollator`・`load_model_tokenizer_heads`・`load_checkpoint`・`extract_pooled_hidden` を再利用。`train_aux_heads.py` / `pokerbench_prompt.py` / `tests/test_pokerbench_prompt.py` は無変更。
+
+9. Sprint 3 Task 3 を実装。
+   - 新規: `pokerrl_grpo/state_factory.py`（PokerKit state生成の正本）
+   - 新規: `pokerrl_grpo/selfplay_env.py`（`SixMaxSelfPlayEnv`: `reset()` / `legal_actions()` / `step()`、報酬スタブ、prompt接続）
+   - 新規: `tests/test_selfplay_env.py`
+   - 新規: `scripts/smoke_selfplay.py`
+   - 変更: `tests/test_pokerbench_prompt.py` はstateヘルパのimport差し替えのみ。アサーション・検証ロジックは維持。
+   - コミット: `f04090d 追加: 6-max自己対戦環境の骨格とstate正本化（報酬スタブ・スモークラン）`
+   - テスト: `pytest tests/test_pokerbench_prompt.py tests/test_selfplay_env.py -q` は `15 passed`。
+   - 既存promptテスト: `pytest tests/test_pokerbench_prompt.py -q` は `10 passed` を維持。
+   - スモーク: `hands=200 / total_steps=3761 / average_steps_per_hand=18.80 / zero_sum_ok=True / winners_ok=True / SMOKE: PASS`
+   - 回帰確認: `python scripts/verify_pokerrl_encode.py` は `passed=8 failed=0` / `OVERALL: PASS`。
+   - 設計判断はDESIGN_NOTES §64に記録済み（state正本化、§20準拠、snapshot §8-5の目的維持）。
 
 ---
 
@@ -244,8 +258,7 @@ Task 2のnormalize方針:
 ### 6.4 `tests/test_pokerbench_prompt.py`
 
 重要行:
-- PokerKit state生成: `create_state()` は `tests/test_pokerbench_prompt.py:28-37`。
-- hole cards投入: `deal_holes()` は `tests/test_pokerbench_prompt.py:40-43`。
+- PokerKit state生成ヘルパはTask 3で `pokerrl_grpo/state_factory.py` に正本化済み。`tests/test_pokerbench_prompt.py` はそこからimportする。
 - preflop chips normalize: `normalize_preflop_chips()` は `tests/test_pokerbench_prompt.py:46-48`。
 - teacher prompt helper: `teacher_prompt()` は `tests/test_pokerbench_prompt.py:51-78`。
 - teacher照合4件: `tests/test_pokerbench_prompt.py:124-274`。
@@ -266,6 +279,58 @@ Sprint 3 Task 2で追加したencode整合検証スクリプト。CI/日常確�
 - `scripts/train_aux_heads.py` の `load_model_tokenizer_heads` / `load_checkpoint` / `AuxCollator` / `extract_pooled_hidden` を再利用し、訓練時経路とverify経路を揃えている。
 - forward前に `heads.eval()` を明示する。補助ヘッドMLPのDropoutによる出力揺れを避けるため。
 - Heads正本は単数形パス `results/aux_heads/seg_003/final_aux_head` を明示指定する。plural `final_aux_heads` と混同しない。
+
+### 6.6 `pokerrl_grpo/state_factory.py`
+
+Sprint 3 Task 3で追加したPokerKit state生成の正本。Task 1のteacher照合テストで使っていた値を完全維持し、テストと自己対戦環境の双方がここからimportする。
+
+公開ヘルパ:
+- `create_state()`: blinds 0.5/1、starting 100、player_count 6、8 automations、ante 0、min_bet 1。
+- `deal_holes(state, cards_by_index)`
+- `deal_board_cards(state, cards)`
+- `complete_to(state, amount)`
+- `call(state)`
+- `fold(state)`
+
+制約:
+- state定義値はTask 1/2のprompt・encode整合に直結するため改変禁止。
+- 今後state定義を別モジュールへ複製しない。変更が必要な場合はこの正本を変更し、影響テストを同時に更新する。
+
+### 6.7 `pokerrl_grpo/selfplay_env.py`
+
+Sprint 3 Task 3で追加した自己対戦環境骨格。`SixMaxSelfPlayEnv` がPokerKit stateを薄く包む。
+
+主要インターフェース:
+- `reset()`: `state_factory.create_state()` で新ハンドを開始し、ランダムにホールカードを配り、最初の観測を返す。
+- `legal_actions()`: 現在actorのfold/check/call/raise/all-in可否とraise範囲をPokerKit APIから返す。
+- `step(action)`: アクションをPokerKit stateへ適用し、次観測、報酬スタブ、done、infoを返す。
+- `current_player_index`: 現在手番player index。
+
+重要な設計:
+- 6-max固定。`player_count != 6` は `ValueError`。
+- 各意思決定局面で `build_pokerbench_prompt(state, hero_index=current_player)` を呼べる。
+- pot / サイドポット / death SB / showdown処理はPokerKit automationに委譲し、環境側では独自実装しない。
+- 報酬は現状スタブ。終局時にPokerKitの `state.payoffs` に基づくchip deltaのみを返す。§57の正式報酬はTask 4で実装予定。
+
+### 6.8 `scripts/smoke_selfplay.py`
+
+Sprint 3 Task 3で追加したスモークランゲート。軽量な探索ルールベース方策で200ハンドを回し、配管の生存を確認する。
+
+確認項目:
+- 完走すること。
+- chip deltaがゼロサム保存されること。
+- 勝者payoffが正であること。
+- fold / check-call / raise / all-in が全て非ゼロで、粗いアクション崩壊がないこと。
+
+確認済み結果:
+```text
+hands=200
+total_steps=3761
+average_steps_per_hand=18.80
+zero_sum_ok=True
+winners_ok=True
+SMOKE: PASS
+```
 
 ---
 
@@ -360,6 +425,20 @@ PokerKit operation型:
 
 11. 注記: 実装指令書 `PokerRL+GRPO 6-max NLHE.md`（v1.3）は **2026-06-04に廃止済み**。有用情報は DESIGN_NOTES §56-59 / SPEC §9.4・§10A / 本snapshot へ移動済み。**本ファイルの添付・参照は不要**。Sprint 1-3でも実装指令書は渡さない。（Commander運用上、システムプロンプトの古いファイル一覧に「実装指令書を必ず添付」と残っていても、この注記を優先する）
 
+12. state生成の正本は `pokerrl_grpo/state_factory.py`。
+   - 今後state定義（blinds 0.5/1、starting 100、player_count 6、8 automations）を複製しない。
+   - テストと自己対戦環境の双方が `state_factory` からimportする。
+   - これはDESIGN_NOTES §20の重複回避方針に準拠する。
+
+13. 自己対戦環境のpot計算はPokerKit automationに委譲する。
+   - 環境側で独自pot / サイドポット / death SBロジックを書かない。
+   - teacher prompt互換のpot文字列調整は `pokerbench_prompt.py` 側の責務（§63.5）。環境はPokerKit stateを正しく進行させることに集中する。
+
+14. Sprint 3 Task 3時点の報酬はスタブ。
+   - 終局時chip delta（PokerKit `state.payoffs`）のみ。
+   - §57の正式報酬（0.7×chip delta + 0.2×eval7 EV + 0.1×直近20ハンド累積）はTask 4で本実装予定。
+   - この段階で正式報酬が未実装なのは正常。
+
 ---
 
 ## 9. TODO
@@ -375,34 +454,59 @@ PokerKit operation型:
 
 ### 9.2 DESIGN_NOTES追記予定
 
-本セッションの [Doc - Task 2] で、poker-assistant側の `docs/DESIGN_NOTES.md` にSprint 3準備の設計判断を§63として追記する。
+Sprint 3 Task 2の設計判断は `docs/DESIGN_NOTES.md` §63 に追記済み。
 - PokerBench形式prompt生成器を新規作成した理由。
 - verifyを「完全バイト一致」ではなく「形式整合案」にした理由。
 - teacher側のpreflop chips揺れをnormalize対象にした理由。
 - PokerKit 0.7.4固定と `poker_datasets_ref` 依存を入れない判断。
 - postflop pot再計算で死にSBを除外する互換ロジック。
 
-### 9.3 Sprint 3 Task 3（次タスク）
+Sprint 3 Task 3の設計判断は `docs/DESIGN_NOTES.md` §64 に追記済み。
+- state生成を `pokerrl_grpo/state_factory.py` へ正本化した理由。
+- `tests/test_pokerbench_prompt.py` のimport差し替えがsnapshot §8-5の目的に反しない理由。
+- 報酬をスタブに留め、環境骨格を独立タスクに切った理由。
 
-次セッションはSprint 3 Task 3から再開する。Sprint 3 Task 3以降の内容（Phase 2 GRPO訓練仕様・評価フレームワーク・Sprint計画・Go/No-go・撤退基準）は **DESIGN_NOTES.md §56-59 および SPEC.md §9.4・§10A を正とする**。Task 3の具体内容は次セッションで DESIGN_NOTES §57-59 を確認して確定する。ここでは推測でタスク定義しない。着手前にTask 1/2の健全性チェック（§10）を実行する。
+### 9.3 Sprint 3 Task 3（完了）
 
-### 9.4 既存collection問題
+完了内容:
+- `pokerrl_grpo/state_factory.py` を新規作成し、PokerKit state生成を正本化。
+- `pokerrl_grpo/selfplay_env.py` を新規作成し、`SixMaxSelfPlayEnv` の骨格を実装。
+- `tests/test_selfplay_env.py` と `scripts/smoke_selfplay.py` を追加。
+- `tests/test_pokerbench_prompt.py` はimport差し替えのみで、`10 passed` を維持。
+- コミット済み: `f04090d`
+
+### 9.4 Sprint 3 Task 4（次タスク）
+
+次セッションはSprint 3 Task 4（報酬関数の本実装）から再開する。DESIGN_NOTES §57 / §58、SPEC §10A を正とし、現状のchip deltaスタブを正式報酬へ置き換える。
+
+Task 4で実装する報酬の正:
+- 0.7×chip delta
+- 0.2×eval7 EV
+- 0.1×直近20ハンド累積
+
+注意:
+- Task 4ではGRPO本体（DAPO/OPEFO）はまだ実装しない。
+- その先の道筋は、Task 5: DAPO/OPEFO実装、Task 6: 100-150h訓練 + §57 Go/No-go本判定。
+- 実装指令書は廃止済みで参照不要。DESIGN_NOTES §56-59 / SPEC §9.4・§10A / 本snapshotを正とする。
+
+### 9.5 既存collection問題
 
 `pytest -q` 全体は `tools/poker_datasets_ref/poker_datasets/test_hand_to_text.py` のcollection errorで止まる。
 
 現時点の判断:
-- Task 1/2追加とは無関係。
+- Task 1/2/3追加とは無関係。
 - `tools/poker_datasets_ref` を現venvへ入れるとPokerKitダウングレードが起きるため禁止。
 - 必要なら別venv分離、pytest ignore設定、または当該参照ツールのテスト除外を別タスクで検討する。
 
-### 9.5 コミット状態
+### 9.6 コミット状態
 
-訓練リポジトリはローカルのみ。Task 1/2本体はコミット済み。
+訓練リポジトリはローカルのみ。Task 1/2/3本体はコミット済み。
 
 主な関連コミット:
 - `96aa90a` Task 1: PokerBench prompt生成器とテスト
 - `01e804f` snapshot.mdを訓練リポジトリから除外
 - `6bbb309` Task 2: encode整合検証スクリプト
+- `f04090d` Task 3: 6-max自己対戦環境骨格とstate正本化
 
 未追跡のまま残っている可能性があるもの:
 - 調査用一時スクリプト群（`tmp_*.py`）
@@ -414,7 +518,7 @@ PokerKit operation型:
 
 ## 10. 次セッション開始手順
 
-着手対象は Sprint 3 Task 3。Sprint 3 Task 3以降の内容（Phase 2 GRPO訓練仕様・評価フレームワーク・Sprint計画・Go/No-go・撤退基準）は **DESIGN_NOTES.md §56-59 および SPEC.md §9.4・§10A を正とする**。Task 3の具体内容は次セッションで DESIGN_NOTES §57-59 を確認して確定する。
+着手対象は Sprint 3 Task 4（報酬関数の本実装）。DESIGN_NOTES §57 / §58、SPEC §10A を正とし、Task 3で作ったchip deltaスタブを正式報酬へ置き換える。
 
 1. 作業場所へ移動。
 ```powershell
@@ -427,7 +531,17 @@ git status --short
 git log --oneline -5
 ```
 
-3. Task 1のテスト確認。
+3. Task 1/3のテスト確認。
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_selfplay_env.py tests/test_pokerbench_prompt.py -q
+```
+
+期待:
+```text
+15 passed
+```
+
+4. Task 1のteacher照合テスト単体確認。
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_pokerbench_prompt.py -q
 ```
@@ -437,7 +551,7 @@ git log --oneline -5
 10 passed
 ```
 
-4. Task 2のencode整合確認（軽量・モデルロードなし）。
+5. Task 2のencode整合確認（軽量・モデルロードなし）。
 ```powershell
 .\.venv\Scripts\python.exe scripts\verify_pokerrl_encode.py
 ```
@@ -448,7 +562,19 @@ SUMMARY: passed=8 failed=0
 OVERALL: PASS
 ```
 
-5. Task 2のforward健全性確認（必要時・モデルロードあり）。
+6. Task 3の自己対戦スモーク確認。
+```powershell
+.\.venv\Scripts\python.exe scripts\smoke_selfplay.py
+```
+
+期待:
+```text
+SMOKE: PASS
+zero_sum_ok=True
+winners_ok=True
+```
+
+7. Task 2のforward健全性確認（必要時・モデルロードあり）。
 ```powershell
 .\.venv\Scripts\python.exe scripts\verify_pokerrl_encode.py --with-forward
 ```
@@ -462,7 +588,7 @@ action_logits_shape=(1, 4)
 raise_size_ratio_shape=(1,)
 ```
 
-6. 補助ヘッドforward健全性を旧一時スクリプトで必要に応じて再確認。
+8. 補助ヘッドforward健全性を旧一時スクリプトで必要に応じて再確認。
 ```powershell
 .\.venv\Scripts\python.exe .\tmp_load_forward_check.py
 ```
@@ -473,7 +599,8 @@ raise_size_ratio_shape=(1,)
 - `action_logits_shape=(1, 4)`
 - `raise_size_ratio_shape=(1,)`
 
-7. Sprint 3 Task 3に着手。
-   - DESIGN_NOTES.md §56-59 / SPEC.md §9.4・§10A を正としてTask 3内容を確認。
-   - Task 1/2の成果物（`pokerrl_grpo/pokerbench_prompt.py`、`scripts/verify_pokerrl_encode.py`）を前提に進める。
-   - `pokerkit==0.7.4`、6-max固定、正本モデル読み取り専用、docs配置ルールを維持する。
+9. Sprint 3 Task 4に着手。
+   - DESIGN_NOTES §57 / §58、SPEC §10A を正として報酬関数を実装する。
+   - `pokerrl_grpo/selfplay_env.py` のchip deltaスタブを正式報酬へ置き換える。
+   - Task 4ではeval7 EV項と直近20ハンド累積項を追加する。GRPO本体（DAPO/OPEFO）はTask 5以降。
+   - `pokerkit==0.7.4`、6-max固定、state正本 `pokerrl_grpo/state_factory.py`、docs配置ルールを維持する。
