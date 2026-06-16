@@ -4174,3 +4174,37 @@ train All-in 783件(0.14%)、eval All-in正例ゼロのため、本訓練ではA
 
 ### 62.7 S2-T3判定結果
 epoch 1完走（step17,600）のfinal_metricsで健全性4軸（§62.3）を全て満たし、判定=GO。overall0.799 / top-1中央0.836 / sizing MAE0.125 / bet58.7%・raise62.4%（崩壊なし）。GRPO初期化点として確定。GRPO初期化候補はtop-1中央値が低く探索性の高いcheckpoint-17100由来のヘッド（=final_aux_head/aux_heads.pt）。
+
+## 63. Sprint 3準備（GRPO prompt生成器とencode検証）の設計判断
+
+Sprint 3 Task 2（`scripts/verify_pokerrl_encode.py`）で、補助ヘッド訓練時のpromptは生成器由来ではなく、JSONL内のteacher prompt（`raw["prompt"]`）そのものだったことが確定した。したがってverifyは「生成器prompt ≡ teacher prompt（preflop chips揺れのみnormalize）→ 訓練tokenize一致」という連鎖で、GRPO自己対戦入力と補助ヘッド訓練入力の整合を保証する設計にした。
+
+### 63.1 PokerBench形式prompt生成器を新規パッケージ `pokerrl_grpo` に隔離した理由
+
+GRPO自己対戦では PokerKit state から PokerBench形式promptへの変換が必要になる。既存のHU向けprompt経路や補助ヘッド訓練スクリプトに混ぜると、責務境界が不明確になり、GRPO固有の入力生成とSFT訓練データ処理が相互に影響しやすい。
+
+このため、生成器は `pokerrl_grpo/pokerbench_prompt.py` に隔離した。6-max専用とし、`player_count != 6` は `ValueError` とする。これは §60.1 の責務分離方針と同系統の判断である。
+
+### 63.2 verifyを「完全バイト一致」ではなく「形式整合案」にした理由
+
+teacher側（PokerBench）には表記揺れが実在するため、全フィールドの完全バイト一致を合格条件にすると、実質的なencode不一致ではない差分で検証が失敗する。そこで、揺れのない固定句・カード綴り・`of`/`Of`・改行分岐・ポジション・接続詞・pot小数桁・postflop整数額は厳密比較し、揺れる箇所のみ局所normalizeする方針にした。
+
+この方針は、異常な入力差分を隠さず、既知のデータ表記揺れだけを吸収するためのもの。§56.4 の病理対処方針と整合する。
+
+### 63.3 teacher側のpreflop raise額 `"chips"` 有無のみをnormalize対象にした理由
+
+PokerBenchには `"raise 2.0"` と `"raise 2.0 chips"` の両表記が混在していた。生成器側は `_format_amount` のpreflop分岐で `"chips"` を付けない表記を正とし、比較時のみこの1点を `normalize_preflop_chips()` で吸収する。
+
+他の差分は緩和しない。過剰normalizeを行うと、固定句・改行・カード表記・pot表記など、本来検出すべきencode不一致まで見逃すためである。
+
+### 63.4 PokerKit 0.7.4固定と `poker_datasets_ref` を導入しない判断
+
+`poker_datasets_ref` のeditable installは `pokerkit 0.7.4 → 0.6.5` のダウングレードを要求する。PokerKit API調査、`pokerrl_grpo/pokerbench_prompt.py`、`scripts/verify_pokerrl_encode.py` はすべて0.7.4前提で作っているため、現venvへ `poker_datasets_ref` は導入しない。
+
+この判断により `pytest -q` 全体は当該参照ツールのcollection errorで停止するが、これは既知の既存問題であり、Sprint 3成果物の合否とは独立させる。合否は `pytest tests/test_pokerbench_prompt.py -q` と `python scripts/verify_pokerrl_encode.py` / `python scripts/verify_pokerrl_encode.py --with-forward` で判定する。
+
+### 63.5 postflop pot再計算で死にSBを除外する互換ロジックの理由
+
+PokerKitの `state.total_pot_amount` は死にSBの0.5を含む。一方で、PokerBench teacherのpostflop promptでは、preflop未参加扱いの死にSBを除いたpot値になるサンプルがある。
+
+この差を吸収するため、`pokerrl_grpo/pokerbench_prompt.py` ではpreflopのみの局面では `state.total_pot_amount` をそのまま使い、postflopでは `state.statuses` が真のプレイヤー、または自発的アクション済みプレイヤーのcontributionだけを再集計してpotを算出する。teacher promptとの形式整合を優先した互換ロジックである。
