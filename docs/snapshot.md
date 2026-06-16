@@ -1,241 +1,420 @@
-# poker-assistant snapshot
-**Updated:** 2026-06-15 JST
-**Session:** Sprint 2 — 補助ヘッド訓練(S2-T3) epoch 1完走・健全性判定GO → Sprint 3 GRPO準備へ
+# pokerrl-training snapshot
+**Updated:** 2026-06-16 JST
+**Session:** Sprint 3 Task 1 完了 — 検証1クローズ / PokerKit導入 / 教師prompt仕様抽出 / PokerKit API調査 / PokerBench形式prompt生成器実装
 
 ---
 
-## 0. このsnapshotの位置づけ
+## 1. このsnapshotの位置づけ
 
-このsnapshotは、次セッションでポーカーAIアシスタント開発を再開するための現在地点メモである。
-体系的な仕様は SPEC.md v3.8、設計判断の理由は DESIGN_NOTES.md（§62まで）を参照。
+このsnapshotは、`C:\dev\pokerrl-training` でSprint 3（GRPO準備）を次セッションへ引き継ぐための現在地点メモである。次セッションはこのファイル単体で Task 2（`verify_pokerrl_encode.py`）に着手できる状態を目標にする。
 
-リポジトリ: https://github.com/sanhyokim/poker-assistant
-**重要: sanhyokim2050 ではない。毎回この正しいURLを使うこと。**
+本リポジトリはローカルのみ（リモートなし）。poker-assistant本体リポジトリの体系的な仕様は `SPEC.md v3.8`、設計判断の理由は `DESIGN_NOTES.md` を参照する。
 
-**ドキュメント構成（3ファイル体制）:**
-- snapshot.md — 現在地点（本ファイル）
-- SPEC.md v3.8 — システム仕様（補助ヘッド仕様 §10A.2 含む。補助ヘッド訓練の結果反映はSprint 4統合時に行う＝現時点では未反映）
-- DESIGN_NOTES.md（§62まで） — 設計判断理由。§61=SFT飽和と補助ヘッド追加、§62=補助ヘッド評価基準の変更とLoRA凍結設計の保存仕様
-
-**実装指令書（`docs/PokerRL+GRPO 6-max NLHE.md`）は廃止済み。次セッションで渡す必要なし。撤退基準はDESIGN_NOTES §56に記載。**
-
-**現在地: Sprint 2。補助ヘッド訓練(S2-T3)が epoch 1 完走し健全性判定GO。テキスト生成SFTは82%飽和で停止済み。次はSprint 3（GRPO強化学習）の準備。MW Context Engineは Step 1〜4完了・実戦5/5 PASS。pytest 全1523 passed（前セッション確認値、本セッションではコード変更なし）。**
+現在地:
+- Sprint 2: 補助ヘッド訓練 S2-T3 完了。GRPO初期化点は `seg_003 final_adapter + final_aux_head/aux_heads.pt`。
+- Sprint 3 準備: 検証1（補助ヘッド正本ペアのロードforward）はクローズ済み。
+- Sprint 3 Task 1: PokerKit state → PokerBench形式prompt生成器を新規実装し、teacher照合テスト4件を含む単体テストがPASS。
+- 次は Sprint 3 Task 2: `verify_pokerrl_encode.py` の新規作成。
 
 ---
 
-## 1. 現在地点
+## 2. 本セッションで完了したこと
 
-### 1.1 本セッションで完了したこと
+1. 補助ヘッド正本ペアのロードforward実証を完了。
+   - ベースLoRA: `results/sft_sequential/seg_003_offset_66000/final_adapter`
+   - 補助ヘッド: `results/aux_heads/seg_003/final_aux_head/aux_heads.pt`
+   - `tmp_load_forward_check.py` で `pooled_shape=(1, 3072)`、`action_logits_shape=(1, 4)`、`raise_size_ratio_shape=(1,)` を確認。
+   - freeze検証: `Frozen base+LoRA parameters: total=2271546368 trainable=0`、`Auxiliary head parameters: trainable=3149317`。
 
-1. 補助ヘッド訓練スクリプト `scripts/train_aux_heads.py` 実装・本番訓練実行
-2. epoch 1 完走（31時間 / 1,883分、step 17,600 = 1 epoch分）
-3. S2-T3 健全性判定 = **GO**（評価基準は §62 で「GRPO初期化健全性」に変更済み）
-4. 訓練成果物を `results/aux_heads/seg_003/final_aux_head/` に確定保存
-5. DESIGN_NOTES §62 追記（評価基準変更とLoRA凍結保存仕様）
+2. `verify_pokerrl_encode.py` の所在確認を完了。
+   - `poker-assistant` / `pokerrl-training` の両方に既存スクリプトは存在しない。
+   - Task 2で新規作成が必要。
 
-### 1.2 補助ヘッド訓練(S2-T3)の設計と結果
+3. GRPO用prompt生成器の既存有無を確認。
+   - PokerKit状態からPokerBench形式promptを生成する既存コードは未着手だった。
+   - Task 1で新規パッケージ `pokerrl_grpo` に隔離して実装した。
 
-**訓練方式**: ベースモデル Phi-4-mini + LoRAアダプタ `seg_003_offset_66000/final_adapter` を全パラメータ freeze し、補助ヘッド（Action Head + Sizing Head）のみを新規訓練。
-- Action Head: 最終hidden state → MLP(hidden_dim=512) → 4クラス（0:Fold / 1:Check-Call / 2:Raise / 3:All-in）softmax
-- Sizing Head: 最終hidden state → MLP → sigmoid。`raise_size_ratio = 0.1 + 2.9 * sigmoid(x)`（DESIGN_NOTES §49.3 と厳密一致）。MSE損失はRaiseクラスのサンプルのみマスク計算
-- loss = CE(action) + λ(=1.0) * MSE(sizing)
-- freeze検証ログ: base+LoRA trainable=0 / 補助ヘッド trainable=3,149,317
-- 訓練データ563,200件、eval 1,000件、batch 8 × grad_accum 4（有効32）、lr=0.001、save_steps=150、eval_steps=300、最大2 epoch設定
+4. PokerKit導入と互換確認を完了。
+   - `pokerkit==0.7.4` を既存venvへ導入。
+   - dry-runで重要依存（torch / transformers / peft / bitsandbytes / numpy等）の変更なしを確認してから導入。
+   - 導入後も補助ヘッドforwardが通ることを確認。
 
-**結果（epoch 1 最終 step 17,600 / final_metrics.json）**:
-- overall accuracy 0.799
-- by_action_type: bet 58.7% / call 76.1% / check 94.9% / fold 90.8% / raise(type) 62.4%
-- top-1確率中央値 0.836
-- sizing_raise_mae 0.125（Raiseサンプル269件）
-- All-in: eval正例ゼロのため評価不能（予測分布にall_in:1が稀出する程度）
-- peak VRAM 14,670 MiB（10GB超過分はシステムメモリへスワップ＝訓練中の断続的スループット低下の原因）
+5. 教師promptフォーマット仕様を抽出。
+   - 冒頭固定句、末尾固定句、改行分岐、カード表記、ポジション値域、アクション履歴表記、completion/action_type値域を確認。
+   - preflop raise額の `chips` 有無など、一部 teacher 側の揺れを確認。
 
-**早期停止の警告について**: ログに `Early stop: aggressive accuracy below baseline. bet=58.65% raise=62.42%` が出ているが、これはスクリプトの旧基準（accuracy +5pt）由来の機構が反応したもの。本セッションで評価基準を §62 の健全性に変更済みのため、この警告は判定に無関係。epoch 1終端で止まったのは epoch 2を回さない方針（§61.2の過学習知見）とも一致し結果的に好都合。
+6. PokerKit 0.7.4 state API の情報抽出を完了。
+   - `state.hole_cards` / `state.get_board_cards(0)` / `state.total_pot_amount` / `state.actor_index` / `state.operations` 等の取得経路を確認。
+   - 6-max index対応は `0=SB, 1=BB, 2=UTG, 3=HJ, 4=CO, 5=BTN`。
 
-### 1.3 健全性判定の根拠（§62.3基準、判定=GO）
-
-| 軸 | 基準 | 実測（最終/epoch後半傾向） | 判定 |
-|---|---|---|---|
-| 劣化なし | overall ≥ 80%フロア（フロアであって目標ではない） | 0.799、後半step13k以降0.78〜0.80安定 | 合格 |
-| 崩壊なし | top-1中央値 ≤ 0.85付近、一点張りなし | 最終0.836、後半0.83〜0.89変動 | 合格 |
-| sizing健全 | Raise MAE ≤ 0.2x | 0.125、後半0.11〜0.12収束 | 合格 |
-| 攻撃が死んでない | bet/raise が0%付近に崩壊していない | bet58.7%/raise62.4%、振動内・崩壊なし | 合格 |
-
-bet/raiseがベースライン(62.5%/69.1%)をやや下回る点は §62で「完全解消不要・GRPOが再較正」と合意済みの想定内。Sizing Headは仕上がり良好。エントロピー崩壊なし。GRPO初期化点として十分。
-
-### 1.4 訓練成果物の正本（重要・GRPO初期化に使う）
-
-**推論に必要な完全モデルは2部品のペア**:
-1. ベースLoRAアダプタ（不変）: `results/sft_sequential/seg_003_offset_66000/final_adapter`
-2. 補助ヘッド（今回の成果）: `results/aux_heads/seg_003/final_aux_head/aux_heads.pt`（12.6MB、checkpoint-17100由来）
-
-`final_aux_head/` に aux_heads.pt + metrics.json + final_metrics.json を確定保存済み（checkpoint自動削除の巻き添え防止）。
-
-**final_adapterが存在しないのは正常**: LoRAを完全freezeしヘッドのみ訓練したため、checkpointには `aux_heads.pt` のみ保存され、LoRA重みは保存されない（1ステップも更新されていないため）。元の seg_003 final_adapter がそのまま使える。書き出し直しは不要。
-
-**GRPO初期化候補 = checkpoint-17100由来のヘッド**: 評価値のある終盤checkpoint（17100/17400）のうち、17100はtop-1中央値0.833と低めで探索性が高く、GRPO self-playの初期化に適する（17400はtop-1 0.878で確信度が締まりすぎ）。final_aux_head/aux_heads.pt は17100由来なのでそのまま使える。
-
-### 1.5 MW Context Engine（前セッションから変更なし）
-
-| 項目 | 状態 |
-|---|---|
-| Step 1〜4実装 | 完了（82テストPASS） |
-| Phase 0（15件LLM比較） | 完了。GPT-5.4-mini採用確定 |
-| MW実戦統合テスト（モック・実API） | 5/5 PASS（3〜5人） |
-| Phase 1（50件定性評価） | 未着手 |
-| Phase 2（500件定量評価） | 未着手 |
-
-### 1.6 システム全体の状態
-
-| エンジン | 状態 |
-|---|---|
-| Rust postflop CLI | 永久廃止確定 |
-| Deep CFR | 品質不合格。Stage D完了まで残す |
-| HU SFT (Phi-4-mini) | 82%飽和でテキスト生成SFT停止 |
-| HU 補助ヘッド | epoch 1完走・健全性GO。GRPO初期化点として確定 |
-| MW Context Engine | Step 1〜4完了。GPT-5.4-mini採用。実戦5/5 PASS |
+7. Sprint 3 Task 1 を実装。
+   - 新規: `pokerrl_grpo/__init__.py`
+   - 新規: `pokerrl_grpo/pokerbench_prompt.py`
+   - 新規: `tests/test_pokerbench_prompt.py`
+   - `pytest tests/test_pokerbench_prompt.py -q` は `10 passed`。
 
 ---
 
-## 2. 確定した制約（次セッション以降も有効）
+## 3. 検証1: 補助ヘッドロードforwardの確定事項
 
-### 2.1 永久廃止
-- Rust postflop CLI（Solver）は永久廃止
+正本ペアは実際にロードしてforward可能。
 
-### 2.2 品質不合格（保持）
-- Deep CFRモデルは品質不合格。Stage D完了まで残す
+ロード対象:
+- LoRA: `results/sft_sequential/seg_003_offset_66000/final_adapter`
+- Heads: `results/aux_heads/seg_003/final_aux_head/aux_heads.pt`
 
-### 2.3 評価基準
-- 「profit vs random」は単独評価指標として使用禁止
-- Spot Checks 50シナリオを削除・緩和しない
-- verify_pokerrl_encode.pyの検証をスキップしない（Sprint 3 GRPO自己対戦の入力エンコード一致確認で実施）
-- **補助ヘッドの評価基準は accuracy ではなく「GRPO初期化健全性」（§62）。accuracy追求は過剰最適化として回避済み**
-
-### 2.4 削除禁止
-- 既存Deep CFR/Solverコードは新エンジン統合完了（Stage D）まで削除禁止
-- **`results/aux_heads/seg_003/final_aux_head/` は補助ヘッドの正本。削除禁止**
-- **`results/sft_sequential/seg_003_offset_66000/final_adapter` は補助ヘッドのベースLoRA。削除禁止**
-
-### 2.5 ハードウェア・予算
-- RTX 3080 (VRAM 10GB, RAM 32GB)。クラウドは$500上限。全体タイムボックス12週間（最大15週間）
-- VRAMは10GB上限。訓練中は他のGPU使用アプリ（Chrome/Edge WebView/IDE/LINE等）を絞らないと共有メモリスワップでスループットが大幅低下する（本セッションで実測）
-
-### 2.6 データ設計制約
-- phh-dataset hole cards付き726,570件は全件敗者。positive example使用禁止
-- MW教師ラベルの品質問題はContext Engineで回避（訓練不要のルール層）
-- 補助ヘッド訓練データのAll-inクラスは783件（全体の0.14%）と極少。eval(1,000件)にはAll-in正例ゼロ。All-in性能はSpot Checks（DESIGN_NOTES §58.2）で確認する
-
-### 2.7 訓練運用
-- save_steps=150、eval_steps=300（BSOD対策でずらし。デフォルト）
-- keep_checkpoints=3〜4（古いcheckpointは自動削除。残したい成果物は別ディレクトリにコピーして確定する）
-- eval_dataは1,000件（5,000件はVRAM不足でハング）
-
-### 2.8 ドキュメント体制
-- 3ファイル体制: snapshot.md + SPEC.md + DESIGN_NOTES.md
-- 実装指令書は廃止済み。撤退基準はDESIGN_NOTES §56に記載
-
-### 2.9 MW Context Engine運用
-- MW本採用モデル: GPT-5.4-mini（OpenRouter経由、openai/gpt-5.4-mini）
-- .env の load_dotenv(override=True) を使用すること
-- config.yaml に llm.mw_model: openai/gpt-5.4-mini 設定済み
-
-### 2.10 BSOD対策（実装済み・有効）
-- checkpoint保存前にtorch.cuda.empty_cache()、_save_optimizer_cpu()でCPU経由保存
-- save_steps=150, eval_steps=300（ずらし必須）、古いfinal_adapterは訓練開始時に自動削除
-- optimizer.pt 0バイト検出で fresh start
-
-### 2.11 補助ヘッド設計（確定）
-- LoRA完全freeze + ヘッドのみ訓練。checkpointにはaux_heads.ptのみ保存される（LoRA重みは保存されない＝正常）
-- Action Head 4クラス（Fold/Check-Call/Raise/All-in）、Sizing Head sigmoid 0.1-3.0x
-- 推論時は「seg_003 final_adapter + aux_heads.pt」のペアでロードする必要がある
-
----
-
-## 3. 主要コードファイル
-
+`aux_heads.pt` のstate_dictキー:
 ```text
-[poker-assistantリポジトリ]
-strategy/context_engine.py          MW Context Engine本体
-strategy/multiway_engine.py         MW GameLoop統合
-tests/test_context_engine.py        82テスト
-tests/test_multiway_engine.py       38テスト
-scripts/test_mw_live.py             MW実戦統合テスト（5ケース）
-config.yaml                         llm.mw_model: openai/gpt-5.4-mini
+action_head.0.weight
+action_head.0.bias
+action_head.3.weight
+action_head.3.bias
+sizing_head.0.weight
+sizing_head.0.bias
+sizing_head.3.weight
+sizing_head.3.bias
+```
 
-[訓練リポジトリ C:\dev\pokerrl-training（リモートなし、ローカルgitのみ）]
-scripts/train_aux_heads.py          補助ヘッド訓練（本セッション実装）
-scripts/prepare_sft_full.py         フルデータ準備
-scripts/run_sft_comparison.py       SFT（checkpoint完全保存/再開+BSOD対策）
-scripts/run_sft_sequential.py       10k区切り自動連続SFT
-data/sft_train_full.jsonl           563,200件（636MB）
-data/sft_eval_1k.jsonl              1,000件
-results/sft_sequential/seg_003_offset_66000/final_adapter   補助ヘッドのベースLoRA（不変・削除禁止）
-results/aux_heads/seg_003/final_aux_head/aux_heads.pt       補助ヘッド正本（削除禁止）
+`--resume_from results\aux_heads\seg_003\final_aux_head` の単数形パス指定でロードできる。デフォルト探索名には plural の `final_aux_heads` が混じるため、GRPO初期化やeval_onlyでは正本パスを明示すること。
+
+### 3.1 heads.eval() Dropout申し送り
+
+`tmp_load_forward_check.py` はforward実証用の一時スクリプトで、現状では `heads.eval()` を明示していない。補助ヘッドMLPにDropoutがあるため、`raise_size_ratio` 等の数値は実行ごとに微妙に揺れる可能性がある。Task 2以降で再現性ある比較を行う場合は、ロード後に `heads.eval()` を必ず呼ぶ。
+
+---
+
+## 4. Task 1 実装サマリ
+
+実装ファイル:
+- `pokerrl_grpo/pokerbench_prompt.py`
+- `pokerrl_grpo/__init__.py`
+
+テストファイル:
+- `tests/test_pokerbench_prompt.py`
+
+公開関数:
+- `build_pokerbench_prompt(state, hero_index: int) -> str`
+- `card_to_words(card, *, board: bool) -> str`
+- `position_for_index(index: int) -> str`
+- `join_actions(items: list[str]) -> str`
+
+対応範囲:
+- PokerKit 0.7.4 の6-max NLHE state専用。
+- `player_count != 6` は `ValueError`。
+- hero hole cardsが2枚でない場合も `ValueError`。
+- `state.operations` を時系列に再走査して、preflop/flop/turn/riverのアクション履歴を再構成する。
+
+テスト結果:
+```text
+pytest tests/test_pokerbench_prompt.py -q
+10 passed, 2 warnings in 0.20s
+```
+
+全体pytest:
+- `pytest -q` は既存問題でcollection error。
+- 原因は `tools/poker_datasets_ref/poker_datasets/test_hand_to_text.py` が `poker_datasets` をimportできないこと。
+- 新規追加3ファイルを一時退避しても同じcollection errorが出るため、Task 1追加とは無関係な既存問題。
+- `tools/poker_datasets_ref` のeditable installは dry-run で `pokerkit 0.7.4 -> 0.6.5` のダウングレードが見えたため、導入していない。
+
+---
+
+## 5. 技術参照: teacher照合サンプル現物
+
+teacher照合テストは `tests/test_pokerbench_prompt.py` に4件存在する。
+
+| ストリート | テスト関数 | 行番号 | 照合方式 |
+|---|---|---:|---|
+| preflop | `test_preflop_teacher_sample_matches_exactly` | 124-152 | バイト一致 |
+| flop | `test_flop_teacher_sample_matches_after_preflop_chips_normalization` | 155-187 | preflop `chips` 揺れのみnormalize |
+| turn | `test_turn_teacher_sample_matches_after_preflop_chips_normalization` | 190-228 | preflop `chips` 揺れのみnormalize |
+| river | `test_river_teacher_sample_matches_after_preflop_chips_normalization` | 231-274 | preflop `chips` 揺れのみnormalize |
+
+normalize関数は `tests/test_pokerbench_prompt.py:46-48`。コメントどおり、PokerBenchには `"raise 2.0"` と `"raise 2.0 chips"` の両方があるため、Task 2でもこの揺れだけを局所的に許容する。
+
+### 5.1 preflop teacher prompt
+
+再現方法:
+- `create_state()` は `tests/test_pokerbench_prompt.py:28-37`。
+- hole cards投入は `tests/test_pokerbench_prompt.py:126-136`。
+- action sequenceは `tests/test_pokerbench_prompt.py:137-141`。
+- `build_pokerbench_prompt(state, hero_index=1)` は `tests/test_pokerbench_prompt.py:142`。
+- expected生成は `tests/test_pokerbench_prompt.py:143-151`。
+
+expected prompt (`repr()`):
+```python
+'\n\nYou are a specialist in playing 6-handed No Limit Texas Holdem. The following will be a game scenario and you need to make the optimal decision.\n\nHere is a game summary:\n\nThe small blind is 0.5 chips and the big blind is 1 chips. Everyone started with 100 chips.\nThe player positions involved in this game are UTG, HJ, CO, BTN, SB, BB.\nIn this hand, your position is BB, and your holding is [Nine of Spade and Seven of Spade].\nBefore the flop, UTG raise 2.0, CO call, and BTN call. Assume that all other players that is not mentioned folded.\n\nNow it is your turn to make a move.\nTo remind you, the current pot size is 7.5 chips, and your holding is [Nine of Spade and Seven of Spade].\n\nDecide on an action based on the strength of your hand on this board, your position, and actions before you. Do not explain your answer.\nYour optimal action is:'
+```
+
+### 5.2 flop teacher prompt
+
+再現方法:
+- hole cards投入は `tests/test_pokerbench_prompt.py:157-167`。
+- preflop action sequenceは `tests/test_pokerbench_prompt.py:168-173`。
+- flop deal/actionは `tests/test_pokerbench_prompt.py:174-175`。
+- `build_pokerbench_prompt(state, hero_index=3)` は `tests/test_pokerbench_prompt.py:176`。
+- expected生成は `tests/test_pokerbench_prompt.py:177-186`。
+
+expected prompt (`repr()`):
+```python
+'\n\nYou are a specialist in playing 6-handed No Limit Texas Holdem. The following will be a game scenario and you need to make the optimal decision.\n\nHere is a game summary:\n\nThe small blind is 0.5 chips and the big blind is 1 chips. Everyone started with 100 chips.\nThe player positions involved in this game are UTG, HJ, CO, BTN, SB, BB.\nIn this hand, your position is HJ, and your holding is [Ace of Spade and Nine of Heart].\nBefore the flop, HJ raise 2.0 chips, and BB call. Assume that all other players that is not mentioned folded.\nThe flop comes Ten Of Heart, Four Of Club, and Five Of Diamond, then BB check.\n\n\nNow it is your turn to make a move.\nTo remind you, the current pot size is 4.0 chips, and your holding is [Ace of Spade and Nine of Heart].\n\nDecide on an action based on the strength of your hand on this board, your position, and actions before you. Do not explain your answer.\nYour optimal action is:'
+```
+
+### 5.3 turn teacher prompt
+
+再現方法:
+- hole cards投入は `tests/test_pokerbench_prompt.py:192-202`。
+- preflop action sequenceは `tests/test_pokerbench_prompt.py:203-208`。
+- flop deal/actionは `tests/test_pokerbench_prompt.py:209-211`。
+- turn deal/actionは `tests/test_pokerbench_prompt.py:212-214`。
+- `build_pokerbench_prompt(state, hero_index=1)` は `tests/test_pokerbench_prompt.py:215`。
+- expected生成は `tests/test_pokerbench_prompt.py:216-227`。
+
+expected prompt (`repr()`):
+```python
+'\n\nYou are a specialist in playing 6-handed No Limit Texas Holdem. The following will be a game scenario and you need to make the optimal decision.\n\nHere is a game summary:\n\nThe small blind is 0.5 chips and the big blind is 1 chips. Everyone started with 100 chips.\nThe player positions involved in this game are UTG, HJ, CO, BTN, SB, BB.\nIn this hand, your position is BB, and your holding is [Seven of Diamond and Six of Diamond].\nBefore the flop, BTN raise 2.5 chips, and BB call. Assume that all other players that is not mentioned folded.\nThe flop comes Ten Of Diamond, Six Of Heart, and Four Of Heart, then BB check, and BTN check.\nThe turn comes Eight Of Diamond, then BB check, and BTN bet 4.\n\n\nNow it is your turn to make a move.\nTo remind you, the current pot size is 9.0 chips, and your holding is [Seven of Diamond and Six of Diamond].\n\nDecide on an action based on the strength of your hand on this board, your position, and actions before you. Do not explain your answer.\nYour optimal action is:'
+```
+
+### 5.4 river teacher prompt
+
+再現方法:
+- hole cards投入は `tests/test_pokerbench_prompt.py:233-243`。
+- preflop action sequenceは `tests/test_pokerbench_prompt.py:244-249`。
+- flop deal/actionは `tests/test_pokerbench_prompt.py:250-252`。
+- turn deal/actionは `tests/test_pokerbench_prompt.py:253-257`。
+- river deal/actionは `tests/test_pokerbench_prompt.py:258-259`。
+- `build_pokerbench_prompt(state, hero_index=3)` は `tests/test_pokerbench_prompt.py:260`。
+- expected生成は `tests/test_pokerbench_prompt.py:261-273`。
+
+expected prompt (`repr()`):
+```python
+'\n\nYou are a specialist in playing 6-handed No Limit Texas Holdem. The following will be a game scenario and you need to make the optimal decision.\n\nHere is a game summary:\n\nThe small blind is 0.5 chips and the big blind is 1 chips. Everyone started with 100 chips.\nThe player positions involved in this game are UTG, HJ, CO, BTN, SB, BB.\nIn this hand, your position is HJ, and your holding is [King of Diamond and Jack of Spade].\nBefore the flop, HJ raise 2.0 chips, and BB call. Assume that all other players that is not mentioned folded.\nThe flop comes King Of Spade, Seven Of Heart, and Two Of Diamond, then BB check, and HJ check.\nThe turn comes Jack Of Club, then BB check, HJ bet 3, BB raise 10, and HJ call.\nThe river comes Seven Of Club, then BB check.\n\n\nNow it is your turn to make a move.\nTo remind you, the current pot size is 24.0 chips, and your holding is [King of Diamond and Jack of Spade].\n\nDecide on an action based on the strength of your hand on this board, your position, and actions before you. Do not explain your answer.\nYour optimal action is:'
 ```
 
 ---
 
-## 4. 訓練リポジトリの補助ヘッド関連状態
+## 6. 主要コードファイルと固定規則
 
-```text
-C:\dev\pokerrl-training\results\aux_heads\seg_003\
-├── final_aux_head/              ★正本（確定保存）
-│   ├── aux_heads.pt             12.6MB（checkpoint-17100由来、GRPO初期化用）
-│   ├── metrics.json             step17100の評価指標
-│   └── final_metrics.json       全58評価点履歴込み
-├── checkpoint-17100/            aux_heads.pt + optimizer/scheduler/state（eval値あり: overall0.793/top1中央0.833）
-├── checkpoint-17250/            （eval値なし=中間save）
-├── checkpoint-17400/            （eval値あり: overall0.798/top1中央0.878）
-├── checkpoint-17550/            （eval値なし=中間save）
-├── train_aux_heads.log          全訓練ログ
-└── final_metrics.json           最終メトリクス（全履歴）
+### 6.1 `pokerrl_grpo/pokerbench_prompt.py`
 
-注: keep_checkpoints設定により上記4checkpointのみ現存。中盤checkpointは削除済み。
-final_adapterディレクトリは存在しない（LoRA freeze設計のため正常）。
-```
+重要行:
+- カード表記: `card_to_words()` は `pokerrl_grpo/pokerbench_prompt.py:55-61`。holeは `"of"`、boardは `"Of"`。
+- 6-maxポジション: `INDEX_TO_POSITION` は `pokerrl_grpo/pokerbench_prompt.py:23`。
+- action接続詞: `join_actions()` は `pokerrl_grpo/pokerbench_prompt.py:72-80`。2個は `"A, and B"`、3個以上は `"A, B, and C"`。
+- prompt組み立て: `build_pokerbench_prompt()` は `pokerrl_grpo/pokerbench_prompt.py:83-106`。
+- postflop改行分岐: `separator = "\n\n\n" if board_lines else "\n\n"` は `pokerrl_grpo/pokerbench_prompt.py:97`。
+- state.operations走査: `_build_history()` は `pokerrl_grpo/pokerbench_prompt.py:164-186`。
+
+### 6.2 生成器の揺れフィールド固定規則
+
+コードを正とする固定規則:
+- preflop raise額: `_format_amount()` の `street_index == 0` 分岐（`pokerrl_grpo/pokerbench_prompt.py:152-154`）で `str(amount)` をそのまま使う。例: `2.0`、`2.5`。生成器側では `"chips"` を付けない。
+- postflop bet/raise額: `_format_amount()` のpostflop分岐（`pokerrl_grpo/pokerbench_prompt.py:155-157`）で、整数なら `str(int(amount))`、非整数なら `str(amount)`。例: `4`、`10`。
+- pot額: `_format_pot_amount()`（`pokerrl_grpo/pokerbench_prompt.py:160-161`）で常に `f"{amount:.1f}"`。例: `4.0`、`9.0`、`24.0`。
+- all-in表記: `_append_check_or_call()` と `_append_bet_or_raise_to()`（`pokerrl_grpo/pokerbench_prompt.py:203-231`）で、stackが0になった場合は金額なしの `"all in"`。
+
+Task 2のnormalize方針:
+- §5のteacher照合と同じく、preflop raise額の `"chips"` 有無だけはteacher側に揺れがあるため局所normalizeする。
+- pot小数1桁、postflop整数額、hole/boardの `of/Of`、固定句、改行分岐、ポジション、接続詞は生成器出力を正として厳密比較する。
+
+### 6.3 死にSB除外のpot再計算ロジック
+
+非自明な互換ロジックは `_prompt_pot_amount()`（`pokerrl_grpo/pokerbench_prompt.py:234-241`）。
+
+コード上の挙動:
+- preflopのみ（`history.board_deals` が空）の場合は `state.total_pot_amount` をそのまま使う（`pokerrl_grpo/pokerbench_prompt.py:235-236`）。
+- postflopでは `state.total_pot_amount` をそのまま使わず、`history.contributions` を再集計する（`pokerrl_grpo/pokerbench_prompt.py:237-241`）。
+- 集計対象は `state.statuses[player_index]` が真のプレイヤー、または `player_index in history.any_voluntary` のプレイヤー。
+- つまり、プリフロップで自発的アクションをせずにfold扱いになった死にSBのブラインドは、postflop teacher prompt のpot表記に寄せるため除外される。
+
+理由:
+- PokerKitの `state.total_pot_amount` は死にSBの0.5も含むが、教師promptのpostflop potはpreflop未参加扱いの死にSBを除いた値になっているサンプルがある。
+- Task 1のflopサンプルでは、PokerKit総potなら4.5相当になり得る局面を、teacher期待値 `4.0` に合わせるため、postflopだけ再計算している。
+
+### 6.4 `tests/test_pokerbench_prompt.py`
+
+重要行:
+- PokerKit state生成: `create_state()` は `tests/test_pokerbench_prompt.py:28-37`。
+- hole cards投入: `deal_holes()` は `tests/test_pokerbench_prompt.py:40-43`。
+- preflop chips normalize: `normalize_preflop_chips()` は `tests/test_pokerbench_prompt.py:46-48`。
+- teacher prompt helper: `teacher_prompt()` は `tests/test_pokerbench_prompt.py:51-78`。
+- teacher照合4件: `tests/test_pokerbench_prompt.py:124-274`。
+- 改行分岐テスト: `tests/test_pokerbench_prompt.py:277-310`。
+- bet/raise/all-inテスト: `tests/test_pokerbench_prompt.py:313-337`。
 
 ---
 
-## 5. 次セッションの作業
+## 7. PokerKit 0.7.4 API前提
 
-### 5.1 最優先: Sprint 3（GRPO強化学習）準備
+導入済みバージョン:
+```text
+pokerkit==0.7.4
+```
 
-**着手前の必須検証（推測で進めない）**:
-1. **ロード経路の検証**: 「seg_003 final_adapter + final_aux_head/aux_heads.pt」のペアを正しく組み立てて推論できるか確認。train_aux_heads.py の eval_only モードかロード関数を参照。これがGRPOの初期化点になるため最初に確認する
-2. **verify_pokerrl_encode.py 実行**: GRPO自己対戦の入力エンコードが訓練時と一致するか（encode不一致の教訓、§2.3）
+Task 1で使っている生成方法:
+```python
+NoLimitTexasHoldem.create_state(
+    automations=AUTOMATIONS,
+    ante_trimming_status=True,
+    raw_antes=0,
+    raw_blinds_or_straddles=(0.5, 1),
+    min_bet=1,
+    raw_starting_stacks=100,
+    player_count=6,
+)
+```
 
-**GRPO仕様（DESIGN_NOTES §57）**:
-- 入力: Phase 1 SFTモデル（=補助ヘッド付き）
-- 方式: GRPO + DAPO trick + OPEFO entropy制御
-- 環境: PokerKitベース6-max NLHE自己対戦
-- opponents: 過去SFT checkpoint(population) / Rule-based(TAG/LAG) / Deep CFR失敗モデル（弱い相手としてエントロピー多様性確保）
-- 報酬: 0.7×即時chip delta + 0.2×EV at decision(eval7) + 0.1×直近20ハンド累積(bankroll)
-- 訓練時間: 約80-120時間（RTX 3080単機で実時間4〜6日連続。長時間連続でのBSOD対策とcheckpoint健全性を早期に確認すべき）
+主要API:
+- `state.hole_cards[player_index]`
+- `state.operations`
+- `state.starting_stacks`
+- `state.player_count`
+- `state.total_pot_amount`
+- `state.statuses`
+- `state.deal_hole(card, player_index)`
+- `state.deal_board(cards)`
+- `state.fold()`
+- `state.check_or_call()`
+- `state.complete_bet_or_raise_to(amount)`
 
-**GRPO Go/No-go（§57, Sprint 3終了時）**:
-- Spot Checks 50局面で行動分布が合理的に変動
-- Entropy健全（top-1確率中央値 < 0.85）
-- Slumbot HU勝率 ≥ -15 bb/100
-- 自己対戦でPhase 1ベースライン比 +3 bb/100以上
+PokerKit operation型:
+- `BlindOrStraddlePosting`
+- `BetCollection`
+- `BoardDealing`
+- `Folding`
+- `CheckingOrCalling`
+- `CompletionBettingOrRaisingTo`
 
-**GRPO品質未達時の段階的対処（§56.3、最大16日）**: Step1 Entropy崩壊対処(4日)→Step2 対戦相手プール見直し(3日)→Step3 報酬関数調整(4日)→Step4 訓練延長(5日)
+アクション履歴はPokerKit stateの最終値だけでは十分でないため、`state.operations` を時系列に再走査して生成器側で履歴とstack/bet/contributionを再構成する。
 
-**撤退条件（§56.6, OR）**: タイムボックス超過 / 品質下限未達(accuracy<50%, Slumbot<-30, SpotChecks<80%) / 改善トレンド消失 / コスト$500超過。判断タイミング=Sprint 3開始から2週・5週、合計12週時点。撤退時はCase A（SFT成功GRPO失敗）→第1候補 PokerSkill風ハイブリッド。
+---
 
-### 5.2 補助ヘッドが健全性不十分だった場合のフォールバック（今回は不要だが記録）
-§61.5シナリオ2: LoRA凍結を解除してヘッド同時ファインチューニング。既存LoRA重みは保持済みのためテキスト生成方式へ復帰も可能。
+## 8. 確定制約
 
-### 5.3 ドキュメント更新（本セッションで完了済み）
-| ファイル | 状態 |
-|---|---|
-| snapshot.md | 本ファイルで張り替え完了 |
-| DESIGN_NOTES.md §61 | 前セッションで追加済み（accuracy飽和+補助ヘッド判断） |
-| DESIGN_NOTES.md §62 | 本セッションで追加（評価基準変更+LoRA凍結保存仕様） |
-| SPEC.md | 補助ヘッド結果の反映はSprint 4統合時（現時点未反映で正しい） |
+1. `pokerkit==0.7.4` を死守する。
+   - `tools/poker_datasets_ref` のeditable installは `pokerkit==0.6.5` へのダウングレードを要求するため、現venvへ入れない。
+   - PokerKit API調査とTask 1実装は0.7.4前提。
 
-### 5.4 次セッションの持ち物
-| # | ドキュメント | 用途 |
-|---|---|---|
-| 1 | 本snapshot.md | 現状認識の基盤 |
-| 2 | SPEC.md v3.8 | §10A 推論ブリッジ仕様、§10A.2 補助ヘッド仕様 |
-| 3 | DESIGN_NOTES.md（§62まで） | §49補助ヘッド設計、§56撤退基準、§57 GRPO仕様、§58評価フレーム、§61飽和判断、§62評価基準変更 |
+2. prompt生成器は6-max固定。
+   - `INDEX_TO_POSITION = {0:"SB",1:"BB",2:"UTG",3:"HJ",4:"CO",5:"BTN"}`。
+   - `player_count != 6` は `ValueError`。
+
+3. verifyは「形式整合案」で実施する。
+   - 揺れのない固定句、カード綴り、`of/Of`、改行、ポジション、接続詞は厳密比較。
+   - teacher側に揺れがあるpreflop raise額の `"chips"` 有無は局所normalize。
+   - これはDESIGN_NOTES §56.4の方針と整合する。
+
+4. 正本モデル成果物は読み取り専用。
+   - `results/aux_heads/seg_003/final_aux_head/`
+   - `results/sft_sequential/seg_003_offset_66000/final_adapter`
+   - 書き出し直し不要。`final_adapter` がaux head側に無いのはLoRA freeze設計上正常。
+
+5. `scripts/train_aux_heads.py` はTask 1では変更していない。Task 2でも既存訓練経路の読み取りを基本とする。
+
+6. 依存追加は最小限。
+   - PokerKit導入後に追加されたpytest関連依存は `pytest==9.1.0`、`iniconfig==2.3.0`、`pluggy==1.6.0` のみ。
+   - torch / transformers / peft / bitsandbytes / numpy / pokerkit の重要依存変更なし。
+
+7. `pytest -q` 全体失敗は既存collection問題。
+   - Task 1追加前から `tools/poker_datasets_ref/...` の `ModuleNotFoundError: No module named 'poker_datasets'` が出る。
+   - Task 1の合否は `pytest tests/test_pokerbench_prompt.py -q` を正とする。
+
+---
+
+## 9. TODO
+
+### 9.1 Sprint 3 Task 2: `verify_pokerrl_encode.py` 新規作成
+
+目的:
+- GRPO自己対戦で生成するpromptが、補助ヘッド訓練時の入力エンコードと形式整合していることを検証する。
+
+実装方針:
+- `pokerrl_grpo.pokerbench_prompt.build_pokerbench_prompt` をimportして使う。
+- `tests/test_pokerbench_prompt.py` のteacher照合4サンプルを再利用する。
+- preflop/flop/turn/river各1件以上で、teacher promptと生成器promptを比較する。
+- preflop raise額の `"chips"` 有無だけnormalizeする。
+- tokenizer経路は `scripts/train_aux_heads.py` の訓練時経路に合わせる。
+- 比較結果として、prompt文字列の差分、token ids長、attention mask長、特殊トークン付与条件を出す。
+
+注意:
+- `heads.eval()` Dropout申し送りを反映し、モデルforwardを伴う検証ではeval modeにする。
+- Task 2はprompt/encode検証が主目的であり、重いモデルロードは必要最小限にする。
+
+### 9.2 DESIGN_NOTES追記予定
+
+Task 2完了後、poker-assistant側の `docs/DESIGN_NOTES.md` にSprint 3準備の設計判断を追記する候補:
+- PokerBench形式prompt生成器を新規作成した理由。
+- verifyを「完全バイト一致」ではなく「形式整合案」にした理由。
+- teacher側のpreflop chips揺れをnormalize対象にした理由。
+- PokerKit 0.7.4固定と `poker_datasets_ref` 依存を入れない判断。
+- postflop pot再計算で死にSBを除外する互換ロジック。
+
+### 9.3 既存collection問題
+
+`pytest -q` 全体は `tools/poker_datasets_ref/poker_datasets/test_hand_to_text.py` のcollection errorで止まる。
+
+現時点の判断:
+- Task 1追加とは無関係。
+- `tools/poker_datasets_ref` を現venvへ入れるとPokerKitダウングレードが起きるため禁止。
+- 必要なら別venv分離、pytest ignore設定、または当該参照ツールのテスト除外を別タスクで検討する。
+
+### 9.4 コミット未実施
+
+本リポジトリはローカルのみ。Task 1関連のコミットは未実施。
+
+主な未追跡ファイル:
+- `pokerrl_grpo/`
+- `tests/test_pokerbench_prompt.py`
+- `snapshot.md`
+- 調査用一時スクリプト群（`tmp_*.py`）
+- `pip_freeze_*.txt`
+
+コミットする場合はTask 1本体・テスト・snapshotと、一時調査ファイルを分けること。
+
+---
+
+## 10. 次セッション開始手順
+
+1. 作業場所へ移動。
+```powershell
+cd C:\dev\pokerrl-training
+```
+
+2. 状態確認。
+```powershell
+git status --short
+git log --oneline -5
+```
+
+3. Task 1のテスト確認。
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_pokerbench_prompt.py -q
+```
+
+期待:
+```text
+10 passed
+```
+
+4. 補助ヘッドforward健全性を必要に応じて再確認。
+```powershell
+.\.venv\Scripts\python.exe .\tmp_load_forward_check.py
+```
+
+確認点:
+- `Frozen base+LoRA parameters: ... trainable=0`
+- `Auxiliary head parameters: trainable=3149317`
+- `action_logits_shape=(1, 4)`
+- `raise_size_ratio_shape=(1,)`
+
+5. Task 2に着手。
+   - 新規作成候補: `scripts/verify_pokerrl_encode.py`
+   - 参照: `pokerrl_grpo/pokerbench_prompt.py`
+   - 参照: `tests/test_pokerbench_prompt.py`
+   - 参照: `scripts/train_aux_heads.py` のDataset/tokenizer/collate経路
+
+6. Task 2で必ず確認すること。
+   - teacher prompt 4件と生成器promptの形式整合。
+   - preflop chips揺れのみnormalize。
+   - tokenizer呼び出し条件（`add_special_tokens`、`truncation`、`max_length`、padding/attention_mask）が訓練時と一致。
+   - GRPO自己対戦入力が補助ヘッド訓練入力と同じprompt仕様で作れる。
+
