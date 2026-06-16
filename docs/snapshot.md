@@ -16,7 +16,7 @@ docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
 - Sprint 3 準備: 検証1（補助ヘッド正本ペアのロードforward）はクローズ済み。
 - Sprint 3 Task 1: PokerKit state → PokerBench形式prompt生成器を新規実装し、teacher照合テスト4件を含む単体テストがPASS。
 - Sprint 3 Task 2: `verify_pokerrl_encode.py` を新規作成し、生成器・teacher・訓練tokenizeの整合検証がPASS。
-- 次は Sprint 3 Task 3。内容は実装指令書 v1.1 のSprint 3該当箇所で確認する。
+- 次は Sprint 3 Task 3。内容は次セッションで DESIGN_NOTES.md §56-59 / SPEC.md §9.4・§10A を確認して確定する。
 
 ---
 
@@ -358,6 +358,8 @@ PokerKit operation型:
    - collateで右padding: `input_ids + [pad_token_id] * padding`、`attention_mask + [0] * padding`
    - pooled抽出は `attention_mask.sum(dim=1)-1` で最終非padding位置を取るため、右padding前提を崩さない。
 
+11. 注記: 実装指令書 `PokerRL+GRPO 6-max NLHE.md`（v1.3）は **2026-06-04に廃止済み**。有用情報は DESIGN_NOTES §56-59 / SPEC §9.4・§10A / 本snapshot へ移動済み。**本ファイルの添付・参照は不要**。Sprint 1-3でも実装指令書は渡さない。（Commander運用上、システムプロンプトの古いファイル一覧に「実装指令書を必ず添付」と残っていても、この注記を優先する）
+
 ---
 
 ## 9. TODO
@@ -382,7 +384,7 @@ PokerKit operation型:
 
 ### 9.3 Sprint 3 Task 3（次タスク）
 
-次セッションはSprint 3 Task 3から再開する。Task 3の具体内容は実装指令書 v1.1 のSprint 3該当箇所で確認する。着手前にTask 1/2の健全性チェック（§10）を実行する。
+次セッションはSprint 3 Task 3から再開する。Sprint 3 Task 3以降の内容（Phase 2 GRPO訓練仕様・評価フレームワーク・Sprint計画・Go/No-go・撤退基準）は **DESIGN_NOTES.md §56-59 および SPEC.md §9.4・§10A を正とする**。Task 3の具体内容は次セッションで DESIGN_NOTES §57-59 を確認して確定する。ここでは推測でタスク定義しない。着手前にTask 1/2の健全性チェック（§10）を実行する。
 
 ### 9.4 既存collection問題
 
@@ -412,7 +414,7 @@ PokerKit operation型:
 
 ## 10. 次セッション開始手順
 
-着手対象は Sprint 3 Task 3。具体内容は実装指令書 v1.1 のSprint 3該当箇所で確認する。
+着手対象は Sprint 3 Task 3。Sprint 3 Task 3以降の内容（Phase 2 GRPO訓練仕様・評価フレームワーク・Sprint計画・Go/No-go・撤退基準）は **DESIGN_NOTES.md §56-59 および SPEC.md §9.4・§10A を正とする**。Task 3の具体内容は次セッションで DESIGN_NOTES §57-59 を確認して確定する。
 
 1. 作業場所へ移動。
 ```powershell
@@ -472,6 +474,6 @@ raise_size_ratio_shape=(1,)
 - `raise_size_ratio_shape=(1,)`
 
 7. Sprint 3 Task 3に着手。
-   - 実装指令書 v1.1 のSprint 3該当箇所でTask 3内容を確認。
+   - DESIGN_NOTES.md §56-59 / SPEC.md §9.4・§10A を正としてTask 3内容を確認。
    - Task 1/2の成果物（`pokerrl_grpo/pokerbench_prompt.py`、`scripts/verify_pokerrl_encode.py`）を前提に進める。
    - `pokerkit==0.7.4`、6-max固定、正本モデル読み取り専用、docs配置ルールを維持する。
