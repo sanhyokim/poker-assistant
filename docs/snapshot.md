@@ -1,12 +1,12 @@
 # pokerrl-training snapshot
 **Updated:** 2026-06-16 JST
-**Session:** Sprint 3 Task 1 完了 — 検証1クローズ / PokerKit導入 / 教師prompt仕様抽出 / PokerKit API調査 / PokerBench形式prompt生成器実装
+**Session:** Sprint 3 Task 2 完了 — verify_pokerrl_encode.py 新規作成 / 生成器・teacher・訓練tokenize整合検証基盤確立
 
 ---
 
 ## 1. このsnapshotの位置づけ
 
-このsnapshotは、`C:\dev\pokerrl-training` でSprint 3（GRPO準備）を次セッションへ引き継ぐための現在地点メモである。次セッションはこのファイル単体で Task 2（`verify_pokerrl_encode.py`）に着手できる状態を目標にする。
+このsnapshotは、`C:\dev\pokerrl-training` でSprint 3（GRPO準備）を次セッションへ引き継ぐための現在地点メモである。次セッションはこのファイル単体で Task 3 に着手できる状態を目標にする。
 
 本リポジトリはローカルのみ（リモートなし）。poker-assistant本体リポジトリの体系的な仕様は `SPEC.md v3.8`、設計判断の理由は `DESIGN_NOTES.md` を参照する。
 docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
@@ -15,7 +15,8 @@ docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
 - Sprint 2: 補助ヘッド訓練 S2-T3 完了。GRPO初期化点は `seg_003 final_adapter + final_aux_head/aux_heads.pt`。
 - Sprint 3 準備: 検証1（補助ヘッド正本ペアのロードforward）はクローズ済み。
 - Sprint 3 Task 1: PokerKit state → PokerBench形式prompt生成器を新規実装し、teacher照合テスト4件を含む単体テストがPASS。
-- 次は Sprint 3 Task 2: `verify_pokerrl_encode.py` の新規作成。
+- Sprint 3 Task 2: `verify_pokerrl_encode.py` を新規作成し、生成器・teacher・訓練tokenizeの整合検証がPASS。
+- 次は Sprint 3 Task 3。内容は実装指令書 v1.1 のSprint 3該当箇所で確認する。
 
 ---
 
@@ -53,6 +54,15 @@ docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
    - 新規: `pokerrl_grpo/pokerbench_prompt.py`
    - 新規: `tests/test_pokerbench_prompt.py`
    - `pytest tests/test_pokerbench_prompt.py -q` は `10 passed`。
+
+8. Sprint 3 Task 2 を実装。
+   - 新規: `scripts/verify_pokerrl_encode.py`
+   - コミット: `6bbb309 追加: PokerRL encode整合検証スクリプト（生成器/teacher/訓練tokenize一致）`
+   - forwardなし検証: `passed=8 failed=0`、`OVERALL: PASS`
+   - `--with-forward` 検証: `passed=9 failed=0`、`OVERALL: PASS`
+   - forward shape: `pooled_shape=(1, 3072)` / `action_logits_shape=(1, 4)` / `raise_size_ratio_shape=(1,)`
+   - 既存テスト: `pytest tests/test_pokerbench_prompt.py -q` は `10 passed` を維持。
+   - 実装は `tests/test_pokerbench_prompt.py` のteacherヘルパと、`scripts/train_aux_heads.py` のtokenizer条件・`AuxCollator`・`load_model_tokenizer_heads`・`load_checkpoint`・`extract_pooled_hidden` を再利用。`train_aux_heads.py` / `pokerbench_prompt.py` / `tests/test_pokerbench_prompt.py` は無変更。
 
 ---
 
@@ -242,6 +252,21 @@ Task 2のnormalize方針:
 - 改行分岐テスト: `tests/test_pokerbench_prompt.py:277-310`。
 - bet/raise/all-inテスト: `tests/test_pokerbench_prompt.py:313-337`。
 
+### 6.5 `scripts/verify_pokerrl_encode.py`
+
+Sprint 3 Task 2で追加したencode整合検証スクリプト。CI/日常確認ではモデルロードなし、必要時のみ `--with-forward` で正本ペアの実forwardを確認する。
+
+検証構成:
+- Part A: 形式整合。`build_pokerbench_prompt(state, hero_index)` とteacher promptを比較し、preflop raise額の `"chips"` 有無のみ `normalize_preflop_chips()` で吸収する。
+- Part B: encode整合。訓練時と同じtokenizerロード・tokenize条件で、生成器promptとteacher promptの `input_ids` / `attention_mask` を比較する。
+- Part C: forward健全性。`--with-forward` 指定時のみ、代表preflopサンプルを正本ペアへ通し、`pooled_shape=(1, 3072)` / `action_logits_shape=(1, 4)` / `raise_size_ratio_shape=(1,)` を確認する。
+
+重要な実装判断:
+- `tests/test_pokerbench_prompt.py` のteacherサンプル生成ヘルパをimportし、サンプル定義の重複を避けている。
+- `scripts/train_aux_heads.py` の `load_model_tokenizer_heads` / `load_checkpoint` / `AuxCollator` / `extract_pooled_hidden` を再利用し、訓練時経路とverify経路を揃えている。
+- forward前に `heads.eval()` を明示する。補助ヘッドMLPのDropoutによる出力揺れを避けるため。
+- Heads正本は単数形パス `results/aux_heads/seg_003/final_aux_head` を明示指定する。plural `final_aux_heads` と混同しない。
+
 ---
 
 ## 7. PokerKit 0.7.4 API前提
@@ -321,61 +346,73 @@ PokerKit operation型:
 
 8. **ドキュメント配置ルール（確定）**: 仕様書・設計ノート・snapshot（SPEC.md / DESIGN_NOTES.md / snapshot.md）は `C:\Users\user\Desktop\dev\poker-system\docs` に一元管理する。訓練コード・実験スクリプトは `C:\dev\pokerrl-training`。**docsを訓練リポジトリに置かない**（2026-06-16にsnapshotを訓練リポジトリへ誤保存した事例あり。Builderへ保存場所を指示する際は必ずフルパスで `...\poker-system\docs\` を明記する）。
 
+9. 補助ヘッド訓練時promptは生成器ではなく、JSONL内のteacher prompt（`raw["prompt"]`）をそのまま使用していた。
+   - `scripts/train_aux_heads.py` の `convert_record()` で `prompt = str(raw["prompt"])` として読み込む（L381）。
+   - verifyは「生成器prompt ≡ teacher prompt（preflop chips揺れのみnormalize）→ 訓練tokenize一致」の連鎖で整合を担保する。
+
+10. 訓練tokenize条件は確定済み。
+   - tokenizerロード: `AutoTokenizer.from_pretrained(config.model_path, trust_remote_code=True)`
+   - `pad_token_id is None` の場合のみ `tokenizer.pad_token = tokenizer.eos_token`
+   - tokenizer呼び出し: `add_special_tokens=True, truncation=True, max_length=1024`
+   - tokenizer呼び出し時に `padding` / `return_tensors` は指定しない。
+   - collateで右padding: `input_ids + [pad_token_id] * padding`、`attention_mask + [0] * padding`
+   - pooled抽出は `attention_mask.sum(dim=1)-1` で最終非padding位置を取るため、右padding前提を崩さない。
+
 ---
 
 ## 9. TODO
 
-### 9.1 Sprint 3 Task 2: `verify_pokerrl_encode.py` 新規作成
+### 9.1 Sprint 3 Task 2: `verify_pokerrl_encode.py` 新規作成（完了）
 
-目的:
-- GRPO自己対戦で生成するpromptが、補助ヘッド訓練時の入力エンコードと形式整合していることを検証する。
-
-実装方針:
-- `pokerrl_grpo.pokerbench_prompt.build_pokerbench_prompt` をimportして使う。
-- `tests/test_pokerbench_prompt.py` のteacher照合4サンプルを再利用する。
-- preflop/flop/turn/river各1件以上で、teacher promptと生成器promptを比較する。
-- preflop raise額の `"chips"` 有無だけnormalizeする。
-- tokenizer経路は `scripts/train_aux_heads.py` の訓練時経路に合わせる。
-- 比較結果として、prompt文字列の差分、token ids長、attention mask長、特殊トークン付与条件を出す。
-
-注意:
-- `heads.eval()` Dropout申し送りを反映し、モデルforwardを伴う検証ではeval modeにする。
-- Task 2はprompt/encode検証が主目的であり、重いモデルロードは必要最小限にする。
+完了内容:
+- `scripts/verify_pokerrl_encode.py` を新規作成。
+- `python scripts/verify_pokerrl_encode.py`: Part A/Bが4サンプル全PASS（`passed=8 failed=0`）。
+- `python scripts/verify_pokerrl_encode.py --with-forward`: Part A/B/Cが全PASS（`passed=9 failed=0`）。
+- `pytest tests/test_pokerbench_prompt.py -q`: `10 passed` を維持。
+- コミット済み: `6bbb309`
 
 ### 9.2 DESIGN_NOTES追記予定
 
-Task 2完了後、poker-assistant側の `docs/DESIGN_NOTES.md` にSprint 3準備の設計判断を追記する候補:
+本セッションの [Doc - Task 2] で、poker-assistant側の `docs/DESIGN_NOTES.md` にSprint 3準備の設計判断を§63として追記する。
 - PokerBench形式prompt生成器を新規作成した理由。
 - verifyを「完全バイト一致」ではなく「形式整合案」にした理由。
 - teacher側のpreflop chips揺れをnormalize対象にした理由。
 - PokerKit 0.7.4固定と `poker_datasets_ref` 依存を入れない判断。
 - postflop pot再計算で死にSBを除外する互換ロジック。
 
-### 9.3 既存collection問題
+### 9.3 Sprint 3 Task 3（次タスク）
+
+次セッションはSprint 3 Task 3から再開する。Task 3の具体内容は実装指令書 v1.1 のSprint 3該当箇所で確認する。着手前にTask 1/2の健全性チェック（§10）を実行する。
+
+### 9.4 既存collection問題
 
 `pytest -q` 全体は `tools/poker_datasets_ref/poker_datasets/test_hand_to_text.py` のcollection errorで止まる。
 
 現時点の判断:
-- Task 1追加とは無関係。
+- Task 1/2追加とは無関係。
 - `tools/poker_datasets_ref` を現venvへ入れるとPokerKitダウングレードが起きるため禁止。
 - 必要なら別venv分離、pytest ignore設定、または当該参照ツールのテスト除外を別タスクで検討する。
 
-### 9.4 コミット未実施
+### 9.5 コミット状態
 
-本リポジトリはローカルのみ。Task 1関連のコミットは未実施。
+訓練リポジトリはローカルのみ。Task 1/2本体はコミット済み。
 
-主な未追跡ファイル:
-- `pokerrl_grpo/`
-- `tests/test_pokerbench_prompt.py`
-- `snapshot.md`
+主な関連コミット:
+- `96aa90a` Task 1: PokerBench prompt生成器とテスト
+- `01e804f` snapshot.mdを訓練リポジトリから除外
+- `6bbb309` Task 2: encode整合検証スクリプト
+
+未追跡のまま残っている可能性があるもの:
 - 調査用一時スクリプト群（`tmp_*.py`）
 - `pip_freeze_*.txt`
 
-コミットする場合はTask 1本体・テスト・snapshotと、一時調査ファイルを分けること。
+一時調査ファイルをコミットする場合は、本体コードとは分けること。
 
 ---
 
 ## 10. 次セッション開始手順
+
+着手対象は Sprint 3 Task 3。具体内容は実装指令書 v1.1 のSprint 3該当箇所で確認する。
 
 1. 作業場所へ移動。
 ```powershell
@@ -398,7 +435,32 @@ git log --oneline -5
 10 passed
 ```
 
-4. 補助ヘッドforward健全性を必要に応じて再確認。
+4. Task 2のencode整合確認（軽量・モデルロードなし）。
+```powershell
+.\.venv\Scripts\python.exe scripts\verify_pokerrl_encode.py
+```
+
+期待:
+```text
+SUMMARY: passed=8 failed=0
+OVERALL: PASS
+```
+
+5. Task 2のforward健全性確認（必要時・モデルロードあり）。
+```powershell
+.\.venv\Scripts\python.exe scripts\verify_pokerrl_encode.py --with-forward
+```
+
+期待:
+```text
+SUMMARY: passed=9 failed=0
+OVERALL: PASS
+pooled_shape=(1, 3072)
+action_logits_shape=(1, 4)
+raise_size_ratio_shape=(1,)
+```
+
+6. 補助ヘッドforward健全性を旧一時スクリプトで必要に応じて再確認。
 ```powershell
 .\.venv\Scripts\python.exe .\tmp_load_forward_check.py
 ```
@@ -409,14 +471,7 @@ git log --oneline -5
 - `action_logits_shape=(1, 4)`
 - `raise_size_ratio_shape=(1,)`
 
-5. Task 2に着手。
-   - 新規作成候補: `scripts/verify_pokerrl_encode.py`
-   - 参照: `pokerrl_grpo/pokerbench_prompt.py`
-   - 参照: `tests/test_pokerbench_prompt.py`
-   - 参照: `scripts/train_aux_heads.py` のDataset/tokenizer/collate経路
-
-6. Task 2で必ず確認すること。
-   - teacher prompt 4件と生成器promptの形式整合。
-   - preflop chips揺れのみnormalize。
-   - tokenizer呼び出し条件（`add_special_tokens`、`truncation`、`max_length`、padding/attention_mask）が訓練時と一致。
-   - GRPO自己対戦入力が補助ヘッド訓練入力と同じprompt仕様で作れる。
+7. Sprint 3 Task 3に着手。
+   - 実装指令書 v1.1 のSprint 3該当箇所でTask 3内容を確認。
+   - Task 1/2の成果物（`pokerrl_grpo/pokerbench_prompt.py`、`scripts/verify_pokerrl_encode.py`）を前提に進める。
+   - `pokerkit==0.7.4`、6-max固定、正本モデル読み取り専用、docs配置ルールを維持する。
