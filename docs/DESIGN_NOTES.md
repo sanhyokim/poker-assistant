@@ -4208,3 +4208,29 @@ PokerBenchには `"raise 2.0"` と `"raise 2.0 chips"` の両表記が混在し�
 PokerKitの `state.total_pot_amount` は死にSBの0.5を含む。一方で、PokerBench teacherのpostflop promptでは、preflop未参加扱いの死にSBを除いたpot値になるサンプルがある。
 
 この差を吸収するため、`pokerrl_grpo/pokerbench_prompt.py` ではpreflopのみの局面では `state.total_pot_amount` をそのまま使い、postflopでは `state.statuses` が真のプレイヤー、または自発的アクション済みプレイヤーのcontributionだけを再集計してpotを算出する。teacher promptとの形式整合を優先した互換ロジックである。
+
+## 64. 自己対戦環境構築に伴うstate生成の正本化（Sprint 3 Task 3）
+
+### 64.1 state生成ヘルパを本体 `pokerrl_grpo/state_factory.py` へ昇格した理由
+
+Task 3で6-max自己対戦環境（`pokerrl_grpo/selfplay_env.py`）を実装するにあたり、PokerKit state生成（`create_state()` 等）が必要になった。しかし当該ヘルパは `tests/test_pokerbench_prompt.py` 内にしか存在せず、環境本体から再利用できなかった。
+
+ここで環境側に同等のstate生成を別途書くと、state定義（blinds 0.5/1、starting 100、player_count 6、8 automations）がテストと本体の2箇所に並立し、片方だけ修正されてズレる危険がある。これは §20 で既に問題視した「同一処理の重複実装」と同型の罠である。
+
+そのため §20 の方針に従い、state生成を `pokerrl_grpo/state_factory.py` に正本化し、テストと環境の双方がそこからimportする構成にした。
+
+### 64.2 `tests/test_pokerbench_prompt.py` を変更した理由とsnapshot §8-5との関係
+
+snapshot §8-5は当該テストファイルを「変更しない」と定めていた。これはTask 1/2の検証基盤（生成器≡teacher照合、`10 passed`）を保護する目的の制約である。
+
+Task 3での変更は、ヘルパ定義を `state_factory` へ移しimport文を差し替えるのみで、テストのアサーション・検証ロジック・対象は一切変えていない。`pytest tests/test_pokerbench_prompt.py -q` が `10 passed` を維持することで、制約の本来目的（検証基盤の不変）は保たれている。
+
+したがって本変更は §8-5 の趣旨に反しない、正本化のための最小限の変更と位置づける。値の同一性（state定義パラメータ）も維持しており、Task 2のencode整合（`verify_pokerrl_encode.py` passed=8）に回帰がないことを確認済み。
+
+### 64.3 報酬をスタブとし環境骨格を独立タスクに切った理由
+
+Task 3は環境がエピソードを崩壊なく回せることの確証に集中し、報酬はchip deltaのスタブに留めた。§57の正式報酬（0.7×chip delta + 0.2×eval7 EV + 0.1×直近20ハンド累積）を同タスクに混ぜると、環境のバグと報酬設計の問題が切り分け困難になる。
+
+環境（配管）と報酬（設計）を別タスクに分離することで、後段GRPOで「報酬が効かない」事象が出た際の原因究明を容易にする。スモークラン（200ハンド、zero_sum_ok/winners_ok）で配管の生存と報酬符号整合を先に確認した。
+
+報酬本実装はTask 4、GRPO本体（DAPO/OPEFO）はTask 5以降に分割する。
