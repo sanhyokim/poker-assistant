@@ -4272,3 +4272,45 @@ chip単位のまま放置すると、重みとclipの意味がブラインド設
 一方、chip delta（0.7）はハンド終端で確定する量であり、直近20ハンド累積（0.1）はハンドをまたぐbankroll項である。両者はハンド終端報酬とする。bankroll項は環境が直近20ハンドのリングバッファを保持して算出する。
 
 この「ステップ報酬（EV） + ハンド終端報酬（chip delta + bankroll）」のハイブリッドにより、GRPOのadvantage計算へ素直に載る時間粒度にした。環境の配管、報酬設計、GRPO本体（DAPO/OPEFO）は引き続き別タスクとして分離する。
+
+## 66. GRPO最適化対象のマッピング（Sprint 3 Task 5）
+
+Sprint 3 Task 5のGRPO実装では、補助ヘッド付きSFTモデルのうち、Action headの4-class categorical確率を方策log-probの正とする。Sizing headは方策勾配に直接載せず、advantage重み付き回帰の別損失として扱う。このマッピングをTask 5a/5b/5cの前提として確定する。
+
+### 66.1 採用方針
+
+方策log-probの正は、Action head categorical（4-class: Fold / Check-Call / Raise / All-in、softmax）とする。DAPO Clip-Higher、OPEFO entropy制御、KL、entropy bonusは、すべてこのcategorical分布に対して適用する。
+
+Sizing head（sigmoid 0.1x-3.0x potのscalar比）は方策勾配に載せない。Task 4報酬で正のadvantageが出た決定点のsizingへ、advantage重み付き回帰で別損失として磨く。
+
+### 66.2 根拠
+
+SPEC §10A.4は「autoregressive生成は行わない／最終hidden stateを補助ヘッドに渡す」構造を前提にしている。決定点で方策が表現する離散選択は4-class categoricalであり、これをGRPOのratio/clip単位にするのが構造的に素直である。
+
+この方針はSPEC §9.3の出力契約（fold/call/raise/allin_prob + raise_size_ratio）とも一致する。head出力契約を§9.3/§10Aに合わせることで、将来のブリッジ統合を無改修に近づける。
+
+また、entropy Go/No-go（§57 / §58.1 Phase2 / §10A.11: top-1確率中央値 ≤ 0.85）はaction head categorical上で定義済みである。最適化対象とGo/No-go監視対象を同一分布に揃えることで、OPEFO entropy制御と崩壊検知が一貫する。
+
+### 66.3 却下案（案2: Action + Sizing両方を方策化）
+
+Sizingを連続方策（Gaussianまたはbin化）として方策勾配に載せる案も検討した。しかし連続値の分散は、categorical top-1中央値で見るentropy監視とずれる。Sizing側だけ探索が広くても、Action headが一点張りなら実戦上は崩壊しているため、entropy崩壊の検知が不正確になる。
+
+さらに、DAPO/OPEFOの適用単位がcategoricalとscalarで二分し、ratio、clip、entropy、KLの実装と監視が複雑化する。Task 5の目的はまず崩壊しないGRPO配管を作ることであり、連続方策化は初期実装として過剰である。
+
+よって案2は却下する。Sizingは§66.1のadvantage重み付き回帰で扱い、Action head categoricalの方策改善と分離して磨く。
+
+### 66.4 スコープ差の明記
+
+GRPO訓練環境は6-max自己対戦である。`pokerrl_grpo/state_factory.py` の `create_state()` は `player_count=6` を正本とし、snapshotの確定制約でも6-max固定としている。
+
+一方、SPEC §9.1のルーティングでは、PokerRL+GRPOは `active_player_count == 2`（HU postflop）専用デプロイである。これは矛盾ではない。確定設計は「6-max experienceで学習し、HU postflopに限定デプロイする」ことである。Action head 4-class + Sizing head比の出力契約はプレイヤー数非依存なので、訓練環境とデプロイスコープの差分を吸収できる。
+
+この差分はTask 5以降の実装判断で混乱しやすいため、ここに明記しておく。
+
+### 66.5 制約継承
+
+報酬EVはMCのみとし、CFR/solverは持ち込まない（§65.1継承）。反実仮想EVや相手最適応答計算を報酬や方策更新に混ぜない。
+
+報酬パラメータは `RewardConfig` 経由とし、重み、clip、playouts、bankroll windowをハードコードしない。
+
+entropy崩壊対策なしに長時間訓練を開始しない。Task 5ではAction head categoricalのtop-1中央値、entropy、KL、clip率を監視し、OPEFO entropy制御と崩壊検知を同じ分布上で運用する。
