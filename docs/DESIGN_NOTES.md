@@ -4314,3 +4314,37 @@ GRPO訓練環境は6-max自己対戦である。`pokerrl_grpo/state_factory.py` 
 報酬パラメータは `RewardConfig` 経由とし、重み、clip、playouts、bankroll windowをハードコードしない。
 
 entropy崩壊対策なしに長時間訓練を開始しない。Task 5ではAction head categoricalのtop-1中央値、entropy、KL、clip率を監視し、OPEFO entropy制御と崩壊検知を同じ分布上で運用する。
+
+## 67. GRPO group_id 割当ルール（Sprint 3 Task 5b）
+
+Task 5bのGRPO損失本体では、group相対advantageの「グループ」を同一decision-state起点で定義する。Task 5aの `Trajectory.group_id` は現状 `None` のままだが、5bでは本セクションの規則に従って割当てる。
+
+### 67.1 採用方針（案A: 同一decision-state起点のグループ）
+
+`group_id` はhero決定stateごとに一意に割当てる。各決定stateでAction head categoricalからG個のアクションをサンプルし、そのG個を1グループとする。
+
+advantageは `A_i = (r_i - group_mean) / (group_std + ε)` として、グループ内で正規化する。価値criticは使わない。
+
+`r_i` はTask 4の `step_reward`（eval7ベースMCのrollout EV）で見積もる。実際にプレイされたアクションの `StepRecord` には `terminal_reward`（chip delta + bankroll）を帰属させる。Task 5aの `Trajectory.group_id` にこの規則で値を割当てるのはTask 5bである。
+
+### 67.2 根拠
+
+この方式はcanonical GRPOのgroup-relative baselineであり、学習criticを不要にできる。RTX 3080 VRAM 10GB制約では、criticを追加せずにadvantageを作れることが重要である。
+
+また、非autoregressive単一アクション方策（SPEC §10A.4 / DESIGN_NOTES §66.1）に対し、decision-state単位のgroupは明確に定義できる。Action head categoricalから同一state上の複数候補を出し、同じ文脈内で相対比較するため、baselineの意味が崩れにくい。
+
+正規化対象も、entropy Go/No-goおよびOPEFOの監視対象（Action head categorical、§66.2 / §57 / §58.1）と一致する。`r_i` は既存のMC EVのみを使い、CFR/solver/反実仮想EVを持ち込まない（§65.1継承）。
+
+### 67.3 却下案（案B: バッチ内グループ正規化）
+
+バッチ内グループ正規化では、street、position、stack深、pot、board textureが混在したbaselineになる。これではadvantageが文脈差に交絡し、局面固有の良し悪しではなく、バッチ内の分布ノイズを学習しやすい。
+
+このノイズは、§56.4で問題視した病理パターン（Raise/Fold偏重、position/board無感度）を誘発しやすい。特にAction head categoricalを最適化対象にする設計（§66）では、baselineが粗いほど一部アクションへの過剰な寄りが起きやすい。
+
+案Bは案Aより非原理的で、GRPOの「同一条件下の相対比較」という強みを弱めるため却下する。
+
+### 67.4 制約継承
+
+報酬EVはMCのみとし、CFR/solverは持ち込まない（§65.1 / §66.5）。group内候補の `r_i` も同じMC rollout EVで評価する。
+
+entropy崩壊対策なしに長時間訓練を開始しない。Task 5bはGRPO損失本体を実装する段階であり、Task 6の長時間本訓練へ進む前に、Action head categoricalのentropy、top-1中央値、KL、clip率を監視できる状態にする。
