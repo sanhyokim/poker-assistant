@@ -4390,3 +4390,85 @@ entropy健全性は top-1確率中央値 ≤ 0.85 を基準とする。entropy�
 正本モデル成果物はread-onlyである。GRPO訓練checkpointは `results/grpo/` へ分離し、SFT正本LoRAおよび補助ヘッド正本を上書きしない。
 
 Deep CFRおよびRust Solver関連コードは、品質検証（Stage D）前に削除しない。Rust postflop Solverは永久廃止方針だが、削除判断はStage Dの整理タイミングで行う。Deep CFR失敗モデルはopponent populationの弱い相手枠として参照する可能性があるため、現段階では保持する。
+
+## 69. Task 6 opponent pool構成の現実と Deep CFR opponent分離
+
+Task 6b/6c の opponent population は、§57 の理想構成をそのまま一度に実装するのではなく、ローカル成果物の実体と現行 GRPO self-play 環境への接続可能性に基づいて段階的に構成する。調査の結果、SFT 系は aux-head 推論として即時結線できる候補が限られ、Deep CFR 系は成果物は存在するが PokerKit state と推論入力形式が一致しないため、初期 Task 6 opponent pool からは分離する。
+
+### 69.1 SFT population の現実
+
+`results/sft_sequential/` には `final_adapter=True` の SFT adapter が 14 個存在する。一方、補助ヘッド成果物は `results/aux_heads/seg_003/final_aux_head/aux_heads.pt` のみである。したがって、§66 および SPEC §9.3 の 4-class action + sizing 契約でそのまま aux-head opponent 化できる正本ペアは、`results/sft_sequential/seg_003_offset_66000/final_adapter` と `results/aux_heads/seg_003/final_aux_head/aux_heads.pt` である。これは GRPO 初期化点と同一のペアでもある。
+
+`results/sft_sequential/seg_003_offset_136000/final_adapter` も同じ `seg_003` aux head と組める可能性はあるが、専用評価済みではないため optional experimental 扱いとする。他の 13 adapter は aux head を持たないため、text-generation opponent を別実装しない限り Task 6 初期 pool の対象外とする。
+
+### 69.2 初期opponent pool構成（Task 6b/6c初期）
+
+Task 6b/6c の初期 opponent pool は、学習中の現方策 self、`seg_003_offset_66000` canonical aux-head SFT、optional experimental の `seg_003_offset_136000` aux-head SFT、RuleBased TAG、RuleBased LAG で構成する。
+
+§56.3 Step2 に記載した過去 SFT 8 体等確率、4 種 rule-based、Deep CFR 20% 混入、2:1 交互といった opponent pool 拡張は、GRPO 品質未達時の段階的対処であり、初期訓練には入れない。初期段階では、接続が確実な aux-head 方策と rule-based 方策に限定し、崩壊ガードと中間評価で挙動を確認してから拡張する。
+
+### 69.3 Deep CFR opponentの分離
+
+Deep CFR 成果物は `C:\dev\deepcfr-training\models\` 配下に存在する。たとえば `phase3_v4/mixed_checkpoint_iter_10000.pt`、`phase3_v3f/mixed_checkpoint_iter_2500.pt`、`phase2/selfplay_checkpoint_iter_2000.pt` は、現 architecture の `PokerNetwork(base/action_head/sizing_head)` として Deep CFR 側 venv でロードできる。一方、`flagship_models/first` の旧 `fc1..fc6` 系 checkpoint は現 architecture にはロードできない。
+
+現訓練 venv で Deep CFR を直接ロードするには `pokers` が追加で必要である。dry-run では `pokers-0.1.2` の追加のみで、`pokerkit==0.7.4` への干渉は確認されなかった。しかし、依存追加だけでは Task 6b の opponent として十分ではない。Deep CFR の推論入力は `pokers` state、または poker-system 側 `GameState` から作る 500 次元 encoding を前提としており、GRPO self-play の PokerKit state とは別物である。さらに Deep CFR 出力は fold / check-call / raise の 3-action であり、SPEC §9.3 の 4-class 契約（Fold / Check-Call / Raise / All-in）へ写像する設計判断も別途必要になる。
+
+このため、Deep CFR opponent は Task 6b には含めない。`PokerKit state → DeepCFR 500-dim encoding` adapter と 3-action → 4-class 写像を設計・実装する別タスク（6d 想定）へ分離する。これは §57 の 3 系統 opponent 構成から Deep CFR を除外する判断ではなく、後続結線として扱う判断である。Deep CFR モデルおよび関連コードは確定制約 #12 に従い削除しない。
+
+### 69.4 制約継承
+
+aux-head opponent は §66 および SPEC §9.3 の 4-class + sizing 契約で動かす。報酬 EV は §65.1 および §67.4 を継承し MC のみとし、CFR/solver/反実仮想 EV を持ち込まない。報酬・GRPO・監視系のハイパラは各 Config 経由で管理し、ハードコードしない。
+
+正本モデル成果物は確定制約 #4 に従い read-only とする。Task 6 の訓練成果物は `results/grpo/` に分離して保存し、`results/sft_sequential/seg_003_offset_66000/final_adapter` や `results/aux_heads/seg_003/final_aux_head` を上書きしない。docs は確定制約 #13 に従い `C:\Users\user\Desktop\dev\poker-system\docs` に一元管理し、訓練リポジトリへ保存しない。
+
+## 70. SFT初期方策の裁定とガード再設計方針（Spot Checks v0）
+
+Task 6c-prep で、§58.2 の Spot Checks を実行可能な評価基盤として新規に構築した。初期バッチ v0 は 20 局面であり、Deep CFR 病理の捕捉、all-in 診断、position 感度、value hand の過剰fold検出を目的に難所を多めに配分した診断用セットである。正式な Phase 2 Go/No-go 判定は、Spot Checks 50 の完成後に §58.1 の基準で行う。
+
+### 70.1 裁定: (B) 健全なタイト確信（全面退化(A)ではない）
+
+Spot Checks v0（20局面、診断用に難所を多めに配分）で、SFT初期方策（canonical `seg_003_offset_66000` + `seg_003/final_aux_head`、無学習）は 16/20 passed（0.80）だった。これは v0 の診断結果であり、§58.1 の Phase 1 合格や Phase 2 Go/No-go を代替するものではない。
+
+裁定の決め手は、`overcard_no_pair` が 2/2 通過したことである。Deep CFR の病理である「overcard・3way・facing BET で Raise」を踏んでおらず、air vs c-bet では fold 0.995、trash hand では fold、AKo open では raise 0.99 となった。したがって、top-1中央値が高いこと自体は、全面的な退化ではなく、概ね正しいタイトアグレッシブな確信と解釈する。
+
+`position_sensitivity` は 4/5 だった。先の self-play 集計で見えた fold率の「UTG最緩 / BTN最堅」逆転は、局面混在によるノイズの影響が大きく、position 感度が全壊しているとは裁定しない。ただし、SB K2o の過剰raiseは局所leakとして記録する。
+
+v0 の 0.80 は難所偏重の診断値であり、§58.1 の Phase 1 合格（80%）とは見なさない。formal Go/No-go（Phase 2 = 95%）は Spot Checks 50 完成後に測る。
+
+### 70.2 確認された実欠陥（局所leak）
+
+all-in head は実害として弱い。Spot Checks v0 の `all_in` は 2/4 で、river nuts でも all_in は約 0.000005、AA vs all-in でも all_in は約 0.000007 だった。AA vs all-in は check-call 側で pass したが、all-in class 自体はほぼ使われていない。これは §49.2 の All-in 独立クラス設計、および train All-in 783件（0.14%）という既知制約どおり、実運用上の弱点として確認された。
+
+made-hand fold 退化も局所的に確認された。`spot_016` ではストレートで fold 0.674913 となり、value hand を降りすぎている。これは §56.4 の病理パターンのうち、board/hand strength への無感度に近い兆候であり、Task 6c の改善対象とする。
+
+position 過剰raiseも確認された。`spot_004` では SB K2o が raise 0.690254 となり、期待した raise 上限（0.35）を大きく超えた。position 感度が全壊しているわけではないが、SB 周りの過剰攻撃は watch item とする。
+
+### 70.3 ガード再設計方針（§56.4/§68.3/§58.1のガード意味論を評価用途で更新）
+
+本節の判断を、Task 6c-prep 以降の評価用途では §56.4、§68.3、§58.1 の従来の単純な entropy/fold ガード解釈より優先する。既存節は編集しないが、以後の実装・運用では本 §70 の意味論を適用する。
+
+`top1_median` と `fold_freq` は情報監視（WARN）に格下げする。単発の HALT 根拠にしない。理由は、SFT初期方策が無学習時点で top-1中央値 0.85 を超えていても、Spot Checks v0 では多くの局面で妥当なタイトプレイをしていたためである。確信が高いことと退化は同義ではない。
+
+真の退化 HALT は、多様な局面で単一アクションが支配し、かつ Spot Checks 品質が回帰する場合に限定する。分布監視は必要だが、それだけで品質を裁定しない。Spot Checks（v0 → 50）を品質ゲートの主軸に組み込み、§58.1/§58.2 の Go/No-go 判定へ接続する。
+
+leak別監視を新設する。具体的には、all-in 使用率、value-hand fold率、position 過剰raiseを個別に追跡する。これらは単純な top-1中央値や fold頻度では捕捉できないため、Spot Checks のカテゴリ別合格率と合わせて監視する。
+
+### 70.4 係数sweepの解釈更新（§56.3 Step1消化）
+
+Task 6b-t の sweep では、entropy_bonus（0.01 / 0.03 / 0.1）、OPEFO balancing（0.5）、KL（0.05）の係数調整だけでは top-1中央値 ≤ 0.85 を多ステップで維持できなかった。係数単独では No-go と判断する。
+
+ただし、この No-go は訓練そのものの失敗ではない。主因は、top-1中央値 ≤ 0.85 という指標を単独の最適化標的にすることが、ポーカーのタイトで確信的な正解局面と相性が悪い点にある。したがって、top-1中央値 ≤ 0.85 を単独で最適化標的にしない。
+
+§56.3 Step1 のうち、係数群（entropy bonus / OPEFO / KL）は試行済みと扱う。残りのオプションである LR、group_size、generation_temperature、dynamic sampling は未消化である。ただし、これらを使う場合も、単純な top-1低下ではなく Spot Checks 品質と leak別監視の改善を基準にする。
+
+### 70.5 Task 6cでGRPOが矯正すべきleak
+
+made-hand fold退化と SB 過剰raiseは、自己対戦報酬で矯正すべき対象である。Task 6c では、Spot Checks v0/50 と leak別監視で、これらが改善するかを追跡する。報酬が上がっても value hand fold や position 過剰raiseが悪化する checkpoint は best 候補にしない。
+
+all-in 復活は不確実である。all-in head は初期出力がほぼ 0 であり、通常の categorical sampling では all-in 行動がほとんど選ばれず、RL勾配が届きにくい。サンプリング温度を上げて探索を入れて初めて、all-in 局面に報酬が届く可能性がある。このため、§56.3 Step1 の generation_temperature は、単なる entropy崩壊対策ではなく、all-in探索のための候補として扱う。これは Task 6c の watch item とする。
+
+### 70.6 制約継承
+
+Spot Checks 50 は緩和・削除しない（確定制約 #11）。再設計するのは entropy/fold の「ガード」側であり、品質判定は Spot Checks に寄せる。v0 は診断用であり、後続タスクで 50 局面まで拡張して formal Go/No-go に接続する。
+
+期待アクションはポーカー理論ベースで定義し、ソルバー/反実仮想を使わない（§17.6 / §65.1）。報酬 EV は MC のみとし、CFR/solver を再導入しない。正本モデル成果物は read-only（確定制約 #4）であり、docs は `C:\Users\user\Desktop\dev\poker-system\docs` に一元管理する（確定制約 #13）。
