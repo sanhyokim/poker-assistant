@@ -4348,3 +4348,45 @@ advantageは `A_i = (r_i - group_mean) / (group_std + ε)` として、グルー
 報酬EVはMCのみとし、CFR/solverは持ち込まない（§65.1 / §66.5）。group内候補の `r_i` も同じMC rollout EVで評価する。
 
 entropy崩壊対策なしに長時間訓練を開始しない。Task 5bはGRPO損失本体を実装する段階であり、Task 6の長時間本訓練へ進む前に、Action head categoricalのentropy、top-1中央値、KL、clip率を監視できる状態にする。
+
+## 68. Task 6 訓練制御方針（Phase 2 GRPO本訓練）
+
+Task 6では、Task 5a/5b/5cで完成したGRPO装置を実訓練ハーネスへ接続し、Phase 2 GRPO本訓練を開始できる状態にする。本セクションでは、長時間訓練を安全に回すためのGo/No-go運用、チェックポイント中間評価、崩壊ガードのループ挙動、撤退トラッキングを確定する。
+
+### 68.1 Go/No-go本判定運用
+
+Phase 2終了判定は §57 の4基準を正とする。すなわち、Spot Checks 50シナリオで95%合格、entropy top-1確率中央値が0.85以下、Slumbot HUが -15 bb/100 以上、self-play vs Phase1 baseline が +3 bb/100 以上である。
+
+「profit vs random」を単独評価指標として使わない。これは §17.6 および §65系の教訓と同じで、単純な相手に勝つことだけを最適化すると病理的な方策を見逃すためである。Spot Checks 50シナリオは削除・緩和しない。
+
+判定タイミングは、Phase 2終了時に加え、§56.6 の中間タイミング（Sprint 3開始から2週、5週）でも行う。中間判定では、品質下限、改善トレンド、コスト、タイムボックスを同時に確認する。
+
+### 68.2 チェックポイント中間評価
+
+Task 6では固定ステップ間隔でチェックポイントを保存する。保存先は `results/grpo/` 配下とし、正本である `results/sft_sequential/seg_003_offset_66000/final_adapter` および `results/aux_heads/seg_003/final_aux_head` は上書きしない。これは確定制約#4のread-only方針を継承する。
+
+各checkpointでは軽量evalとして、Spot Checks 50（§58.2）、action head top-1確率中央値、4-class action分布を記録する。主要checkpointでは、Slumbot HUとself-play vs Phase1 baselineも実施する。
+
+best checkpointは単純な報酬最大ではなく、Spot Checks合格率とentropy健全性を主軸に保持する。報酬が高くてもtop-1中央値が0.85を大きく超える、Raise/Fold偏重が出る、sizing固定が出るcheckpointはbest候補にしない。
+
+### 68.3 崩壊ガードのループ挙動
+
+Task 5cで実装した `monitor.collapse_guard` を訓練ループへ組み込む。監視対象は §56.4 の病理パターンのうち分布ベースで検出できるもの、すなわちaction head top-1中央値、Raise頻度、Fold頻度、sizing最頻値割合である。
+
+`HALT` が返った場合は、訓練を停止し、last-good checkpointを保存し、理由をログへ記録し、§56.3 のStep判断へエスカレーションする。崩壊状態へ自動継続しない。`WARN` の場合は、理由をログへ記録し、フラグを立てたうえで継続する。
+
+entropy健全性は top-1確率中央値 ≤ 0.85 を基準とする。entropy崩壊対策なしに長時間訓練を開始しないという確定制約を継承し、Task 6aの訓練ハーネスでは最初からこのガードを呼べる構造にする。
+
+### 68.4 撤退トラッキング
+
+§56.6 の撤退条件を判定タイミングごとに記録する。対象は、タイムボックス12週（最大15週）超過、品質下限未達、改善トレンド消失、コスト$500超過である。
+
+撤退判断を行う場合は、§56.8 のテンプレートで記録し、snapshotとDESIGN_NOTESを更新する。撤退は単なる訓練停止ではなく、どの条件を満たしたために次案へ移るのかを明記する運用判断である。
+
+### 68.5 制約継承
+
+報酬EVはMCのみとし、CFR/solver/反実仮想EVを持ち込まない（§65.1、§67.4）。ハイパラは `RewardConfig`、`GRPOConfig`、`EntropyGuardConfig` 経由で管理し、訓練ループ内で値をハードコードしない。
+
+正本モデル成果物はread-onlyである。GRPO訓練checkpointは `results/grpo/` へ分離し、SFT正本LoRAおよび補助ヘッド正本を上書きしない。
+
+Deep CFRおよびRust Solver関連コードは、品質検証（Stage D）前に削除しない。Rust postflop Solverは永久廃止方針だが、削除判断はStage Dの整理タイミングで行う。Deep CFR失敗モデルはopponent populationの弱い相手枠として参照する可能性があるため、現段階では保持する。
