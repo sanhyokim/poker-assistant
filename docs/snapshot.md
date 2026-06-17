@@ -1,12 +1,12 @@
 # pokerrl-training snapshot
 **Updated:** 2026-06-17 JST
-**Session:** Sprint 3 Task 3 完了 — 6-max自己対戦環境骨格 + state正本化 + スモークランPASS
+**Session:** Sprint 3 Task 4 完了 — 報酬関数本実装（chip delta + ロールアウトEV + bankroll、bb正規化）+ eval7導入
 
 ---
 
 ## 1. このsnapshotの位置づけ
 
-このsnapshotは、`C:\dev\pokerrl-training` でSprint 3（GRPO準備）を次セッションへ引き継ぐための現在地点メモである。次セッションはこのファイル単体で Task 4（報酬関数の本実装）に着手できる状態を目標にする。
+このsnapshotは、`C:\dev\pokerrl-training` でSprint 3（GRPO準備）を次セッションへ引き継ぐための現在地点メモである。次セッションはこのファイル単体で Task 5（GRPO本体 + opponent統合）に着手できる状態を目標にする。
 
 本リポジトリはローカルのみ（リモートなし）。poker-assistant本体リポジトリの体系的な仕様は `SPEC.md v3.8`、設計判断の理由は `DESIGN_NOTES.md` を参照する。
 docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
@@ -17,7 +17,8 @@ docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
 - Sprint 3 Task 1: PokerKit state → PokerBench形式prompt生成器を新規実装し、teacher照合テスト4件を含む単体テストがPASS。
 - Sprint 3 Task 2: `verify_pokerrl_encode.py` を新規作成し、生成器・teacher・訓練tokenizeの整合検証がPASS。
 - Sprint 3 Task 3: PokerKitベース6-max自己対戦環境骨格、state正本化、スモークランゲートがPASS。
-- 次は Sprint 3 Task 4: 報酬関数の本実装。DESIGN_NOTES §57 / §58、SPEC §10A を正とする。
+- Sprint 3 Task 4: 報酬関数本実装（chip delta + ロールアウトEV + bankroll、bb正規化）とeval7導入がPASS。
+- 次は Sprint 3 Task 5: GRPO本体（DAPO trick + OPEFO entropy制御）+ opponent統合。DESIGN_NOTES §56-58 / §57、SPEC §10A を正とする。
 
 ---
 
@@ -77,6 +78,21 @@ docs正規パスは `C:\Users\user\Desktop\dev\poker-system\docs`。
    - スモーク: `hands=200 / total_steps=3761 / average_steps_per_hand=18.80 / zero_sum_ok=True / winners_ok=True / SMOKE: PASS`
    - 回帰確認: `python scripts/verify_pokerrl_encode.py` は `passed=8 failed=0` / `OVERALL: PASS`。
    - 設計判断はDESIGN_NOTES §64に記録済み（state正本化、§20準拠、snapshot §8-5の目的維持）。
+
+10. Sprint 3 Task 4 を実装。
+   - eval7導入: `eval7==0.1.10`。`pokerkit==0.7.4` への非干渉を確認。コミット: `6c4488a`。
+   - 新規: `pokerrl_grpo/config.py`（`RewardConfig`: weights 0.7/0.2/0.1、playouts=100、clip_bb=100、window=20）。
+   - 新規: `pokerrl_grpo/rollout_ev.py`（eval7ベースMC、CFR/solverなし、state非破壊、未知hole/未完成boardに対応）。
+   - 新規: `pokerrl_grpo/reward.py`（`step_reward` / `terminal_reward` / `BankrollTracker`、clip後重み付け）。
+   - 変更: `pokerrl_grpo/selfplay_env.py`（ステップEV項 + 終端chip delta/bankroll項 + 直近20ハンドリングバッファ）。
+   - 変更: `scripts/smoke_selfplay.py`（3成分 raw/clipped/weighted 内訳ログ）。
+   - 新規: `tests/test_reward.py`。
+   - コミット: `caa10c1 追加: 報酬関数本実装（chip delta + ロールアウトEV + bankroll、bb正規化）`。
+   - テスト: `pytest tests/test_reward.py tests/test_selfplay_env.py tests/test_pokerbench_prompt.py -q` は `22 passed`。
+   - 既存promptテスト: `pytest tests/test_pokerbench_prompt.py -q` は `10 passed` 維持。
+   - スモーク: `hands=200 / total_steps=3761 / zero_sum_ok=True / winners_ok=True / rewards_ok=True / SMOKE: PASS`。
+   - 回帰確認: `python scripts/verify_pokerrl_encode.py` は `passed=8 failed=0` / `OVERALL: PASS`。
+   - 設計判断はDESIGN_NOTES §65に記録済み。
 
 ---
 
@@ -303,24 +319,65 @@ Sprint 3 Task 3で追加した自己対戦環境骨格。`SixMaxSelfPlayEnv` が
 主要インターフェース:
 - `reset()`: `state_factory.create_state()` で新ハンドを開始し、ランダムにホールカードを配り、最初の観測を返す。
 - `legal_actions()`: 現在actorのfold/check/call/raise/all-in可否とraise範囲をPokerKit APIから返す。
-- `step(action)`: アクションをPokerKit stateへ適用し、次観測、報酬スタブ、done、infoを返す。
+- `step(action)`: アクションをPokerKit stateへ適用し、次観測、正式報酬、done、infoを返す。
 - `current_player_index`: 現在手番player index。
 
 重要な設計:
 - 6-max固定。`player_count != 6` は `ValueError`。
 - 各意思決定局面で `build_pokerbench_prompt(state, hero_index=current_player)` を呼べる。
 - pot / サイドポット / death SB / showdown処理はPokerKit automationに委譲し、環境側では独自実装しない。
-- 報酬は現状スタブ。終局時にPokerKitの `state.payoffs` に基づくchip deltaのみを返す。§57の正式報酬はTask 4で実装予定。
+- 報酬はTask 4で正式報酬へ置換済み。各意思決定時点でEV項、ハンド終端でchip delta + bankroll項を返す。
+- 直近20ハンドのbankrollリングバッファを環境インスタンス内に保持する。新しい `SixMaxSelfPlayEnv` インスタンスで履歴はリセットされる。
 
-### 6.8 `scripts/smoke_selfplay.py`
+### 6.8 `pokerrl_grpo/config.py`
 
-Sprint 3 Task 3で追加したスモークランゲート。軽量な探索ルールベース方策で200ハンドを回し、配管の生存を確認する。
+Sprint 3 Task 4で追加した報酬パラメータの正本。`RewardConfig` に以下を集約する。
+
+- `weight_chip_delta = 0.7`
+- `weight_rollout_ev = 0.2`
+- `weight_bankroll = 0.1`
+- `rollout_playouts = 100`
+- `clip_bb = 100.0`
+- `bankroll_window = 20`
+
+報酬パラメータは今後このconfig経由で参照する。重み・clip・playouts・windowを実装内でハードコードしない。
+
+### 6.9 `pokerrl_grpo/rollout_ev.py`
+
+Sprint 3 Task 4で追加したeval7ベースのMCロールアウトEV計算。
+
+重要な固定規則:
+- `rollout_ev(state, hero_index, playouts, rng) -> float` はbb単位のEVを返す。
+- 既存PokerKit stateは読み取り専用で、ロールアウト中に破壊しない。
+- 未完成boardをランダム補完し、未知の相手holeがある場合もdeckからサンプルする。
+- ショーダウン評価は `eval7.evaluate()`。PokerKitカード表現は `repr(card)` ベースでeval7の `Card` に変換する。
+- CFR/solver/相手最適応答は持ち込まない。報酬EVはMC近似に限定する。
+
+### 6.10 `pokerrl_grpo/reward.py`
+
+Sprint 3 Task 4で追加した報酬3成分の合成本体。
+
+公開要素:
+- `step_reward(state, hero_index, config, rng)`: 各意思決定時点のrollout EV項。
+- `terminal_reward(hand_chip_delta_bb, bankroll_recent_bb, config)`: ハンド終端のchip delta + bankroll項。
+- `BankrollTracker`: 直近 `bankroll_window` ハンドの収支リングバッファ。
+- `RewardResult.to_info()`: smoke/debug用に raw_bb / clipped_bb / weighted / weight を返す。
+
+固定規則:
+- 全成分はbb単位。
+- 各成分は ±`clip_bb` でclipしてから重み付けする。
+- 合成重みは `RewardConfig` の 0.7 / 0.2 / 0.1 を使う。
+
+### 6.11 `scripts/smoke_selfplay.py`
+
+Sprint 3 Task 3で追加し、Task 4で本報酬の3成分内訳ログを追加したスモークランゲート。軽量な探索ルールベース方策で200ハンドを回し、配管と報酬の生存を確認する。
 
 確認項目:
 - 完走すること。
 - chip deltaがゼロサム保存されること。
-- 勝者payoffが正であること。
+- payoff符号が整合すること（非ゼロ決着なら勝者が正・敗者が負、全員ゼロなら許容）。
 - fold / check-call / raise / all-in が全て非ゼロで、粗いアクション崩壊がないこと。
+- reward3成分（rollout_ev / chip_delta / bankroll）が常時0または全clip張り付きに崩壊していないこと。
 
 確認済み結果:
 ```text
@@ -329,6 +386,7 @@ total_steps=3761
 average_steps_per_hand=18.80
 zero_sum_ok=True
 winners_ok=True
+rewards_ok=True
 SMOKE: PASS
 ```
 
@@ -434,10 +492,25 @@ PokerKit operation型:
    - 環境側で独自pot / サイドポット / death SBロジックを書かない。
    - teacher prompt互換のpot文字列調整は `pokerbench_prompt.py` 側の責務（§63.5）。環境はPokerKit stateを正しく進行させることに集中する。
 
-14. Sprint 3 Task 3時点の報酬はスタブ。
-   - 終局時chip delta（PokerKit `state.payoffs`）のみ。
-   - §57の正式報酬（0.7×chip delta + 0.2×eval7 EV + 0.1×直近20ハンド累積）はTask 4で本実装予定。
-   - この段階で正式報酬が未実装なのは正常。
+14. Sprint 3 Task 4で報酬スタブは正式報酬へ置換済み。
+   - `step_reward`: rollout EV項。
+   - `terminal_reward`: chip delta項 + 直近20ハンドbankroll項。
+   - `selfplay_env.py` は直近20ハンドのリングバッファを保持する。
+
+15. 報酬EVはロールアウト（MC）で計算する。
+   - 反実仮想EV / CFR / solverを報酬に持ち込まない。
+   - これはDESIGN_NOTES §65.1、およびソルバー永久廃止方針の延長。
+
+16. 報酬各成分はclip後に重み付けし、bb単位に正規化する。
+   - 順序: raw bb → ±`clip_bb` clip → weight適用。
+   - Go/No-goのbb/100指標とスケールを揃える（DESIGN_NOTES §65.3 / §65.4）。
+
+17. 報酬パラメータは `RewardConfig` 経由。
+   - weights、rollout_playouts、clip_bb、bankroll_windowを実装内でハードコードしない。
+
+18. eval7は導入済みで、`pokerkit==0.7.4` への非干渉を確認済み。
+   - `eval7==0.1.10`
+   - 追加依存は `future==1.0.0` / `pyparsing==3.3.2`。
 
 ---
 
@@ -466,6 +539,13 @@ Sprint 3 Task 3の設計判断は `docs/DESIGN_NOTES.md` §64 に追記済み。
 - `tests/test_pokerbench_prompt.py` のimport差し替えがsnapshot §8-5の目的に反しない理由。
 - 報酬をスタブに留め、環境骨格を独立タスクに切った理由。
 
+Sprint 3 Task 4の設計判断は `docs/DESIGN_NOTES.md` §65 に追記済み。
+- EV計算にロールアウト（MC）を採用し、反実仮想EVを却下した理由。
+- プレイアウト回数をconfig可変にした理由。
+- 各成分をclipしてから重み付けする順序にした理由。
+- 報酬をbb単位に正規化した理由。
+- ステップ報酬と終端報酬のハイブリッド時間粒度にした理由。
+
 ### 9.3 Sprint 3 Task 3（完了）
 
 完了内容:
@@ -475,21 +555,38 @@ Sprint 3 Task 3の設計判断は `docs/DESIGN_NOTES.md` §64 に追記済み。
 - `tests/test_pokerbench_prompt.py` はimport差し替えのみで、`10 passed` を維持。
 - コミット済み: `f04090d`
 
-### 9.4 Sprint 3 Task 4（次タスク）
+### 9.4 Sprint 3 Task 4（完了）
 
-次セッションはSprint 3 Task 4（報酬関数の本実装）から再開する。DESIGN_NOTES §57 / §58、SPEC §10A を正とし、現状のchip deltaスタブを正式報酬へ置き換える。
+完了内容:
+- eval7を導入し、`pokerkit==0.7.4` への非干渉を確認。コミット済み: `6c4488a`
+- `pokerrl_grpo/config.py` / `pokerrl_grpo/rollout_ev.py` / `pokerrl_grpo/reward.py` を追加。
+- `pokerrl_grpo/selfplay_env.py` を正式報酬へ差し替え。
+- `scripts/smoke_selfplay.py` に3成分内訳ログを追加。
+- `tests/test_reward.py` を追加。
+- コミット済み: `caa10c1`
 
-Task 4で実装する報酬の正:
-- 0.7×chip delta
-- 0.2×eval7 EV
-- 0.1×直近20ハンド累積
+検証:
+- `pytest tests/test_reward.py tests/test_selfplay_env.py tests/test_pokerbench_prompt.py -q`: `22 passed`
+- `pytest tests/test_pokerbench_prompt.py -q`: `10 passed`
+- `python scripts/smoke_selfplay.py`: `SMOKE: PASS`
+- `python scripts/verify_pokerrl_encode.py`: `passed=8 failed=0` / `OVERALL: PASS`
 
-注意:
-- Task 4ではGRPO本体（DAPO/OPEFO）はまだ実装しない。
-- その先の道筋は、Task 5: DAPO/OPEFO実装、Task 6: 100-150h訓練 + §57 Go/No-go本判定。
+### 9.5 Sprint 3 Task 5（次タスク）
+
+次セッションはSprint 3 Task 5（GRPO本体 + opponent統合）から再開する。DESIGN_NOTES §56-58 / §57、SPEC §10A を正とする。
+
+Task 5で整理してから実装すること:
+- GRPO本体（DAPO trick + OPEFO entropy制御）。
+- entropy監視と崩壊対策。entropy崩壊対策なしに訓練しない。
+- opponent統合（過去SFT checkpoint population / Rule-based TAG-LAG / Deep CFR失敗モデル）。
+- Task 4で実装した報酬（rollout EV + chip delta + bankroll）をtrajectoryへ載せる経路。
+
+その先の道筋:
+- Task 6: 100-150h訓練 + §57 Go/No-go本判定。
+- Phase 2終了Go/No-go（Spot Checks、entropy、Slumbot、self-play bb/100）はTask 6で判定する。
 - 実装指令書は廃止済みで参照不要。DESIGN_NOTES §56-59 / SPEC §9.4・§10A / 本snapshotを正とする。
 
-### 9.5 既存collection問題
+### 9.6 既存collection問題
 
 `pytest -q` 全体は `tools/poker_datasets_ref/poker_datasets/test_hand_to_text.py` のcollection errorで止まる。
 
@@ -498,15 +595,17 @@ Task 4で実装する報酬の正:
 - `tools/poker_datasets_ref` を現venvへ入れるとPokerKitダウングレードが起きるため禁止。
 - 必要なら別venv分離、pytest ignore設定、または当該参照ツールのテスト除外を別タスクで検討する。
 
-### 9.6 コミット状態
+### 9.7 コミット状態
 
-訓練リポジトリはローカルのみ。Task 1/2/3本体はコミット済み。
+訓練リポジトリはローカルのみ。Task 1/2/3/4本体はコミット済み。
 
 主な関連コミット:
 - `96aa90a` Task 1: PokerBench prompt生成器とテスト
 - `01e804f` snapshot.mdを訓練リポジトリから除外
 - `6bbb309` Task 2: encode整合検証スクリプト
 - `f04090d` Task 3: 6-max自己対戦環境骨格とstate正本化
+- `6c4488a` Task 4-pre: eval7導入
+- `caa10c1` Task 4: 報酬関数本実装
 
 未追跡のまま残っている可能性があるもの:
 - 調査用一時スクリプト群（`tmp_*.py`）
@@ -518,7 +617,7 @@ Task 4で実装する報酬の正:
 
 ## 10. 次セッション開始手順
 
-着手対象は Sprint 3 Task 4（報酬関数の本実装）。DESIGN_NOTES §57 / §58、SPEC §10A を正とし、Task 3で作ったchip deltaスタブを正式報酬へ置き換える。
+着手対象は Sprint 3 Task 5（GRPO本体 + opponent統合）。DESIGN_NOTES §56-58 / §57、SPEC §10A を正とし、Task 4で実装した正式報酬をGRPO trajectoryへ載せる。
 
 1. 作業場所へ移動。
 ```powershell
@@ -531,14 +630,14 @@ git status --short
 git log --oneline -5
 ```
 
-3. Task 1/3のテスト確認。
+3. Task 1/3/4のテスト確認。
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_selfplay_env.py tests/test_pokerbench_prompt.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_reward.py tests/test_selfplay_env.py tests/test_pokerbench_prompt.py -q
 ```
 
 期待:
 ```text
-15 passed
+22 passed
 ```
 
 4. Task 1のteacher照合テスト単体確認。
@@ -562,7 +661,7 @@ SUMMARY: passed=8 failed=0
 OVERALL: PASS
 ```
 
-6. Task 3の自己対戦スモーク確認。
+6. Task 4の自己対戦スモーク確認。
 ```powershell
 .\.venv\Scripts\python.exe scripts\smoke_selfplay.py
 ```
@@ -572,6 +671,7 @@ OVERALL: PASS
 SMOKE: PASS
 zero_sum_ok=True
 winners_ok=True
+rewards_ok=True
 ```
 
 7. Task 2のforward健全性確認（必要時・モデルロードあり）。
@@ -599,8 +699,10 @@ raise_size_ratio_shape=(1,)
 - `action_logits_shape=(1, 4)`
 - `raise_size_ratio_shape=(1,)`
 
-9. Sprint 3 Task 4に着手。
-   - DESIGN_NOTES §57 / §58、SPEC §10A を正として報酬関数を実装する。
-   - `pokerrl_grpo/selfplay_env.py` のchip deltaスタブを正式報酬へ置き換える。
-   - Task 4ではeval7 EV項と直近20ハンド累積項を追加する。GRPO本体（DAPO/OPEFO）はTask 5以降。
-   - `pokerkit==0.7.4`、6-max固定、state正本 `pokerrl_grpo/state_factory.py`、docs配置ルールを維持する。
+9. Sprint 3 Task 5に着手。
+   - DESIGN_NOTES §56-58 / §57、SPEC §10A を正としてGRPO本体を実装する。
+   - DAPO trick、OPEFO entropy制御、entropy監視、opponent統合の方針を先に整理する。
+   - entropy崩壊対策なしに長時間訓練を開始しない。
+   - opponent候補は §57 の3系統（過去SFT checkpoint population / Rule-based TAG-LAG / Deep CFR失敗モデル）を正とする。
+   - Task 6で100-150h訓練 + §57 Go/No-go本判定に進む。
+   - `pokerkit==0.7.4`、6-max固定、state正本 `pokerrl_grpo/state_factory.py`、RewardConfig経由、docs配置ルールを維持する。
