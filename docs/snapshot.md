@@ -1,20 +1,23 @@
 # pokerrl-training snapshot
-**Updated:** 2026-06-17 JST
-**Session:** Sprint 3 — opponent結線(6b) + 統合GPU健全性(6b-v) + Spot Checks v0構築 + SFT初期方策の裁定(B)。entropy「崩壊」はガード誤検知と判明。次はガード再設計 → Spot Checks 50完成 → Task 6c本訓練。
+**Updated:** 2026-06-18 JST
+**Session:** Sprint 3 — opponent結線(6b)/統合GPU(6b-v)/Spot Checks v0+50(6c-prep,6e)/SFT初期裁定(B)/ガード再設計(6d-guard)/訓練ループ結線+本訓練前ゲートGREEN(6c-wire)。**次は Task 6c-run（100–150h本訓練）**。
 
 ---
 
 ## 1. このsnapshotの位置づけ
 
-`C:\dev\pokerrl-training`（ローカルのみ・リモートなし、branch `master`）でSprint 3を引き継ぐ現在地点メモ。次セッションはこのファイル単体で **ガード再設計のコード** に着手できる状態を目標にする。
+`C:\dev\pokerrl-training`（ローカルのみ・リモートなし、branch `master`）でSprint 3を引き継ぐ現在地点メモ。次セッションはこのファイル単体で **Task 6c-run（本訓練）の実行・監視** に着手できる状態を目標にする。
 
 docs正規パス: `C:\Users\user\Desktop\dev\poker-system\docs`（branch `main`。**docsを訓練リポジトリに置かない**＝確定制約#13）。poker-system本体仕様は `SPEC.md v3.8`、設計判断は `DESIGN_NOTES.md`。
 
 現在地:
-- Sprint 3 Task 1–5c 完了 = GRPO装置（収集→損失→監視/崩壊ガード）。Task 6a = 訓練ハーネス。**6b = opponent実ローダ、6b-v = 統合GPU健全性、6c-prep = Spot Checks v0** 完了。
-- **重要発見**: 実モデル統合smokeでentropyが2ステップで0.95へ→ガードHALT。調査の結果、これは**RL崩壊ではなくガード誤検知**。SFT初期方策は無学習時点で既に高確信（top1中央値≈0.91）でtight。Spot Checks v0で裁定し**(B) 健全なタイト確信**と確定（全面退化ではない）。ただし**実欠陥3点**あり（後述）。
+- Sprint 3 Task 1–5c = GRPO装置。6a = 訓練ハーネス。6b = opponent実ローダ。6b-v = 統合GPU健全性。**6c-prep/6e = Spot Checks v0→50完成 + SFT初期baseline取得**。**6d-guard = 崩壊ガード再設計（§70.3）完了**。**6c-wire = 訓練ループ結線 + 本訓練前ゲートGREEN**。すべて完了・コミット済み。
+- **本セッションの核心発見**: 実モデルで「2ステップでentropy 0.95→HALT」は**RL崩壊ではなくガード誤検知**だった。SFT初期方策は無学習で既に高確信(top1中央値≈0.91)・tightだが、Spot Checksで裁定し**(B)健全なタイト確信**（全面退化でない）。`top1≤0.85`単発HALTを廃し、行動多様性崩壊 + Spot Checks回帰でHALTする設計へ再設計済み（誤HALT解消を6c-wireゲートで実証）。
+- **SFT初期 Spot Checks 50 baseline = 43/50 = 0.86**（§58.1 Phase1=80%超、Phase2=95%未達）。GRPOが超える出発点。弱点: all_in 4/7 / made_hand 6/8 / draw 3/4 / position 7/8（preflop系・overcard・bluff_catchは100%）。
 - 設計記録: §66/§67/§68/§69/§70 確定済み。
-- 次: **ガード再設計**（§70.3、`collapse_guard`意味論変更 + Spot Checks品質ゲート + leak監視）→ **Spot Checks 50完成**（残り30）→ **Task 6c 本訓練**（all-in探索温度つき、Spot Checks/leakをゲート）。
+- **次: Task 6c-run（100–150h本訓練 + §57 Go/No-go本判定）**。前段に generation_temperature>1.0 の all-in探索小sweep。再設計ガード/品質ゲートを安全弁に、`best/`保持・§56.6撤退。
+
+poker-assistant本体URL（参照用）: https://github.com/sanhyokim/poker-assistant
 
 poker-assistant本体URL（参照用）: https://github.com/sanhyokim/poker-assistant
 
@@ -44,45 +47,63 @@ poker-assistant本体URL（参照用）: https://github.com/sanhyokim/poker-assi
 - `scripts/run_spot_checks.py`（既定stub + `--with-model`）/ `tests/test_spot_checks.py`
 - カテゴリ: position_sensitivity / preflop_vs_raise / overcard_no_pair / made_hand / draw / turn_barrel / river / all_in。
 
+### 6d-guard: 崩壊ガード再設計（訓練 `master`、コミット `0d6282a`）
+- 修正 `pokerrl_grpo/monitor.py`（top1_median/fold_freq/raise_freq/sizing固定→**WARN格下げ**。HALTは単一アクション頻度≥`extreme_single_action_max`=0.97の行動多様性崩壊のみ。all-in使用率をmetricsに追加）。
+- 新規 `pokerrl_grpo/quality_gate.py`（`SpotCheckGateConfig`: pass_rate_floor=0.75/regression_tol=0.10/カテゴリALERT。`spot_check_gate(results, cfg, baseline)`→OK/ALERT/REGRESSION）。
+- `scripts/smoke_grpo_guard.py`/`tests/test_monitor.py`/`tests/test_quality_gate.py`/`tests/test_train_harness.py`/`tests/test_integrated_step.py` を新意味論へ。smoke: healthy=OK/high_top1=WARN/halted=HALT/spot_regression=REGRESSION。
+
+### 6e: Spot Checks 50完成 + SFT初期baseline（訓練 `master`、コミット `3e04930`）
+- `data/spot_checks/scenarios.json`（**50局面** canonical、`-f`追跡。v0 20 + 新規30、`scenarios_v0.json` 残置）/ `data/spot_checks/baseline_sft_init.json`（SFT初期50局面baseline、`-f`追跡）。
+- `scripts/run_spot_checks.py`（既定を `scenarios.json`、`--scenarios`/`--save-baseline` 追加）/ `tests/test_spot_checks.py`。
+- **SFT初期 50局面 = 43/50 = 0.86**（カテゴリ別は§3）。
+
+### 6c-wire: 訓練ループ結線 + 本訓練前ゲートGREEN（訓練 `master`、コミット `974b755`）
+- 修正 `pokerrl_grpo/train_harness.py`（`GRPOTrainer.run/train` へ: 再設計ガード in-loop、`quality_gate`（`eval_every`でSpot Checks 50 vs baseline、REGRESSIONで停止+`last_good/`保存）、`generation_temperature` をサンプリングへ、`latest/`cadence + Spot Checks改善で`best/`保存）。
+- 新規 `scripts/run_training.py`（既定stub `SMOKE: PASS`、`--with-model --steps N` ゲート、`--generation-temperature`/`--eval-every`/`--checkpoint-every`/`--scenarios`/`--baseline`/`--spot-batch-size`）。`tests/test_training_loop.py`。
+- **本訓練前ゲートGREEN**: `--with-model --steps 20` → halted=False / false_halt=False / spot_regression=False / `cuda_max_memory_allocated_mb=5484.6`（10GB内）/ 全step grad有限 / Spot Checks 0.86→0.88→0.88→0.86（baseline回帰なし）。
+
+### 再現性確保（訓練 `master`、コミット `ca0d5bd`）
+- `.gitignore` 本体 + `scripts/train_aux_heads.py`（aux_head_policy_evalが使う中核ロード経路）を追跡。本訓練でツリーが失われても復元可能に。
+
 ---
 
-## 3. SFT初期方策の裁定（Spot Checks v0、§70）
+## 3. SFT初期方策の裁定（Spot Checks、§70）
 
-**結論: (B) 健全なタイト確信。全面退化(A)ではない。**
+**結論: (B) 健全なタイト確信。全面退化(A)ではない。** 決め手はovercard_no_pair（Deep CFR病理）を踏まないこと。
 
-Spot Checks v0（無学習、canonical `seg_003_offset_66000` + `seg_003/final_aux_head`）= **16/20 passed（0.80）**。
+**formal Spot Checks 50 baseline（無学習、canonical `seg_003_offset_66000` + `seg_003/final_aux_head`）= 43/50 = 0.86**（§58.1 Phase1=80%超、Phase2=95%未達。6c-runで超える）。
 
 | category | passed/total |
 |---|---|
-| overcard_no_pair | 2/2（Deep CFR病理を踏んでいない＝決め手） |
-| preflop_vs_raise | 2/2 |
-| draw | 1/1 / turn_barrel 1/1 / river 1/1 |
-| made_hand | 3/4 |
-| position_sensitivity | 4/5 |
-| all_in | 2/4 |
+| preflop_open 4/4 / preflop_vs_raise 4/4 / preflop_3bet 4/4 | 全1.0 |
+| overcard_no_pair 6/6 / bluff_catch 3/3 / river 1/1 / turn_barrel 1/1 | 全1.0 |
+| position_sensitivity | 7/8（0.875） |
+| made_hand | 6/8（0.75、value-hand fold leak） |
+| draw | 3/4（0.75） |
+| **all_in** | **4/7（0.571、最弱・head瀕死）** |
 
-注: v0の0.80は難所偏重の診断値。§58.1 Phase 1合格（80%）/Phase 2（95%）の判定はSpot Checks 50完成後。
+参考: v0(20局面・難所偏重) = 16/20。
 
 **確認された実欠陥3点（局所leak、GRPOで矯正対象）:**
-1. **all-in head死亡**: legal 162/200でall_in_prob≈0、river nutsで `all_in≈0.000005`。既知制約（§49.2、train All-in 0.14%）。
-2. **made-hand fold退化**: spot_016 でストレートを `fold 0.674913`。
-3. **position過剰raise**: spot_004 SB K2o `raise 0.690254`。
+1. **all-in head死亡**: legal局面で all_in_prob≈0、river nutsで `all_in≈0.000005`。既知制約（§49.2、train All-in 0.14%）。最難。
+2. **made-hand fold退化**: ストレートを `fold 0.67` 等、強made handを降りる。
+3. **position過剰raise**: SB K2o `raise 0.69` 等。
 
-無学習measure-only（200決定）: top1中央値0.91、preflop fold 73%（タイト範囲）、preflop 93.5%・postflop 6.5%（postflopサンプル僅少）。position別fold率の見かけの逆転は混在状況のノイズ寄り（targetなposition_sensitivityは4/5でおおむね妥当）。
+無学習measure-only（200決定）: top1中央値0.91、preflop fold 73%（タイト範囲）、preflop 93.5%・postflop 6.5%。position別fold率の見かけの逆転は混在状況のノイズ寄り（targetなposition_sensitivityは7/8）。
 
 ---
 
-## 4. ガード再設計方針（§70.3、次タスク）
+## 4. ガード再設計（§70.3、**6d-guardで実装済み・`0d6282a`**）
 
-`top1_median ≤ 0.85` 単発HALTはポーカーに誤検知するため廃し、`collapse_guard`（`monitor.py`）を再設計する。**当該既存ガード意味論（§56.4/§68.3/§58.1）は§70を優先**。
+`top1_median ≤ 0.85` 単発HALTはポーカーに誤検知するため廃し、`collapse_guard`（`monitor.py`）を再設計**済み**。**当該既存ガード意味論（§56.4/§68.3/§58.1）は§70を優先**。6c-wireゲートで誤HALT解消を実証（high_top1=WARN/halted=HALT/spot_regression=REGRESSION）。
 
-- `top1_median` / `fold_freq` → **情報監視（WARN）に格下げ**。単発HALTの根拠にしない。
-- **真の退化HALT** = 多様な局面で単一アクション支配（行動多様性の欠如）かつ/または **Spot Checks品質の回帰**。
-- **Spot Checks（v0→50）を品質ゲートの軸**に統合（§58.1/§58.2）。
-- **leak別監視を新設**: all-in使用率 / value-hand fold率 / position過剰raise。
-- **top1≤0.85を最適化標的にしない**（メトリクスがポーカーに不適）。
+- `top1_median` / `fold_freq` / `raise_freq` / `sizing固定` → **情報監視（WARN）**。単発HALTの根拠にしない。
+- **真の退化HALT** = 単一アクション頻度 ≥ `extreme_single_action_max`(0.97) の行動多様性崩壊。
+- **Spot Checks品質ゲート**（`quality_gate.spot_check_gate`、baseline `baseline_sft_init.json` 比）でREGRESSION→停止。
+- **leak監視**: all-in使用率（monitor）/ value-hand fold・position（Spot Checksカテゴリ）。
+- **top1≤0.85を最適化標的にしない**（§70.4。ポーカーでは確信プレイが正常）。
 
-係数sweep解釈（§70.4）: entropy_bonus(0.01/0.03/0.1)・OPEFO(0.5)・KL(0.05)では top1≤0.85維持不可だったが、主因は指標不適。§56.3 Step1のうち**係数群は試行済み**、残り（LR/group_size/generation_temperature/dynamic sampling）は未消化。
+係数sweep解釈（§70.4）: entropy_bonus(0.01/0.03/0.1)・OPEFO(0.5)・KL(0.05)では top1≤0.85維持不可だったが主因は指標不適。§56.3 Step1のうち**係数群は試行済み**、残り（LR/group_size/generation_temperature/dynamic sampling）は未消化。all-in探索には generation_temperature>1.0 を6c-runで使う候補。
 
 ### 4.1 現行 `monitor.py`（再設計の起点。コードが正、着手前に必ず `view monitor.py` / `grpo_config.py`）
 - `EntropyGuardConfig`（5c実装）の既定値: `top1_median_max=0.85` / `raise_freq_max=0.60` / `fold_freq_max=0.50` / `sizing_fixed_frac_max=0.95` / `window=200` / `warn_margin=0.03`。
@@ -191,44 +212,47 @@ Spot Checks v0（無学習、canonical `seg_003_offset_66000` + `seg_003/final_a
 
 ## 9. 未解決の課題・TODO
 
-1. **次: ガード再設計**（§70.3）。`collapse_guard` 意味論変更（top1/fold→WARN、真の退化＝行動多様性欠如/Spot Checks回帰、leak別監視新設、Spot Checks品質ゲート統合）。コード変更タスク。
-2. **Spot Checks 50完成**（残り30、formal Go/No-go用、§58.1 Phase2 95%）。
-3. **Task 6c 本訓練**（100–150h + §57 Go/No-go）。all-in探索温度、Spot Checks/leakをゲート。
-4. all-in head復活（§70.5、不確実。探索温度）。made-hand fold/SB過剰raiseの矯正トラッキング。
-5. Deep CFR opponent結線（6d、PokerKit→500-dim encoding adapter + 3→4class写像）。
-6. `.gitignore`/`scripts/train_aux_heads.py` の追跡整理。
+1. **次: Task 6c-run（100–150h本訓練 + §57 Go/No-go本判定）**。`scripts/run_training.py --with-model` で長時間運転。前段に generation_temperature>1.0 の all-in探索小sweep（他カテゴリを崩さず all_in 4/7 を改善できるか）。再設計ガード/品質ゲートを安全弁に、`best/`保持、§56.6撤退。**訓練済み `results/grpo/best` はgit管理外＝別途バックアップ必須**。
+2. all-in head復活（§70.5、不確実。探索温度）。made-hand fold/SB過剰raiseの矯正をSpot Checks/leak監視でトラッキング。目標は Spot Checks 50で 0.86→0.95（§58.1 Phase2）。
+3. Deep CFR opponent結線（**6d-opp想定**、PokerKit→500-dim encoding adapter + 3→4class写像、`pokers`追加要）。初期poolには未投入（§69）。
+4. Slumbot HU / self-play vs Phase1 baseline 評価の整備（§57 Go/No-go）。
+5. 他の未追跡スクリプト（download_model.py / prepare_sft_*.py 等）の追跡は任意。
 
-主要コミット（時系列）:
-- `2400e2e` 5c / `9696ebd` 6a / `99900f3` 6b / `564cd96` 6b-v / `78dda67` Spot Checksランナー / `764e687` scenarios_v0.json（訓練 `master`）
-- `2d50e07` §69+§70（docs `main`）。先行doc: §66`c93c84c`/§67`5b81370`/§68`71872dd`、snapshot`a2d5ff4`。
+主要コミット（時系列、訓練 `master`）:
+- `2400e2e`5c / `9696ebd`6a / `99900f3`6b / `564cd96`6b-v / `78dda67`+`764e687`Spot Checks v0 / `0d6282a`6d-guard / `3e04930`6e(Spot Checks 50+baseline) / `974b755`6c-wire / `ca0d5bd`再現性確保(.gitignore+train_aux_heads)。
+- docs `main`: `2d50e07`§69+§70 / `37ac139`snapshot(前版)。先行: §66`c93c84c`/§67`5b81370`/§68`71872dd`、snapshot`a2d5ff4`。
 
 ---
 
 ## 10. 次セッション開始手順
 
-着手対象: **ガード再設計のコード**（§70.3）。DESIGN_NOTES §56.4/§58.1/§58.2/§68.3/§70、SPEC §9.3 を正とする。
+着手対象: **Task 6c-run（100–150h本訓練）**。DESIGN_NOTES §56/§57/§58/§68/§70、SPEC §9.3 を正とする。**いきなり長時間回す前に、再設計ガード+all-in探索温度での統合ゲートを再確認**。
 
 1. 移動・状態確認。
 ```powershell
 cd C:\dev\pokerrl-training
-git status
-git log --oneline -6
+git rev-parse --show-toplevel   # C:/dev/pokerrl-training であること
+git branch --show-current       # master
+git log --oneline -6            # HEAD = ca0d5bd
 ```
-期待: HEADが `764e687`。
 
-2. 健全性確認。
+2. 健全性確認（個別ファイル指定。`pytest -q`全体は `tools/poker_datasets_ref` のcollection errorで止まる）。
 ```powershell
-.\.venv\Scripts\python.exe -m pytest tests/test_spot_checks.py tests/test_sft_opponent.py tests/test_opponent_pool_factory.py tests/test_integrated_step.py -q
-.\.venv\Scripts\python.exe -m pytest tests/test_monitor.py tests/test_advantage.py tests/test_grpo_batch.py tests/test_grpo_loss.py tests/test_sizing.py tests/test_reward.py tests/test_selfplay_env.py tests/test_pokerbench_prompt.py tests/test_opponents.py tests/test_collect.py tests/test_checkpointing.py tests/test_train_harness.py -q
+.\.venv\Scripts\python.exe -m pytest tests/test_training_loop.py tests/test_train_harness.py tests/test_monitor.py tests/test_quality_gate.py tests/test_spot_checks.py tests/test_sft_opponent.py tests/test_opponent_pool_factory.py tests/test_integrated_step.py -q
 .\.venv\Scripts\python.exe scripts\run_spot_checks.py
 .\.venv\Scripts\python.exe scripts\verify_pokerrl_encode.py
 ```
 期待: 各PASS。
 
-3. ガード再設計（§70.3）に着手。
-   - `monitor.collapse_guard` を、top1/fold単発HALTから「真の退化（行動多様性欠如）+ Spot Checks回帰」判定へ。top1/foldはWARN情報監視。
-   - leak別監視（all-in使用率/value-hand fold率/position過剰raise）を追加。
-   - Spot Checks（`run_spot_checks`）を品質ゲートとして訓練ループ評価に統合できるフックを用意。
-   - 既存テスト全PASSを受け入れ基準に。`top1≤0.85`単独HALTのテストは新意味論へ更新。
-4. その後: Spot Checks 50完成 → Task 6c（all-in探索温度、Spot Checks/leakゲート、本訓練前に再設計ガードで統合smoke再確認）。
-   - `pokerkit==0.7.4`・6-max・state正本・各Config経由・docs配置・正本read-only・凍結ベース共有を維持。
+3. 本訓練前ゲート再確認（GPU、短時間）。
+```powershell
+.\.venv\Scripts\python.exe scripts\run_training.py --with-model --steps 20
+```
+期待: halted=False / false_halt=False / spot_regression=False / oom=False / Spot Checks ≈baseline 0.86維持。
+
+4. all-in探索温度 小sweep（GPU、短時間）。`--generation-temperature` を 1.0 / 1.2 / 1.5 等で `--steps 20–50`、Spot Checks all_inカテゴリが改善し他カテゴリ（特にpreflop/made_hand）が崩れないかを確認。良い温度を6c-run候補に。
+
+5. Task 6c-run 実行（長時間）。`run_training.py --with-model` で 100–150h、`eval_every` でSpot Checks 50監視、`best/`保持、ガード/品質ゲートを安全弁に。**`results/grpo/best` をバックアップ**。
+
+6. Go/No-go本判定（§57/§58.1 Phase2）: Spot Checks 50 ≥95% / Slumbot HU ≥-15bb/100 / self-play vs Phase1 ≥+3bb/100 / entropyは§70の再設計基準。未達は §56.3 Step1残り（LR/group_size/temperature/dynamic sampling）→ §56.6撤退基準。
+   - `pokerkit==0.7.4`・6-max・state正本・各Config経由・docs配置・正本read-only・凍結ベース共有を維持。「profit vs random」単独評価禁止・Spot Checks 50緩和禁止。
