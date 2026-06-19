@@ -4472,3 +4472,71 @@ all-in 復活は不確実である。all-in head は初期出力がほぼ 0 で�
 Spot Checks 50 は緩和・削除しない（確定制約 #11）。再設計するのは entropy/fold の「ガード」側であり、品質判定は Spot Checks に寄せる。v0 は診断用であり、後続タスクで 50 局面まで拡張して formal Go/No-go に接続する。
 
 期待アクションはポーカー理論ベースで定義し、ソルバー/反実仮想を使わない（§17.6 / §65.1）。報酬 EV は MC のみとし、CFR/solver を再導入しない。正本モデル成果物は read-only（確定制約 #4）であり、docs は `C:\Users\user\Desktop\dev\poker-system\docs` に一元管理する（確定制約 #13）。
+
+## 71. 第1次本訓練失敗分析と curriculum mix 方針
+
+第1次本訓練は、steps 129436、generation_temperature 1.0、group_size 8 の設定で開始し、step 45500（約35時間）まで進めた。しかし Spot Checks は baseline 0.86 から明確に改善せず、横ばいに終わった。調査の結果、真因は単一のハイパーパラメータ不足ではなく、実装バグと局面分布の偏りが重なった learning 不全であった。本節では、第1次本訓練で確認された症状、修正済みの3件のバグ、および次に採用する curriculum mix の設計判断を恒久記録する。
+
+Tee バッファによるログ誤認、VRAM 表示の誤判断などの運用面の落とし穴は snapshot 側に記録する。本節は learning 不全の技術原因、すなわち reward、評価 mode、PokerKit 浮動小数点防御、局面分布の問題に限定する。
+
+### 71.1 症状
+
+eval_step 1300〜45500 の全35回で、Spot Checks 全体は 0.84〜0.90 を往復した。これは baseline 0.86 からの一貫した改善ではなく、短期的な上下動であった。特に made_hand は 6/8 で完全固定し、all_in は 3/7、4/7、5/7 の間を方向性なく振動した。preflop_open は後半に 3/4 へ崩れる場面が増え、postflop value 判断の改善も preflop 品質の安定も得られなかった。
+
+step 45500 では PokerKit の `ValueError: The unraked amount -8.526512829121202e-14 is negative.` により異常終了した。この値は実質ゼロの浮動小数点誤差であり、PokerKit の `total_pot_amount` 計算中に `Pot(raked, unraked, ...)` が構築される際、unraked が極小負値になったことが直接原因であった。
+
+### 71.2 根本原因1（致命）: reward_fn が action を無視していた
+
+最も致命的な原因は、Task 6c 初期実装の `_default_reward_fn` が候補 `action` と `sizing_ratio` を無視し、全候補に同一の `record.step_reward` を返していたことである。decision-state group 内の全候補報酬が同一になるため、group 内標準偏差が 0 となり、`advantage.py` の `std <= eps` 分岐で advantage が 0 化する。結果として policy_loss は実質 0 となり、latest checkpoint でも `policy_loss=-0.0` / `total_loss=0.0` が記録された。35時間の訓練は、ほぼ学習していなかったと判断する。
+
+made_hand が 6/8 で完全固定したことは、「学習が当該カテゴリに効かなかった」のではなく、そもそも action head への有効な policy gradient が発生していなかったことの症状である。
+
+この問題はコミット `2142101`（Task 6c-fix-reward）で修正した。`reward_fn(record, action, sizing_ratio)` を action-conditioned 化し、候補 action を `StepRecord.state` の deepcopy に適用してから MC rollout EV で `r_i` を生成する。これにより、確定制約 #16 の state 非破壊を維持しつつ、報酬 EV は MC のみとする確定制約 #7 および §65.1 / §67.4 を守る。CFR、solver、反実仮想 EV は導入しない。最適化対象は引き続き action head categorical であり、§66 を維持する。group は decision-state 単位であり、group 内 advantage 正規化を行うため、§67 も維持する。
+
+同修正では `StepRecord` に `state` と `legal_actions` を追加し、候補 action 評価時に legal action と現在 state を復元できるようにした。`--with-model --steps 20` の短時間ランで `total_loss` が 0.0 固定ではなくなり、非ゼロ loss が発生することを実機確認済みである。
+
+### 71.3 根本原因2: Spot Checks 評価が train mode の dropout ノイズを含んでいた
+
+第1次本訓練中の all_in 振動の一部は、評価 forward が train mode のまま実行され、aux head の dropout が Spot Checks 評価に乗っていたことに由来する。Spot Checks は評価セットであり、方策品質の変化を見るためには deterministic な eval mode で実行する必要がある。train mode の dropout が有効なままでは、同一モデル・同一シナリオでも action probability が揺れ、all_in のような閾値近傍カテゴリでは pass/fail が振動しうる。
+
+この問題はコミット `610b18a`（Task 6c-fix-eval）で修正した。評価 hook 経由の Spot Checks では `heads.eval()` と `torch.no_grad()` を用い、dropout を無効化する。一方、学習 step 内の forward は従来通り train mode を維持し、学習挙動は変更しない。あわせて `--rollout-playouts` のデフォルトを 8 に整理した。
+
+同一モデル・同一シナリオを2回評価し、`probs_equal=True`、`passes_equal=True`、`categories_equal=True` となることを実機確認済みである。これにより、Spot Checks の揺れは方策変化として解釈できる状態になった。
+
+### 71.4 副次バグ: PokerKit 極小負ポット額による異常終了
+
+step 45500 の直接停止原因は、PokerKit `state.total_pot_amount` の内部計算で `unraked amount -8.5e-14 negative` が発生したことである。これは実質ゼロの浮動小数点誤差であり、長時間自己対戦中に再発しうる。PokerKit 本体を改変することは確定制約 #1 に反するため、呼び出し側で防御する方針とした。
+
+この問題はコミット `810bfe3` で修正した。`pokerbench_prompt.safe_total_pot_amount()` を追加し、`FLOAT_POT_ZERO_EPSILON = 1e-6` をモジュール定数として定義した（確定制約 #6）。`state.total_pot_amount` が PokerKit 内部で極小負値により例外を投げた場合、`starting_stacks - stacks` に基づく再計算経路へフォールバックし、絶対値が閾値未満の負値を 0 とみなして正規化する。
+
+`collect.py` の action sizing 経路も `safe_total_pot_amount()` に差し替えた。prompt 出力形式、数値フォーマット、PokerBench teacher 照合仕様は変更していない。極小負値を再現する単体テストも追加し、PokerKit 本体は `pokerkit==0.7.4` のまま維持した。
+
+### 71.5 根本原因3（最深部）: 局面分布が preflop に偏り、対象局面に勾配が届かなかった
+
+reward と eval mode を修正した後、playouts 8 と playouts 16 の両方で 200step trial を実施した。しかし made_hand は 6/8、all_in は 4/7 のまま固定し、Spot Checks 全体も 0.84 周辺で安定した。loss は非ゼロ化しており、GRPO の学習信号そのものは復活していたが、made_hand / all_in の品質には届かなかった。
+
+精密診断では、made_hand 失敗2局面の正解側確率が step 0 から step 200 にかけて逆方向へ低下した。`spot_016` は正解側 probability が 0.330 から 0.247 へ低下し、`spot_040` は 0.086 から 0.053 へ低下した。これは「学習が遅いだけ」ではなく、LR を単純に上げると誤った方向の更新を増幅する危険があることを示す。
+
+all_in 失敗局面では、all_in probability が初期値ほぼ 0 から復活しなかった。`spot_018` は 0.001 台から 0.002 台への微増にとどまり、`spot_019` は 0.000004 からほぼ不動、`spot_043` も 0.001 台で停滞した。all-in head は初期方策でほぼ使われず、通常 self-play の categorical sampling では選択されにくいため、§70.5 の all-in 復活不確実性が実測で確認された。
+
+さらに、自己対戦 200 hands の収集結果では hero decision の約97%が preflop に偏っていた。初期方策では `turn_river_facing_bet=0`、`river_facing_large_bet=0`、`sampled_all_in=0` であり、p8 step200 checkpoint でも `turn_river_facing_bet=1`、`river_facing_large_bet=1`、`sampled_all_in=0` にとどまった。つまり Spot Checks で問題になっている made_hand / all_in の turn・river・大きなbet facing 局面が、通常自己対戦ではほぼ訓練 batch に入っていない。
+
+preflop 偏重の機序は、初期方策がタイトで preflop fold 率が高いことにある。preflop で多くのhandが終わるため、postflop value 判断や river all-in pressure の局面が生成されない。このため、made_hand の postflop 全般にも §70.5 の all-in 出現頻度問題が拡張して現れている。preflop 偏重は postflop value 判断を改善できないだけでなく、誤った fold 側更新により made_hand を巻き添え劣化させうる。
+
+### 71.6 採用方針: 訓練専用 curriculum state set を decision-state group として混合する
+
+次の対策は、案Bの変形として、Spot Checks 近傍の訓練専用 curriculum state set を別ファイルで作成し、通常 self-play trajectory に decision-state group として混合する方針とする。Spot Checks 50 そのものは評価用であり、確定制約 #11 の評価独立性を維持するため、訓練には入れない。訓練用 curriculum は別ID、別カード、別ラインの近傍テンプレートとして新規作成する。
+
+この方針では、1つの構築済み state を1つの decision-state group として扱う。異なる局面を同一 group に混ぜてはならない。これにより §67 の group=decision-state 単位と group 内 advantage 正規化を維持する。候補 action ごとの報酬は既存の action-conditioned reward と同様に state deepcopy へ action を適用し、MC rollout EV のみで評価する。したがって §65.1 / §67.4 と確定制約 #7 / #16 を守る。最適化対象は action head categorical のままであり、§66 も維持する。state 構築は `state_factory` 系 API に寄せ、確定制約 #5 と整合させる。
+
+案Aの mid-hand 開始 curriculum は、PokerKit state 途中注入、bankroll tracker、terminal reward 整合のリスクが高いため初手としては採用しない。案Cの generation_temperature / preflop 探索強化は実装コストが低い一方、postflop 到達率への効果が間接的であり、preflop 品質を壊す懸念があるため主対策にはしない。LR 調整は §56.3 の残りオプションであるが、made_hand 失敗局面の正解側確率が逆方向へ動いた実測から、curriculum による局面分布補正前に単純に上げるべきではない。
+
+実装時の影響範囲は、新規 `pokerrl_grpo/curriculum_spots.py`、`scripts/run_training.py` の trajectory provider 混合、CLI / Config の `--curriculum-ratio` と `--curriculum-scenarios`、およびテストである。テストでは、curriculum state 評価が state 非破壊であること、1 state = 1 group が守られること、Spot Checks 50 が不変であること、混合後の batch に turn / river / all_in 対象局面が入ることを確認する。
+
+### 71.7 制約継承と未確定事項
+
+本節で記録した修正と方針は、確定制約 #1 / #4 / #5 / #6 / #7 / #8 / #9 / #11 / #16、および §65 / §66 / §67 / §70 と整合する。PokerKit 本体は変更しない。正本モデル成果物は read-only とする。state 構築は `state_factory` と整合させる。閾値・混合率・playouts 等のハイパーパラメータは Config / CLI 経由で管理する。CFR、solver、反実仮想 EV は導入しない。Spot Checks 50 は評価セットとして不変に保つ。candidate reward 評価では state deepcopy により非破壊性を維持する。
+
+未確定事項は、curriculum 混合率、訓練専用テンプレートの局面数とカテゴリ配分、curriculum 導入後に LR 調整（§56.3 残り）が必要かどうかである。これらは curriculum 実装後の短時間 trial で判断する。
+
+第1次設定（steps 129436）と step 45500 checkpoint は、reward_fn action 無視バグによりほぼ未学習であったため、継続利用しない。curriculum 実装後は step 1 から再訓練する。
