@@ -4540,3 +4540,65 @@ preflop 偏重の機序は、初期方策がタイトで preflop fold 率が高�
 未確定事項は、curriculum 混合率、訓練専用テンプレートの局面数とカテゴリ配分、curriculum 導入後に LR 調整（§56.3 残り）が必要かどうかである。これらは curriculum 実装後の短時間 trial で判断する。
 
 第1次設定（steps 129436）と step 45500 checkpoint は、reward_fn action 無視バグによりほぼ未学習であったため、継続利用しない。curriculum 実装後は step 1 から再訓練する。
+
+## 72. curriculum密度の発見と5層診断の決着
+
+§71で採用した curriculum mix を実装し、相手holeバグ、教材飽和、密度不足を順に潰した結果、trial4 で第1次本訓練以来はじめて made_hand 失敗局面の正解側確率が正方向へ動くことを確認した。本節では、curriculum 実装後に発生した調整連鎖と、それにより判明した「学習が効かない原因の最深部は、局面分布だけでなく curriculum 密度不足と self-play の高確信ドリフトであった」という知見を記録する。あわせて、VRAM と all_in という残課題を次段階の制約として明示する。
+
+### 72.1 curriculum mix の実装（`0c6c16d`）
+
+コミット `0c6c16d` で、訓練専用の turn / river / all_in 近傍局面を decision-state group として self-play trajectory に混合する骨格を実装した。`pokerrl_grpo/curriculum_spots.py` を新設し、`data/curriculum_spots/scenarios.json` から訓練専用シナリオを読み込む。Spot Checks 50 の `data/spot_checks/scenarios.json` は読まず、評価リークを避ける（確定制約 #11）。
+
+state 構築は `state_factory.create_state()` を起点にし、hole / action sequence / board を replay して hero の決定点まで進める方式とした。これにより state 正本を `state_factory` に保つ確定制約 #5 と整合する。各 curriculum scenario は 1つの `StepRecord` を持つ 1つの `Trajectory` に変換され、`build_decision_groups` では 1 state = 1 decision-state group として扱われる。異なる局面を同一 group に混ぜないため、§67 の group 定義と group内 advantage 正規化を維持する。
+
+報酬は既存の action-conditioned reward と同じく、候補actionを state の deepcopy に適用し、MC rollout EV のみで評価する。CFR / solver / 反実仮想 EV は導入しないため、確定制約 #7 および §65.1 / §67.4 と整合する。候補評価は state 非破壊であり、確定制約 #16 を維持する。最初の実装では骨格確認のため、made_hand / all_in / turn barrel / river value を含む最小テンプレートを用意した。
+
+### 72.2 相手holeバグ（`9199ca9`）
+
+初期 curriculum では、`_cards_by_index` が未指定の相手holeを決定論的に deck 先頭から補完していた。この補完順により active opponent に KK 等の強いカードが入り、hero の value hand として設計した局面が、実際には hero が負けている局面になっていた。そのため MC rollout EV は fold を高く評価し、made_hand 訓練が逆方向へ進む構造になっていた。
+
+診断では、`curr_made_hand_btn_top_pair_flop_raise` 相当の局面で、fold の報酬が call / raise より高くなることを実測した。すなわち curriculum が value spot を教えているのではなく、負けているhandで降りることを正解として教えていた。これが、reward_fn 修正後も made_hand 正解側確率が逆方向へ低下した直接原因の1つである。
+
+コミット `9199ca9` では、scenario に `opponent_holes` を明示できるようにし、意図した opponent range / hand strength を教材側で管理する方式へ変更した。あわせて、未指定holeの補完deckを低ランク側からに変更し、決定論的な強配が再発しにくいようにした。修正後、該当 value spot で call / raise の報酬が fold を上回ることを実測し、`curr_made_hand_btn_top_pair_flop_raise` では fold -0.44 に対して call +1.00 / raise +0.50 となることを確認した。既存の正方向局面も call / raise > fold を維持した。
+
+### 72.3 教材飽和（`562039a`）
+
+相手hole修正後も、Spot Checks の made_hand 失敗局面である `spot_016` / `spot_040` は正方向へ動かなかった。追加診断により、修正後の curriculum made_hand 局面そのものは step0 から正解側確率 0.94〜0.97 程度で飽和しており、すでに解ける簡単な問題であることが分かった。解けている局面を反復しても有効な勾配は小さく、Spot失敗局面へ転移しない。
+
+また、`spot_040` は river straight が overbet に直面する局面であるが、当時の curriculum にはこの性質に対応する教材が存在しなかった。つまり、局面分布を補うという方針は正しかったが、教材の難易度と性質が Spot失敗局面から離れていた。
+
+コミット `562039a` では、Spot失敗局面の性質と難易度に合わせて curriculum を再設計した。飽和していた簡単な局面を除去し、初期正解側確率が 0.40〜0.77 帯に入る river overbet 教材3件と turn barrel 教材1件を追加した。具体的には、`curr_made_hand_bb_98s_straight_turn_barrel`、`curr_made_hand_bb_87s_straight_river_overbet`、`curr_made_hand_bb_97s_straight_river_overbet`、`curr_made_hand_bb_t8s_straight_river_overbet` を中心に、学ぶ余地のある value facing pressure 局面へ寄せた。各局面で MC報酬は call / raise > fold を維持し、相手holeバグの再発がないことも確認した。
+
+### 72.4 密度不足と高確信ドリフト（`4f79794`）
+
+教材を再設計しても、ratio 0.3 の mixed training では curriculum 局面自体の正解側確率が上がらず、全体に微減する挙動が残った。勾配診断では、勾配が存在すること（aux head の grad_l2 は概ね 8.6〜10.8）、正則化による引き戻しがないこと（kl / entropy / OPEFO 係数はいずれも 0）、advantage 正規化で信号が潰れていないこと（RMS は概ね 1）、aux head の表現力限界を示す根拠が薄いことを確認した。
+
+一方、純curriculumに近い条件では現行 LR=1e-5 でも確率が動くことが分かった。curriculum 局面の正解側確率は、短時間でも +0.087 などの正方向変化を示した。したがって、主因は LR 不足ではなく、mixed training 内で curriculum 信号が薄すぎることであった。ratio 0.3 では 1step あたり curriculum group は高々1件であり、self-play 側の高確信ドリフトに埋もれていた。実際、問題の run では final top1_median が 0.992、entropy が 0.075 まで寄り、高確信な方策更新が curriculum の局所信号を押し流していた。
+
+コミット `4f79794` では、`--curriculum-groups-per-step` を追加し、1step に複数の curriculum group を投入できるようにした。未指定または 0 では従来互換として ratio 命中時に1件だけ追加する。正の値を指定した場合は、その数だけ curriculum trajectory を追加する。各 curriculum trajectory は引き続き 1 state = 1 group であり、§67 の decision-state group 定義を破らない。この変更は、§56.3 Step1 の未消化オプションのうち dynamic sampling に相当する。
+
+### 72.5 trial4による実証（density 2）
+
+`--curriculum-ratio 1.0 --curriculum-groups-per-step 2` の 200step trial4 では、made_hand 失敗局面が第1次本訓練以降はじめて明確に正方向へ動いた。`spot_016` は正解側確率が 0.322 から 0.403 へ上昇し（+0.080）、`spot_040` は 0.076 から 0.123 へ上昇した（+0.047）。pass 判定の majority 閾値はまだ超えていないが、生確率の方向は明確に改善した。
+
+curriculum 4局面も全て上昇した。`curr_made_hand_bb_98s_straight_turn_barrel` は 0.763 から 0.851（+0.088）、`curr_made_hand_bb_87s_straight_river_overbet` は 0.584 から 0.695（+0.111）、`curr_made_hand_bb_97s_straight_river_overbet` は 0.369 から 0.577（+0.208）、`curr_made_hand_bb_t8s_straight_river_overbet` は 0.451 から 0.634（+0.183）へ上昇した。400件の curriculum trajectory が投入され、loss は 190/200 step で非ゼロだった。
+
+健全性面でも、高確信ドリフトは解けた。final metrics では top1_median が 0.484、entropy が 0.815 となり、以前の top1_median 0.992 / entropy 0.075 の状態から大きく改善した。Spot Checks の pass rate は 0.88 で横ばいだが、preflop系は崩れず、`halted=False`、`oom=False`、`false_halt=False`、`spot_regression=False` で完走した。
+
+この結果により、「curriculum 密度を上げれば self-play の高確信ドリフトに勝ち、made_hand 失敗局面が動く」ことを実証した。第1次本訓練失敗の5層診断、すなわち reward_fn action無視（§71.2）、局面分布偏り（§71.5）、相手holeバグ（§72.2）、教材飽和（§72.3）、密度不足と高確信ドリフト（§72.4）は、いずれも正しい原因と正しい対処であったと判断する。
+
+### 72.6 残課題（VRAMとall_in）
+
+第一の残課題は VRAM である。trial4 の density 2 では `cuda_max_memory_allocated_mb=13857.0` を記録し、RTX 3080 の物理10GBを大きく超えた。共有メモリ退避を含む環境では完走したが、100h級の本訓練をこのまま回すには危険である。density 増により group 数が増え、forward / backward のGPUメモリが膨らむ。MC rollout 自体は CPU / eval7 側であり、主なVRAM増加要因ではない。次段階では、density の学習効果とVRAMのバランス、eval / checkpoint 頻度、Spot Checks の batch size、prompt forward のchunk化などを検討し、10GB内で安定運用できる設定を確定する必要がある。
+
+第二の残課題は all_in である。trial4 でも `spot_018` / `spot_019` / `spot_043` の all_in 確率は上昇せず、むしろ微減した。`spot_018` は 0.001178 から 0.000346、`spot_019` は 0.000004 から 0.000002、`spot_043` は 0.001300 から 0.000443 へ低下した。これは made_hand とは性質が異なる問題である。made_hand は curriculum 練習により動くが、all_in は初期確率がほぼ0であり、通常の categorical sampling では候補に出にくく、方策勾配が乗りにくい。§70.5 の all-in 復活不確実性が再確認された。
+
+all_in 対策は made_hand 本訓練とは切り分ける。候補としては、generation_temperature を all-in 探索目的で上げること（§70.5 の本命）、all_in 候補を特定局面で強制サンプルすること、nut局面の報酬設計をさらに厚くすることがある。ただし、made_hand の改善効果と all_in 探索効果を同時に混ぜると切り分けが困難になるため、まずは made_hand 用 curriculum density の本訓練を安定化し、その後に all_in を別タスクとして扱う。all_in 復活は引き続き不確実である。
+
+### 72.7 制約継承と次段階
+
+本節の修正と方針は、確定制約 #1 / #4 / #5 / #6 / #7 / #9 / #11 / #16、および §65 / §66 / §67 / §70 / §71 と整合する。PokerKit 本体は変更しない。正本モデル成果物は read-only とし、checkpoint は `results/grpo/` 配下に限定する。state 構築は `state_factory` 起点、報酬EVはMCのみ、group は decision-state 単位、Spot Checks 50 は評価専用であり訓練に混ぜない。候補action評価では state deepcopy により非破壊性を維持する。
+
+LR は §56.3 Step1 の未消化オプションとして残すが、現時点では優先しない。高確信ドリフト下で LR を上げると、preflop品質や既存の安定カテゴリを壊すリスクがあるためである。trial4 で density、すなわち dynamic sampling により made_hand が正方向へ動いたため、次段階では LR ではなく VRAM 対策と curriculum density の運用設定を先に固める。
+
+次の実行順序は、VRAM対策、made_hand 本訓練、別途 all_in 対策である。made_hand 本訓練は curriculum density を有効にし、第1次本訓練の step45500 checkpoint は未学習であるため破棄して step 1 から行う。第1次設定は参照記録としてのみ残し、再開元にはしない。
