@@ -4826,3 +4826,107 @@ made_hand未達は、この選択肢Cとは切り分けて扱う。一度に複�
 本節の実装・trial・方針は、確定制約#6 / #7 / #11 / #15 / #16 / #20 と整合する。fold確率はConfig経由であり、報酬EVはMCのみである。Spot Checks 50は評価専用で、訓練には混ぜていない。stateは非破壊で扱い、trial checkpoint（`results\grpo\trial_foldequity\latest`、step300）はmade_hand未達の暫定状態であるため、本採用・resume元にしない。
 
 撤退基準（§56.6）には未抵触である。preflop忘却という主要因には明確な前進があり、タイムボックスにも余裕がある。ただし、「made_hand 7/8とpreflop維持の両立」というtrial合格線にはまだ届いていない。次段階では、固定pの限界を踏まえてハンド強度依存fold確率を検討し、その後にmade_hand未達の原因を再度切り分ける。
+
+## 76. hand強度依存fold確率の実装とtrial（固定pの限界解消・trash判別の訓練回復）
+
+§75で、固定p=0.7の限界を記録した。強い参加handをopen>foldに立てるには十分なfold equityが必要だが、固定pではtrash openにも同じfold equityが乗る。その結果、Task 8 trialでは spot_023 HJ 83o が fold 0.522→0.434 へ低下し、FAIL化した。本節は、その対処としてhand強度依存fold確率を実装したTask 9と、短時間trialでtrash判別の訓練回復を確認したTask 10の結果を記録する。
+
+### 76.1 設計判断（案A：hero hand強度bucket、コミット `91d098c`）
+
+Task 9では、`rollout_ev` の相手fold確率を、hero preflop hand強度のpercentile bucketに依存する固定テーブルへ拡張した。hero hole 2枚をeval7の全1326コンボ列挙でpercentile化し、bucketごとに固定fold率をlookupする。
+
+fold率テーブルはConfig経由（#6）で管理する。初期値は以下である。
+
+| hero hand percentile | opponent fold probability |
+|---:|---:|
+| `>= 0.75` | 0.70 |
+| `>= 0.55` | 0.45 |
+| `>= 0.35` | 0.20 |
+| `< 0.35` | 0.05 |
+
+採用したのは案A、すなわち hero のhand強度で相手fold率を決める設計である。案B、すなわち相手hole強度で各相手のfold率を決める設計は、平均fold率がhero handごとに十分変わらず、83oの副作用を直しきれない懸念があったため次善とした。
+
+この意味論は重要である。案Aは、相手fold率がhero private cardを参照するため、「現実の相手方策」としては不自然である。これは相手の最適応答を解くsolverではなく、固定テーブルが与える「報酬側のfold-equity prior」、すなわち強いopenは平均的にfold equityが高い、という事前知識の近似として扱う。均衡解、反復最適化、相手レンジ収束、反実仮想は行わず、bucket表も訓練中に更新しない。したがって、報酬EVはMCのみとする確定制約#7の枠内である。`test_reward_wiring.py` のsolver/CFR import禁止テストも維持した。
+
+後方互換も維持した。全bucket同値を0.7にすれば固定p版へ縮退し、全bucket同値を0.0にすれば従来showdown版へ数学的に縮退する。postflop fold probability は0.0のままであり、§75.1と同じくpostflop非破壊である。発火条件もpreflopかつhero raise直後に限定し、stateはhole cardsを読むだけで変更しない（#16）。
+
+検証では、指定10ファイルのpytestが `55 passed`、`verify_pokerrl_encode.py` が `passed=8/PASS` であった。
+
+### 76.2 bucket割り当てとprobe実測（random hole・seeds20・raw rollout reward）
+
+主要handのbucket割り当ては以下である。参加handとtrash handが意図どおり分離した。
+
+| hand | percentile | fold probability |
+|---|---:|---:|
+| AQs | 0.923 | 0.70 |
+| 99 | 0.975 | 0.70 |
+| KQs | 0.790 | 0.70 |
+| A5s | 0.839 | 0.70 |
+| 83o | 0.199 | 0.05 |
+| 72o | 0.127 | 0.05 |
+
+probeは、§75.2と同じくSpot Checks 50そのものを使わず（#11）、別カード・別IDのpreflop局面で行った。random unknown hole、20 seed、raw rollout rewardで測定した。以下はplayouts 64での `open - fold` である。
+
+| probe | open - fold |
+|---|---:|
+| HJ AQs open | +0.335 |
+| CO 99 open | +0.740 |
+| UTG 72o fold | -1.699 |
+| HJ 83o fold | -1.567 |
+
+固定p=0.7の§75.2では、AQs +0.086、99 +0.139、72o -0.130 だった。hand強度依存化により、強handは深く正、trashは深く負を同時に達成した。固定pの「強handを立てるとtrashも緩む」というトレードオフは、probe上では解消した。
+
+### 76.3 trial結果（Task 10、300step、curriculum ratio 1.0 × groups 2、HEAD `91d098c`）
+
+Task 10では、HEAD `91d098c`、`--steps 300`、`--curriculum-ratio 1.0`、`--curriculum-groups-per-step 2`、`--microbatch-groups 1` で短時間trialを実行した。checkpointは `results\grpo\trial_strengthfold` に保存し、本番 `results\grpo\latest` は汚していない。
+
+主目的であるtrash判別の訓練回復は成功した。spot_023 HJ 83o はfold正解のspotであり、step0→step300で fold正解側確率が 0.570→0.547 だった。低下は小さいが、閾値0.5を上回りPASSを維持した。§75.3の固定p trialでは 0.522→0.434 へ低下してFAIL化していたため、hand強度依存fold確率は固定pの副作用を訓練上も解消した。§75で経験したprobe/訓練の乖離は今回は起きず、設計が訓練分布で機能した。
+
+preflop_open参加handも維持された。
+
+| spot | target | step0 | step300 | delta | status |
+|---|---|---:|---:|---:|---|
+| spot_021 HJ KQs | call/raise | 0.979 | 0.976 | -0.003 | PASS維持 |
+| spot_022 CO 55 | call/raise | 0.983 | 0.973 | -0.010 | PASS維持 |
+| spot_023 HJ 83o | fold | 0.570 | 0.547 | -0.023 | PASS維持 |
+| spot_024 CO A5s | call/raise | 0.874 | 0.868 | -0.006 | PASS維持 |
+
+position代表spotも維持された。
+
+| spot | target | step0 | step300 | delta | status |
+|---|---|---:|---:|---:|---|
+| spot_001 UTG AKo | call/raise | 0.998 | 0.997 | -0.001 | PASS維持 |
+| spot_003 BTN A9s | call/raise | 0.843 | 0.835 | -0.008 | PASS維持 |
+| spot_047 UTG QQ | call/raise | 0.997 | 0.997 | -0.000 | PASS維持 |
+| spot_048 BTN Q9s | call/raise | 0.513 | 0.513 | +0.000 | PASS維持 |
+
+eval時系列は以下である。
+
+| eval_step | total | preflop_open | position | made_hand | all_in | quality |
+|---:|---:|---:|---:|---:|---:|---|
+| 50 | 0.88 | 4/4 | 7/8 | 6/8 | 4/7 | OK |
+| 100 | 0.88 | 4/4 | 7/8 | 6/8 | 4/7 | OK |
+| 150 | 0.88 | 4/4 | 7/8 | 6/8 | 4/7 | OK |
+| 200 | 0.88 | 4/4 | 7/8 | 6/8 | 4/7 | OK |
+| 250 | 0.86 | 4/4 | 7/8 | 6/8 | 4/7 | OK |
+| 300 | 0.86 | 4/4 | 7/8 | 6/8 | 4/7 | OK |
+
+quality statusは全evalでOKであり、HALTは発生していない。floor割れもない。VRAMピークは約4597MB、wall timeは約16分18秒であった。
+
+一方で、riverはstep250以降に 1/1→0/1 となり、totalは0.88→0.86へ下がった。1 spotのみであるためノイズ範囲の可能性はあるが、postflop系の微劣化として記録する。made_hand軸を再び触る際の監視対象である。
+
+made_handは6/8を維持したが、7/8には300stepでは届かなかった。崩壊はしていない。§73の第2次本訓練ではmade_hand 7/8に到達したがpreflopが崩壊した。今回のTask 10ではpreflopは健全だがmade_handは6/8に留まった。つまり、両端は別々に達成したが、made_hand 7/8とpreflop維持の両立はまだ未実証である。
+
+all_inは別軸の未解決課題である。カテゴリは4/7を維持したが、生確率はさらに低下した。spot_018のall-in確率は 0.001466→0.000112、spot_019は 0.000006→0.000001、spot_043は 0.001226→0.000331 であった。trialを重ねるごとにall-in headが死につつある傾向は継続している。
+
+### 76.4 現在地と次の焦点
+
+7層目、すなわち報酬のpreflop open過小評価への対処は、preflop面では決着した。Task 7のfold equity追加によりpreflop破滅的忘却は停止し、Task 9のhand強度依存fold確率により固定pの副作用だったtrash判別劣化も回復した。preflopの忘却・誤判別という症状は、訓練上も解消したと判断できる。
+
+残る焦点は、preflop健全を保ったまま made_hand 7/8 に到達できるかである。これは§73で見えたmade_hand改善軸であり、7層目とは別問題として扱う。次セッションでは、made_hand未達がstep不足なのか、fold equity変更後の学習リソース配分なのかを実測で切り分ける。対処に飛びつかず、生確率とcurriculum局面の動きを見てから判断する。riverの微劣化も同時に監視する。
+
+### 76.5 制約継承
+
+本節の実装・trial・方針は、確定制約#6 / #7 / #11 / #15 / #16 / #20 と整合する。hand強度依存fold確率は固定テーブルのMC方策であり、solver/CFR/均衡解/反実仮想を使っていない。Spot Checks 50は評価専用で、訓練には混ぜていない。stateは非破壊で扱い、trial checkpoint（`results\grpo\trial_strengthfold\latest`、step300）はmade_hand未達の暫定状態であるため、本採用・resume元にしない。
+
+撤退基準（§56.6）には未抵触である。preflop面の主要因には明確な前進があり、タイムボックスにも余裕がある。ただし、「made_hand 7/8とpreflop維持の両立」というtrial合格線は依然として未達である。
