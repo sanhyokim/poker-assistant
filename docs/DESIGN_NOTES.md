@@ -4752,3 +4752,77 @@ preflop維持 curriculum を追加する前提として、MC EVのみ（確定�
 ### 74.6 制約継承
 
 本節の診断と方針は、確定制約 #4 / #5 / #6 / #7 / #11 / #16 / #20、および §65 / §66 / §67 / §70 / §71 / §72 / §73 と整合する。checkpoint再測定は eval mode で行い、state 非破壊を維持した。Spot Checks 50 は評価専用・訓練混入禁止を維持し、preflop報酬診断の局面は別カード・別IDで新規構築した。崩壊checkpointである step6500 は、本採用・resume元にしない。
+
+## 75. fold equity対処の実装とtrial結果（7層目の対処：preflop忘却停止と固定pの限界）
+
+§74で、7層目として `rollout_ev` が全員showdown前提でpreflop openのfold equityを評価できず、強い参加handでもopen報酬がfold報酬を下回る歪みAを特定した。本節は、その対処として `rollout_ev` にMC opponent fold responseを追加したTask 7と、短時間trialでpreflop忘却停止・固定pの限界・made_hand未達を確認したTask 8の結果を記録する。
+
+### 75.1 対処の実装（Task 7、コミット `b026dbb`）
+
+Task 7では、`rollout_ev` に、直近hero操作が `CompletionBettingOrRaisingTo` の時だけ相手のfold/callをMCサンプルする経路を追加した。発火はpreflop限定である。これは固定fold確率pに基づくMC opponent policyであり、solver/CFR/均衡解/反実仮想を使わないため、報酬EVはMCのみとする確定制約#7の枠内である。
+
+Configには `rollout_preflop_opponent_fold_probability=0.7` を追加した。これは強い参加handをopen>foldに立てるための暫定値であり、恒久値ではない。postflop側は `rollout_postflop_opponent_fold_probability=0.0` とし、§73でmade_hand 7/8に効いたpostflop報酬を変えない設計にした。両方ともConfig経由であり、確定制約#6を守る。
+
+p=0では従来の全員showdown版と数学的に等価であることを後方互換テストで確認した。stateは読み取り専用で扱い、候補action評価側のstate非破壊（#16）を維持している。なお、全員fold時のpot帰属は今回preflop限定で実害が小さいが、自前pot計算はサイドポット/all-in/death SBに完全対応するものではない。postflopへ有効化する場合は、PokerKit automationへ委譲する確定制約#15との整合を改めて確認する必要がある。
+
+検証では、指定10ファイルのpytestが `51 passed`、`verify_pokerrl_encode.py` が `passed=8/PASS` であることを確認した。
+
+### 75.2 p曲線（probe実測、random unknown hole・5seed・weight後）
+
+§74.3と同じく、Spot Checks 50そのものは使わず（#11）、別カード・別IDで構築したpreflop probe局面に対して、random unknown hole samplingでp曲線を実測した。以下はplayouts 64での `open - fold` の平均値である。
+
+| probe | p=0.0 | p=0.45 | p=0.55 | p=0.7 |
+|---|---:|---:|---:|---:|
+| HJ AQs open | -0.163 | -0.045 | -0.010 | +0.086 |
+| CO 99 open | -0.135 | +0.027 | - | +0.139 |
+| UTG 72o fold | -0.348 | - | - | -0.130 |
+
+この結果から、固定pでfold equityは確かに報酬へ入ることが分かった。AQsと99の両方をopen>foldに立てるにはp=0.7が必要だった。一方で、72oはprobe上ではp=0.7でもfold>openを維持した。
+
+ただし、固定pは強handにもtrash handにも同じfold equityを乗せる。したがって、強handを立てるためにpを上げるほど、trash openも相対的に有利になる原理的弱点がある。72o probeで持ちこたえても、別のtrash handや実訓練の分布で崩れる可能性は、この時点で既に予告されていた。
+
+### 75.3 trial結果（Task 8、300step、curriculum ratio 1.0 × groups 2、HEAD `b026dbb`）
+
+Task 8では、HEAD `b026dbb`、`--steps 300`、`--curriculum-ratio 1.0`、`--curriculum-groups-per-step 2`、`--microbatch-groups 1` で短時間trialを実行した。checkpoint guardは `results/grpo/` 配下のみを許可するため、当初指定した `results\grpo_trial_foldequity` は拒否され、trial dirは `results\grpo\trial_foldequity` とした。これにより本番 `results\grpo\latest` は汚していない。
+
+最も重要な成功は、preflop破滅的忘却が停止したことである。preflop_open参加handの正解側生確率は、step0からstep300で維持または上昇した。
+
+| spot | 内容 | step0 | step300 | 判定 |
+|---|---|---:|---:|---|
+| spot_021 | HJ KQs open | 0.981 | 0.982 | 維持 |
+| spot_022 | CO 55 open | 0.983 | 0.985 | 維持 |
+| spot_024 | CO A5s open | 0.883 | 0.905 | 上昇 |
+
+position代表spotも全PASSを維持した。
+
+| spot | 内容 | step0 | step300 | 判定 |
+|---|---|---:|---:|---|
+| spot_001 | UTG AKo | 0.998 | 0.998 | 維持 |
+| spot_003 | BTN A9s | 0.828 | 0.860 | 上昇 |
+| spot_048 | BTN Q9s | 0.553 | 0.620 | 上昇 |
+
+これは第2次本訓練の崩壊（§74.1、KQs 0.979→0.008、AKo 0.998→0.059）とは明確に逆である。7層目の対処は、preflop忘却の停止に訓練上も効くことが実証された。
+
+一方で、固定pの副作用も顕在化した。trash foldである spot_023 HJ 83o は、fold正解側確率が 0.522→0.434 に低下し、FAIL化した。固定fold equityがtrash openにも乗るという§75.2の構造的弱点が、probeの72oではなく訓練中の83oで表面化した。
+
+made_handは6/8のままで、§73の第2次本訓練で到達した7/8には300stepでは届かなかった。preflop崩壊は起きていないため、トレードオフ軸は「preflop崩壊」から「made_hand未達」へ移動した可能性がある。これはstep数、curriculum密度、学習リソース配分のどれが支配的かを別途切り分ける必要がある。
+
+all_inは別軸の未解決課題である。カテゴリは4/7を維持したが、生確率はさらに低下し、spot_018のall_in確率は 0.00131→0.000097 だった。これは§70.5および§72.6で記録したall-in head死亡問題の継続であり、fold equity対処とは切り分ける。
+
+eval時系列では、全体pass_rateは step50で0.88、step300で0.84だった。preflop_openは step50で4/4、step100以降は3/4、positionは7/8維持、made_handは6/8維持だった。quality statusはOKを維持し、HALTは発生していない。VRAMピークは約4501MB、wall timeは約13分55秒であった。
+
+### 75.4 切り分けと次の対処（選択肢C：ハンド強度依存fold確率）
+
+今回のtrialにより、固定pはpreflop忘却停止には効くが、trash判別を削ることが分かった。この副作用は固定pの構造的限界であり、pを下げるだけでは強handが再びopen<foldに戻り、pを上げるだけではtrash openがさらに緩む。固定p内の調整は、強handを立てる力とtrashを抑える力のトレードオフを往復するだけで、根本解になりにくい。
+
+したがって次の対処は、選択肢Cであるハンド強度依存fold確率に進むのが自然である。これは、まず最小固定pで「fold equityがpreflop忘却に効く」因果を確認し、必要な分だけ精密化するというTask 7の想定された着地点である。
+
+ただし、hand strengthからfold率を決める処理は、突き詰めると相手の最適応答や均衡fold頻度に近づき、確定制約#7の禁止ラインに接近する。そのため、次の実装を行う場合は、強度bucketごとの固定確率または単純な固定関数に限定する。均衡解を解かない、反復最適化しない、相手レンジを収束計算しない、反実仮想比較をしない、という条件を明示してから着手する。
+
+made_hand未達は、この選択肢Cとは切り分けて扱う。一度に複数変数を動かすと、preflop trash判別の回復とmade_hand到達のどちらが効いたのか判定できなくなる。まずCでtrash判別を回復し、その後にmade_hand軸を再評価する。
+
+### 75.5 制約継承
+
+本節の実装・trial・方針は、確定制約#6 / #7 / #11 / #15 / #16 / #20 と整合する。fold確率はConfig経由であり、報酬EVはMCのみである。Spot Checks 50は評価専用で、訓練には混ぜていない。stateは非破壊で扱い、trial checkpoint（`results\grpo\trial_foldequity\latest`、step300）はmade_hand未達の暫定状態であるため、本採用・resume元にしない。
+
+撤退基準（§56.6）には未抵触である。preflop忘却という主要因には明確な前進があり、タイムボックスにも余裕がある。ただし、「made_hand 7/8とpreflop維持の両立」というtrial合格線にはまだ届いていない。次段階では、固定pの限界を踏まえてハンド強度依存fold確率を検討し、その後にmade_hand未達の原因を再度切り分ける。
