@@ -4672,3 +4672,83 @@ trial4 / trial5 の 200step では、preflop崩壊は顕在化しなかった。
 撤退基準（§56.6）にはまだ抵触していない。第2次本訓練は、dynamic sampling と curriculum density が made_hand に効くことを示したため、改善トレンドが完全に消失したわけではない。一方で、品質下限 floor 0.75 を割って HALT した事実は重い。§56.3 Step1 の dynamic sampling は made_hand に有効だったが、preflop 崩壊という副作用を持つことが明らかになった。
 
 6層目の preflop 崩壊に対して、made_hand と preflop を両立する設定を見つけられない場合、撤退を真剣に検討する分岐になりうる。次段階は、preflop崩壊の診断、対処候補の絞り込み、短時間trialでの両立確認である。LR は引き続き未消化のまま温存する。
+
+## 74. preflop崩壊の診断と7層目（報酬関数のpreflop open過小評価）の発見
+
+§73では、第2次本訓練で made_hand が 7/8 に到達した一方、preflop_open と position_sensitivity が崩壊したことを6層目の課題として記録した。すなわち、made_hand 改善と preflop 維持のトレードオフ、あるいは破滅的忘却の疑いである。本セッションでは、その機序を診断した。その結果、6層目の対処、すなわち curriculum 比率調整、preflop維持 curriculum 混合、KL正則化に着手する前提を崩す、より深い7層目が判明した。
+
+本節では、preflop崩壊の生確率診断、訓練分布の実測、preflop open 局面に対する候補action別MC報酬の実測を記録する。核心は、現行の `action_conditioned_reward` / `rollout_ev` が preflop open を構造的に過小評価し、強い参加handすら `open < fold` と教えることである。したがって、6層目の対処に飛びつく前に、7層目、すなわち報酬側の扱いを先に切り分ける必要がある。
+
+### 74.1 preflop崩壊の診断結果（破滅的忘却の確認）
+
+第2次本訓練の残存 checkpoint は、`best=step1300`、`last_good/latest=step6500` であった。これらと初期方策を eval mode でロードし、preflop_open および position_sensitivity 代表spotの正解側生確率、すなわち `majority_prob` を実測した。checkpoint は診断用に読むだけであり、本採用や resume 元にはしない。評価は state 非破壊で行い、確定制約 #16 を維持した。
+
+preflop_open の実測値は以下である。
+
+| spot | 初期 | step1300 | step6500 | 判定 |
+|---|---:|---:|---:|---|
+| spot_021 HJ KQs open | 0.979 | 0.657 | 0.008 | PASS → PASS → FAIL |
+| spot_022 CO 55 open | 0.983 | 0.263 | 0.003 | PASS → FAIL → FAIL |
+| spot_023 HJ 83o fold | 0.570 | 0.976 | 1.000 | PASS → PASS → PASS |
+| spot_024 CO A5s open | 0.874 | 0.248 | 0.002 | PASS → FAIL → FAIL |
+
+position_sensitivity 代表spotの実測値は以下である。
+
+| spot | 初期 | step1300 | step6500 | 判定 |
+|---|---:|---:|---:|---|
+| spot_001 UTG AKo | 0.998 | 0.972 | 0.059 | PASS → PASS → FAIL |
+| spot_003 BTN A9s | 0.843 | 0.180 | 0.001 | PASS → FAIL → FAIL |
+| spot_047 UTG QQ | 0.997 | 0.929 | 0.403 | PASS → PASS → FAIL |
+| spot_048 BTN Q9s | 0.513 | 0.027 | 0.000 | PASS → FAIL → FAIL |
+
+この結果から、preflop_open は初期 4/4 PASS であり、元から壊れていたわけではない。したがって、§73.6で挙げた仮説のうち「元から不安定」という説明は主因ではない。一方、生確率は正解方向から逆方向へ一貫して低下しており、参加すべきhandを fold へ潰す方向の破滅的忘却が強く該当する。特に step1300 時点で preflop_open はすでに 2/4 まで落ちており、崩壊は本訓練の早い段階から始まっていた。
+
+all_in は別軸の課題として、step6500 でも生確率がほぼ死んだままであった。代表3spotでは、spot_018 が `0.0014655 → 0.0000012 → 0.0000001`、spot_019 が `0.0000060 → 0.000000003 → 0.000000000`、spot_043 が `0.0012260 → 0.0000006 → 0.000000009` であった。これは §70.5 / §72.6 で記録した all_in head の復活困難性を再確認するものであり、made_hand / preflop 崩壊とは切り分けて扱う。
+
+### 74.2 訓練分布の確認（curriculum上乗せ構造）
+
+`scripts/run_training.py` の `trajectory_provider` は、self-play trajectory を必ず1 hand収集し、その後 `curriculum-ratio` の確率で curriculum trajectory を append する。これは self-play を置換するのではなく、上乗せする構造である。`mix_curriculum_trajectories` も、self-play trajectories の list に curriculum trajectories を `extend` するだけであり、既存の self-play group を消さない。
+
+第2次本訓練相当の設定、すなわち `curriculum-ratio=1.0`、`curriculum-groups-per-step=2` で collect-only の短時間計測を行った。5stepの実測では、`self:preflop 6 records`、`curriculum:river 8 records`、`curriculum:turn 2 records` であった。概ね、1stepあたり `self-play preflop 1.2 group : curriculum postflop 2 group` である。
+
+したがって、self-play は消えていない。しかし postflop curriculum が多数派であり、preflop維持信号を量的に上回っている。これは §73.5 の「postflop注入過多によるpreflop忘却」という仮説を支持する。ただし、この段階ではまだ6層目の分布バランス問題に見える。次の §74.3 で、この仮説だけでは不十分であることが判明する。
+
+### 74.3 7層目の発見：報酬関数がpreflop openを過小評価
+
+preflop維持 curriculum を追加する前提として、MC EVのみ（確定制約 #7）で参加handが自然に正解化できるかを検証した。Spot Checks 50 の局面は訓練に混ぜられないため、診断でも直接の教材候補としては使わず、別カード・別IDの3局面を `state_factory` 起点で新規構築した。局面は、HJ AQs open、CO 99 open、UTG 72o fold である。候補action別の報酬は、現行の `action_conditioned_reward`、すなわち state deepcopy、候補action適用、`step_reward` = MC rollout EV という経路で実測した。これは #7 と #16 を守る診断である。
+
+測定条件は、5 seed、`rollout_playouts=8 / 32 / 64` である。結果は以下である。値は平均で、delta は `open - fold` である。
+
+| 局面 | playouts | fold | open | delta |
+|---|---:|---:|---:|---:|
+| HJ AQs open | 8 | 0.000 | -0.365 | -0.365 |
+| HJ AQs open | 32 | 0.000 | -0.345 | -0.345 |
+| HJ AQs open | 64 | 0.000 | -0.323 | -0.323 |
+| CO 99 open | 8 | 0.000 | -0.295 | -0.295 |
+| CO 99 open | 32 | 0.000 | -0.282 | -0.282 |
+| CO 99 open | 64 | 0.000 | -0.260 | -0.260 |
+| UTG 72o fold | 8 | 0.000 | -0.345 | -0.345 |
+| UTG 72o fold | 32 | 0.000 | -0.359 | -0.359 |
+| UTG 72o fold | 64 | 0.000 | -0.336 | -0.336 |
+
+判定は、`(B) MC EVが不安定/逆方向` である。現行報酬は trash hand の fold は正しく教えるが、強い参加handである HJ AQs や中程度の CO 99 ですら、全playoutsで `open < fold` と評価した。playouts を 64 まで増やしても符号は反転しないため、これは単なるMC分散ではなく、報酬モデルの構造問題である。
+
+実測では fold 報酬が一律 `0.000 ± 0.000` であり、open 報酬は常に負であった。Builder仮説としては、`rollout_ev` が「現active playersが追加ベットなしでshowdown到達する」として、open直後の投資額を即時コスト計上する一方、fold は hero が非activeになり、寄与0として扱われることが芯である。この構造では、preflop open の実戦的価値、すなわち相手のfold頻度、以後のベット応答、ポジション、レンジ優位が反映されにくい。
+
+### 74.4 層構造の更新（7層目）
+
+§73までの6層に、7層目として「報酬関数のpreflop open過小評価」を追加する。これは6層目、すなわち curriculum 比率による忘却のさらに下にある。postflop curriculum が厚すぎたことは preflop 崩壊の直接要因である可能性が高い。しかし、preflop維持 curriculum を足しても、報酬が強いopen handまで fold と教えるなら、preflop は直らない。
+
+したがって、対処順序は7層目が先である。6層目の候補である curriculum比率調整、preflop維持教材混合、KL正則化は、preflop open に対する報酬が少なくとも正方向を向くことを前提にしている。この前提が崩れている以上、まず報酬側を調査し、#7の枠内で歪みを是正できるかを確認する必要がある。
+
+### 74.5 対処方針と#7との緊張関係（次セッション、調査後に決定）
+
+次セッションでは、対処に飛びつかず、まず `rollout_ev` 内部を行番号付きで調査する。確認すべき点は、open直後に -0.3 程度の報酬が出ることが計算の歪みなのか、それともこのサンプル相手・この簡略MCでは正しいEVなのかである。具体的には、相手action方策、showdown勝率算出、chip_delta符号、投入額の計上タイミング、fold時の寄与0扱いを確認する。
+
+制約上の緊張も明確である。preflop open の正しいEVには、相手のfold頻度、callレンジ、3betレンジ、その後のpostflop実現率を織り込む必要がある。しかし、それを solver 的に解くと、確定制約 #7、すなわち報酬EVはMCのみ、CFR / solver / 反実仮想なし、という制約に抵触しうる。したがって、対処は #7 の枠内で `rollout_ev` の歪みを是正する方向に限定する。
+
+撤退意識も更新する。もし「MCの枠内では preflop open を原理的に正しく評価できない」と判明した場合、それは PokerRL + GRPO アプローチの根幹に関わる分岐である。§56.6 の撤退基準には現時点では未抵触だが、7層目の解決可否は今後の撤退判断に直結しうる。
+
+### 74.6 制約継承
+
+本節の診断と方針は、確定制約 #4 / #5 / #6 / #7 / #11 / #16 / #20、および §65 / §66 / §67 / §70 / §71 / §72 / §73 と整合する。checkpoint再測定は eval mode で行い、state 非破壊を維持した。Spot Checks 50 は評価専用・訓練混入禁止を維持し、preflop報酬診断の局面は別カード・別IDで新規構築した。崩壊checkpointである step6500 は、本採用・resume元にしない。
