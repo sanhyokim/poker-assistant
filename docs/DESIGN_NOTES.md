@@ -4602,3 +4602,73 @@ all_in 対策は made_hand 本訓練とは切り分ける。候補としては�
 LR は §56.3 Step1 の未消化オプションとして残すが、現時点では優先しない。高確信ドリフト下で LR を上げると、preflop品質や既存の安定カテゴリを壊すリスクがあるためである。trial4 で density、すなわち dynamic sampling により made_hand が正方向へ動いたため、次段階では LR ではなく VRAM 対策と curriculum density の運用設定を先に固める。
 
 次の実行順序は、VRAM対策、made_hand 本訓練、別途 all_in 対策である。made_hand 本訓練は curriculum density を有効にし、第1次本訓練の step45500 checkpoint は未学習であるため破棄して step 1 から行う。第1次設定は参照記録としてのみ残し、再開元にはしない。
+
+## 73. 第2次本訓練で made_hand 7/8 到達も preflop 崩壊でHALT
+
+§72で記録した microbatch 化により、density 2 の学習効果を維持したまま VRAM を 10GB 内へ収められることを確認した。具体的には、trial5 で VRAM peak が 13.9GB 級から 4.5GB 級へ下がり、数学的等価性も確認された。そのうえで、第2次本訓練を HEAD `42b2c27`、`--steps 127000`、curriculum density 2、microbatch 1 で起動した。結果として、made_hand は本訓練で初めて 7/8 に到達した一方、preflop と position が崩れ、step 6500 で品質ガード HALT となった。
+
+本節では、この「made_hand 到達」と「preflop 崩壊」が同時に起きた経緯を記録する。§71 / §72 で特定した5層の問題は made_hand 改善という形で結実したが、新たに6層目の課題、すなわち made_hand 改善と preflop 維持のトレードオフ、あるいは破滅的忘却が明らかになった。
+
+### 73.1 microbatch化（`42b2c27`）
+
+第2次本訓練の前に、VRAM対策としてコミット `42b2c27` を実装した。trial4 では density 2 により made_hand は正方向へ動いたが、VRAM peak は `cuda_max_memory_allocated_mb=13857.0` に達していた。事前計測により、このピークは collect、MC rollout、eval hook、checkpoint 保存ではなく、訓練 policy forward の一括batch由来であることを確認した。
+
+構造上、1つの decision-state は group_size 8 の record に複製される。curriculum 1 group を追加すると、同一promptが8サンプル分だけ train forward batch に乗る。density 2 では self-play 由来 group に加えて curriculum 2 group が入り、flatten 済み batch が一括で forward されるため、activation の瞬間ピークが膨らんでいた。
+
+`42b2c27` では、group境界で microbatch 分割する方式に変更した。各 microbatch で forward、loss計算、backward を行い、勾配を累積する。`optimizer.step()` は全 microbatch の backward 後に1回だけ実行する。group内の8recordは分割せず、1 decision-state = 1 group の定義を維持するため、§67 と整合する。
+
+数学的等価性はテストで確認した。一括batchと `microbatch_groups=1` を比較し、同一入力・同一seedの1stepで loss と全 parameter gradient が `1e-6` 範囲で一致することを確認した。sizing loss についても、microbatchごとの局所平均ではなく、全体の positive-advantage weight を分母に使うことで一括lossと等価にした。実機では density 2 のまま `cuda_max_memory_allocated_mb=4481.7` まで低下した。trial5 でも trial4 と同等の made_hand 正方向が再現され、`spot_016` は +0.071、`spot_040` は +0.045 となった。したがって、microbatch 化は学習効果を変えず、VRAM のみを下げる対策として機能した。
+
+### 73.2 第2次本訓練のeval推移
+
+第2次本訓練は、HEAD `42b2c27`、`--steps 127000`、`--curriculum-ratio 1.0`、`--curriculum-groups-per-step 2`、`--microbatch-groups 1`、`--rollout-playouts 8`、`--generation-temperature 1.0`、`--eval-every 1300`、`--checkpoint-every 650`、`--seed 1200` 相当の設定で起動した。第1次本訓練の checkpoint は reward_fn action 無視バグにより未学習であるため使わず、step 1 から開始した。
+
+eval 推移は以下である。made_hand は 7/8 に到達したが、preflop_open、position_sensitivity、all_in が時間とともに悪化し、step 6500 で全体 pass_rate が floor を割った。
+
+| eval_step | pass_rate | made_hand | preflop_open | position_sensitivity | all_in | river | quality |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 1300 | 0.82 | 7/8 | 2/4 | 6/8 | 4/7 | 0/1 | OK |
+| 2600 | 0.82 | 7/8 | 2/4 | 6/8 | 4/7 | 0/1 | OK |
+| 3900 | 0.80 | 7/8 | 2/4 | 5/8 | 4/7 | 0/1 | ALERT(position) |
+| 5200 | 0.80 | 7/8 | 2/4 | 5/8 | 4/7 | 0/1 | ALERT(position) |
+| 6500 | 0.72 | 7/8 | 1/4 | 4/8 | 2/7 | 0/1 | HALT |
+
+step 6500 の HALT は、pass_rate 0.72 が品質ゲートの floor 0.75 を下回ったことによる。これは§70.3で再設計した品質ガードが、暴走モデルの本採用を防いだ正常動作である。
+
+### 73.3 成果: made_hand 7/8 到達
+
+第2次本訓練の最大の成果は、made_hand が baseline 6/8 から 7/8 に到達し、step 1300 から step 6500 まで維持されたことである。第1次本訓練では、reward_fn action 無視バグにより35時間回しても made_hand は 6/8 に完全固定されていた。これに対し、第2次本訓練では curriculum density と microbatch を含む修正後の系で、実際の長時間訓練において pass 判定が1つ進んだ。
+
+これは、trial4 / trial5 の生確率上昇が本訓練の長さで majority 判定を越えたことを意味する。§71で特定した reward_fn action 無視、eval dropout、PokerKit浮動小数点、局面分布偏り、および§72で特定した相手holeバグ、教材飽和、密度不足の各診断は、made_hand 改善という本番結果で裏付けられた。5層診断は、少なくとも made_hand については正しい原因と正しい対処であった。
+
+### 73.4 失敗: preflop崩壊とHALT
+
+一方で、made_hand 上昇の裏で preflop と position が大きく崩れた。preflop_open は初期 baseline では 4/4 だったが、第2次本訓練では step 1300 時点で 2/4 まで落ち、step 6500 では 1/4 になった。position_sensitivity も baseline 7/8 から step 6500 で 4/8 へ落ちた。all_in も 4/7 から 2/7 へ悪化し、river は 0/1 のまま改善しなかった。全体 pass_rate は 0.86 相当の baseline から 0.72 へ下がった。
+
+品質ガードは、step 3900 と step 5200 で position fail_rate > 0.30 による ALERT を出し、step 6500 で pass_rate floor 割れにより HALT した。すなわち、劣化は突然ではなく、ALERT から HALT へ漸進的に進んだ。`last_good` は step 6500 で保存されたが、これは preflop 崩壊後の状態であり、本採用できない。第2次本訓練の checkpoint を同設定で resume しても、同じ崩壊を継続するだけである。
+
+この失敗は、made_hand を動かすだけでは Phase2 品質を満たせないことを示す。§70.3 の品質ゲートは、Spot Checks 全体を品質軸として監視し、局所改善の代償としてのカテゴリ崩壊を検出した。この意味で HALT は失敗であると同時に、ガード設計が機能した証拠でもある。
+
+### 73.5 6層目の課題: made_hand改善とpreflop維持のトレードオフ
+
+第2次本訓練で明らかになった6層目の課題は、made_hand 改善と preflop 維持のトレードオフである。仮説として、`curriculum-ratio 1.0` と `curriculum-groups-per-step 2` による postflop 局面注入が強すぎ、方策が postflop value facing pressure に過剰適応した。その結果、初期方策で完璧だった preflop_open 4/4 や position 判断を破滅的に忘却した可能性が高い。
+
+trial4 / trial5 の 200step では、preflop崩壊は顕在化しなかった。短時間では made_hand の正方向だけが観測され、preflop の劣化はまだ小さかったと考えられる。しかし、第2次本訓練の 6500step では、時間経過とともに preflop と position が崩れた。これは、§70.5 の all_in 出現頻度問題や、§72 の教材品質・密度問題とは異なる、カテゴリ間バランスと忘却の問題である。
+
+この課題は、curriculum 自体が誤っているという意味ではない。curriculum は made_hand を改善した。しかし、postflop 局面だけを厚く入れると、元々よかった preflop カテゴリを維持する信号が相対的に不足する。したがって、次の対策は「made_handを動かす信号」と「preflopを維持する信号」を同時に保つ設計でなければならない。
+
+### 73.6 対処方針（次セッション、診断後に決定）
+
+次の作業では、対処に飛びつかず、まず preflop 崩壊の機序を診断する。確認すべき点は、curriculum / self-play 比率、preflop 各Spotの生確率の step 推移、preflop_open と position_sensitivity がどの時点でどの方向へ動き始めたか、self-play 側で preflop 維持信号が十分に入っているかである。同設定で `--resume-from` して再開することはしない。同じ崩壊を繰り返すためである。
+
+対処候補は3つある。第一に、curriculum 比率または density を下げ、postflop 注入を弱めて self-play / preflop とのバランスを取る方法である。これは preflop 崩壊を抑える見込みがあるが、made_hand 改善速度を落とす可能性がある。第二に、preflop 維持局面を curriculum に混合する方法である。preflop_open や position の正しい判断を訓練にも含め、忘却を防ぐ。ただし、Spot Checks 50 そのものは訓練に入れず、別ID / 別カード / 別ラインで作る必要があるため、確定制約 #11 を守る。第三に、`kl_coef > 0` により初期方策からの乖離を制約する方法である。これは preflop 完璧な初期方策を守る方向に働く。§70.4 の top1 を最適化標的にする話とは異なり、方策ドリフト制約としての KL である。
+
+これらの候補は、診断後に1〜2個へ絞る。現時点で LR を上げることは優先しない。LR は§56.3 Step1 の未消化オプションとして温存するが、今回の問題は学習不足ではなく、学習が効きすぎたカテゴリと忘却したカテゴリのバランスである。設定見直し後は、第2次本訓練の checkpoint からではなく step 1 から再訓練する。
+
+### 73.7 制約継承と撤退意識
+
+本節の方針は、確定制約 #1 / #4 / #5 / #6 / #7 / #9 / #11 / #16、および §65 / §66 / §67 / §70 / §71 / §72 と整合する。PokerKit 本体は変更しない。正本モデル成果物は read-only とする。state 構築は `state_factory` 起点、報酬EVはMCのみ、group は decision-state 単位、Spot Checks 50 は評価専用として不変に保つ。候補action評価では state deepcopy による非破壊性を維持する。
+
+撤退基準（§56.6）にはまだ抵触していない。第2次本訓練は、dynamic sampling と curriculum density が made_hand に効くことを示したため、改善トレンドが完全に消失したわけではない。一方で、品質下限 floor 0.75 を割って HALT した事実は重い。§56.3 Step1 の dynamic sampling は made_hand に有効だったが、preflop 崩壊という副作用を持つことが明らかになった。
+
+6層目の preflop 崩壊に対して、made_hand と preflop を両立する設定を見つけられない場合、撤退を真剣に検討する分岐になりうる。次段階は、preflop崩壊の診断、対処候補の絞り込み、短時間trialでの両立確認である。LR は引き続き未消化のまま温存する。
