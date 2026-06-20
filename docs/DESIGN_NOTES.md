@@ -4930,3 +4930,102 @@ all_inは別軸の未解決課題である。カテゴリは4/7を維持した�
 本節の実装・trial・方針は、確定制約#6 / #7 / #11 / #15 / #16 / #20 と整合する。hand強度依存fold確率は固定テーブルのMC方策であり、solver/CFR/均衡解/反実仮想を使っていない。Spot Checks 50は評価専用で、訓練には混ぜていない。stateは非破壊で扱い、trial checkpoint（`results\grpo\trial_strengthfold\latest`、step300）はmade_hand未達の暫定状態であるため、本採用・resume元にしない。
 
 撤退基準（§56.6）には未抵触である。preflop面の主要因には明確な前進があり、タイムボックスにも余裕がある。ただし、「made_hand 7/8とpreflop維持の両立」というtrial合格線は依然として未達である。
+
+## 77. step延長trialでのmade_hand 7/8達成とlate-position侵食の発見（preflop第3層）
+
+§76で7層目の対処がpreflop面、すなわち強hand忘却停止とtrash判別回復で決着し、made_hand 6/8の原因切り分けを次課題とした。その後の切り分け調査で、made_hand未達は(a)step不足であると確定した。Task 10 trial_strengthfoldでは、made_hand失敗2 spotの正解側生確率がstep0→step300で上昇していた。spot_016は0.333→0.463（+0.131）で閾値0.5直前、spot_040は0.080→0.149（+0.069）であった。これは横ばいではなく上昇トレンドであり、(b)学習配分停滞を主因とは見なしにくい。
+
+curriculum made_hand group投入比率も第2次本訓練と同等であった。Task 10では600 curriculum trajectory中384件がmade_hand（約4/6）、第2次本訓練では13000件中8677件がmade_handであった。hand強度依存fold確率はpreflop限定で発火し、postflop fold probabilityは0.0のため、made_hand(postflop)報酬は変わらない。実測でもmade_hand curriculum局面はcall/raise>foldを維持していた。したがって、(c)density低下やpostflop報酬低下は否定寄りである。本節は、この切り分けに基づいて行ったstep延長trial（Task 11）の結果を記録する。
+
+### 77.1 made_hand軸の切り分け（(a)step不足確定）
+
+Task 10のmade_hand失敗spotは、pass数だけを見ると6/8固定であったが、生確率では明確に上昇していた。
+
+| spot | step0 | step300 | delta | status |
+|---|---:|---:|---:|---|
+| spot_016 BB straight turn barrel | 0.333 | 0.463 | +0.131 | FAILだが閾値直前 |
+| spot_040 BB river straight vs overbet | 0.080 | 0.149 | +0.069 | FAIL継続 |
+
+第2次本訓練（§73）はstep1300の初回evalで既にmade_hand 7/8であり、spot_016が0.755でPASSしていた。一方、spot_040は第2次step1300でも0.194でFAILであり、step6500でも0.334でFAILのままだった。したがって、made_hand 7/8到達の鍵はspot_016の閾値越えである。Task 10のspot_016は0.463まで来ており、step延長で0.5を越える見込みが高かった。この観測により、made_hand 6/8未達の主因は(a)step不足と判断した。
+
+### 77.2 step延長trial（Task 11、1300step、HEAD `91d098c`）
+
+Task 11では、HEAD `91d098c`、`--curriculum-ratio 1.0`、`--curriculum-groups-per-step 2`、`--microbatch-groups 1`、`--eval-every 100`、`--checkpoint-every 100`、checkpoint dir `results\grpo\trial_madehand_ext` で1300step trialを行った。Task 10との差分はstep数だけであり、fold確率モデル・curriculum density・microbatch設定は同一である。
+
+途中、step400直後にPokerKit内部のchips pushing経路で `ValueError: The unraked amount -2.1316282072803006e-14 is negative.` が発生し、初回プロセスは停止した。これは§71.4で防御したprompt/pot取得経路とは別の、self-play内部のchips pushing/pots構築経路で発生した極小負浮動小数点誤差である。trial専用 `latest=step400` から `--resume-from results\grpo\trial_madehand_ext\latest` で再開し、step1300まで到達した。resume後は `SMOKE: PASS`、halted=False、oom=False、false_halt=False、spot_regression=Falseであった。
+
+eval時系列は以下である。
+
+| eval_step | total | made_hand | preflop_open | position | all_in | river | quality |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 100 | 0.88 | 6/8 | 4/4 | 7/8 | 4/7 | 1/1 | OK |
+| 200 | 0.88 | 6/8 | 4/4 | 7/8 | 4/7 | 1/1 | OK |
+| 300 | 0.86 | 6/8 | 4/4 | 7/8 | 4/7 | 0/1 | OK |
+| 400 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 500 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 600 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 700 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 800 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 900 | 0.88 | 7/8 | 4/4 | 7/8 | 4/7 | 0/1 | OK |
+| 1000 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 1100 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 1200 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 1300 | 0.84 | 7/8 | 3/4 | 6/8 | 4/7 | 0/1 | OK |
+
+made_hand 7/8はstep400で到達し、step1300まで維持された。spot_016はstep0で0.333、step100で0.368、step1300で0.788となり、明確に閾値を越えた。spot_040はstep0で0.080、step100で0.105、step1300で0.257まで上がったが、依然FAILであった。これは第2次本訓練でも同様であり、spot_040はstep延長だけでは届きにくい別軸として扱う。
+
+| spot | step0 | step100 | step1300 | status |
+|---|---:|---:|---:|---|
+| spot_016 BB straight turn barrel | 0.333 | 0.368 | 0.788 | PASS |
+| spot_040 BB river straight vs overbet | 0.080 | 0.105 | 0.257 | FAIL |
+
+### 77.3 第2次の全面崩壊は防止したが、late-position侵食が発生
+
+Task 11では、第2次本訓練のような全面的なpreflop崩壊は起きなかった。第2次では、step1300時点でKQsやAKoなどの参加handが急落し、preflop_openは2/4、positionは6/8まで落ちていた。Task 11では、KQs、55、AKo、QQなどの強めの参加handは高位を維持し、trashの83o foldはむしろ改善した。
+
+一方で、長時間化によりlate-positionの薄いopenが侵食された。A5s openは0.874→0.454でFAIL化し、BTN A9sは0.843→0.372、BTN Q9sは0.513→0.083まで低下した。step1300ではpreflop_openが3/4、positionが6/8となり、「made_hand 7/8とpreflop完全健全」の両立は未達である。
+
+| spot | target | step0 | step100 | step1300 | status |
+|---|---|---:|---:|---:|---|
+| spot_021 HJ KQs | call/raise | 0.979 | 0.980 | 0.848 | PASS維持 |
+| spot_022 CO 55 | call/raise | 0.983 | 0.982 | 0.667 | PASS維持 |
+| spot_023 HJ 83o | fold | 0.570 | 0.547 | 0.949 | PASS改善 |
+| spot_024 CO A5s | call/raise | 0.874 | 0.879 | 0.454 | FAIL化 |
+| spot_001 UTG AKo | call/raise | 0.998 | 0.998 | 0.983 | PASS維持 |
+| spot_003 BTN A9s | call/raise | 0.843 | 0.849 | 0.372 | FAIL化 |
+| spot_047 UTG QQ | call/raise | 0.997 | 0.998 | 0.987 | PASS維持 |
+| spot_048 BTN Q9s | call/raise | 0.513 | 0.524 | 0.083 | FAIL化 |
+
+この結果は、§75/§76で解いたpreflop問題がすべて終わったわけではなく、より細かい第3層が残っていることを示す。強hand忘却とtrash誤判別は解けたが、中間帯late-position openの維持は未解決である。
+
+### 77.4 preflopの3層構造（新しい理解）
+
+ここまでのtrialにより、preflopの課題は3層に分解できる。
+
+1. 第1層は強hand忘却である。第2次本訓練ではKQs/AKo/QQなどの参加handが急落した。Task 7のfold equity導入（§75）により、これは大きく改善した。
+2. 第2層はtrash誤判別である。固定p=0.7ではtrash openにもfold equityが乗り、spot_023 83oがFAIL化した。Task 9のhand強度依存fold確率（§76）により、83o/72o系のtrash判別は回復した。
+3. 第3層は中間帯late-positionの薄いopen維持である。Task 11で、A5s/A9s/Q9sのようなlate-positionでは参加すべきだが絶対的hand強度が中間帯のhandが、長めの学習で削られることが判明した。
+
+第3層の機序仮説は、現在のfold-equity priorがhand強度のみの粗いbucketであり、positionを見ていない点にある。A5s/A9s/Q9sはtrashではないが、AA/AK/QQ級の強handでもない。late positionではopenすべきhandであるにもかかわらず、hand強度のみでは十分なfold equityを得にくい。強度のみの4 bucketは、強hand/trashの二極には効いたが、late-positionの薄いopenを支える解像度に欠ける可能性がある。
+
+### 77.5 PokerKit極小負crashとresume回避（運用知見）
+
+Task 11では、step400直後にPokerKitの `State.pots` 構築で `unraked amount -2.1316282072803006e-14 is negative` が発生した。これは浮動小数点誤差としては実質ゼロであり、§71.4で対処した `total_pot_amount` / prompt / collect sizing 経路とは別の、self-play中のchips pushingに伴うpots構築経路である。
+
+trialではcheckpointがstep400に保存されていたため、`--resume-from results\grpo\trial_madehand_ext\latest` で回避し、step1300まで到達できた。しかし、本訓練のような長時間runでは同じ系統の再発リスクがある。本節の主筋はlate-position侵食であるが、本訓練前にPokerKit極小負の防御範囲を再点検し、chips pushing / pots 構築経路の取りこぼしをどう扱うか検討する必要がある。
+
+### 77.6 切り分けと次の対処（late-position侵食、調査後に決定）
+
+次に扱うべきは、late-position侵食の原因切り分けである。対処に飛びつかず、まず以下を実測する。
+
+1. bucketの粗さが主因か。A5s/A9s/Q9sのhand strength percentile、割り当てbucket、fold probabilityを確認し、late-position openに必要なfold equityが不足していないかを見る。
+2. long-run忘却が主因か。positionと無関係に、open報酬がギリギリ正のhandが長時間でfold側へ押し戻されているのかを、生確率時系列と候補action別MC報酬で確認する。
+3. position非考慮が主因か。same handでもUTG/CO/BTNで期待されるopen閾値が異なるため、positionを固定特徴としてfold-equity priorに入れる必要があるかを見る。
+
+もしbucketの粗さまたはposition非考慮が主因なら、対処候補はposition考慮fold-equity prior、またはbucket細分化である。positionを入れる場合も、position×hand strengthの固定テーブルに留める限り、MC方策の固定priorであり、solver/CFR/均衡解/反実仮想ではない。したがって#7の枠内に収められる。ただし、変数爆発を避けるため、street/position別調整は該当軸に絞って1軸ずつ導入する。もしlong-run忘却が主因なら、bucket値調整、preflop維持curriculum、またはKL等の忘却抑制を改めて検討する。
+
+### 77.7 制約継承
+
+本節のtrial・診断・方針は、確定制約#6 / #7 / #11 / #15 / #16 / #20 と整合する。fold-equity priorはConfig経由であり、報酬EVはMC方策の固定priorに留める。Spot Checks 50は評価専用で、訓練には混ぜていない。stateは非破壊で扱い、trial checkpoint（`results\grpo\trial_madehand_ext\latest`、step1300）はlate-position侵食を含む暫定状態であるため、本採用・resume元にしない。
+
+撤退基準（§56.6）には未抵触である。made_hand 7/8到達、強hand維持、trash判別回復という明確な前進があり、改善トレンドは残っている。一方で、「made_hand 7/8とpreflop完全健全の両立」は依然未達であり、preflop第3層であるlate-position侵食が残存課題である。
