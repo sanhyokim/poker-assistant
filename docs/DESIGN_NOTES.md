@@ -5029,3 +5029,76 @@ trialではcheckpointがstep400に保存されていたため、`--resume-from r
 本節のtrial・診断・方針は、確定制約#6 / #7 / #11 / #15 / #16 / #20 と整合する。fold-equity priorはConfig経由であり、報酬EVはMC方策の固定priorに留める。Spot Checks 50は評価専用で、訓練には混ぜていない。stateは非破壊で扱い、trial checkpoint（`results\grpo\trial_madehand_ext\latest`、step1300）はlate-position侵食を含む暫定状態であるため、本採用・resume元にしない。
 
 撤退基準（§56.6）には未抵触である。made_hand 7/8到達、強hand維持、trash判別回復という明確な前進があり、改善トレンドは残っている。一方で、「made_hand 7/8とpreflop完全健全の両立」は依然未達であり、preflop第3層であるlate-position侵食が残存課題である。
+
+## 78. late-position対処の再評価：reference KL失敗・報酬3成分のGRPO不適・真因は素材の穴
+
+§77.6で、late-position侵食、すなわちpreflop第3層であるA5s/A9s/Q9sの薄いopen維持を次タスクとして切り分ける方針を残した。本節では、その切り分けを実行した結果と、そこから派生した手法照合、報酬再検証、今後の方針確定までを記録する。
+
+### 78.1 切り分けの実行とreference KL（Task 12-13）の失敗
+
+§77.6の切り分けでは、late-position spotのhand strength percentile、bucket、fold probability、候補action別MC報酬margin、long-run生確率推移を実測した。結果として、(X) bucket粗さはQ9sのみ強く該当した。Q9sはpercentile 0.633、fold probability 0.45、open-fold marginがおおむね0付近であり、報酬marginが薄かった。一方、A5sとA9sは上位bucketに入り、A5sはpercentile 0.839、A9sはpercentile 0.887、fold probabilityはいずれも0.70であった。A9sはopen-fold margin +0.101と正方向であったにもかかわらず侵食した。
+
+position対照も実施した。CO 55のようなlate positionかつ高確信のspotは維持され、late positionであること単独では崩壊を説明できなかった。初期確信度と侵食量には相関があり、相関係数はr=0.647であった。したがって、主因はpositionそのものではなく、(C)確信度またはlong-runドリフトであると判断した。late-positionとの交互作用は残るが、§77.6で候補として残したposition考慮fold-equity priorは、主因に対する第一手としては的外れであると判明した。
+
+この(C)対処として、Task 12で初期SFT reference KLを実装した（コミット `095ae32`）。事前調査で、既存の `kl_coef` はold policy、すなわちGRPOのimportance ratio分母側を参照する信頼領域KLであり、参照が毎step更新されるためlong-runドリフト抑制には直接効きにくいと確認した。そのため、初期SFTを固定referenceとする `KL(ref || new)` を、別係数 `reference_kl_coef` でGRPO lossへ追加した。
+
+実装では、初期aux headの凍結コピーを保持し、base/LoRA/tokenizerは共有する。reference probsはCPUキャッシュされ、`reference_kl_coef=0.0` ではreference forward自体を走らせないため後方互換である。step経過でold KLとreference KLが乖離することも確認し、referenceがold policyを誤参照しているバグではないことを実測で確認した。すなわち、reference KL機構そのものは正常に実装されている。
+
+しかしTask 13のsweepでは、reference KLはlate-position対処として失敗した。`reference_kl_coef=0.0 / 0.03 / 0.1` の3本を各1300stepで比較したが、A5s/A9s/Q9sの侵食は改善しなかった。係数を10倍にしてもbaselineと同程度の侵食が残った。一方で、made_hand 7/8、trash判別、強hand維持は全係数で維持され、大きな害も出なかった。
+
+この失敗の解釈は、reference KLが全decision-state平均の正則化である点にある。late-positionの薄いopen局面は訓練分布にほとんど出ていないため、reference KLの係留力がその局面へ集中しない。守る対象が訓練分布に存在しないため、初期SFTへ係留しても該当spotの侵食を止められない。これは§78.4の素材の穴という結論と整合する。reference KL機構は正常であり、将来別用途で使える可能性はあるが、late-position第3層への主対策としては不適である。
+
+### 78.2 手法の出典照合（論文に報酬の正解レシピは無い）
+
+late-position対処が報酬調整で頭打ちになったため、poker_rlおよび関連論文との照合も行った。結論として、ポーカーRL報酬の正解レシピはローカルにも論文にも確認できなかった。
+
+PokerBenchはZhuang et al., AAAI 2025, arXiv:2501.08328であり、6-max NLHEのSFT/ベンチマーク論文である。結論は、SFTだけでは最適プレイに限界があり、より高度な方法論が必要というもので、GRPO自己対戦の報酬設計は範囲外である。GRPOはDeepSeekMathのShao et al. 2024, arXiv:2402.03300に由来するが、これは数学推論用であり、報酬は答えの正誤である。DAPOはYu et al. 2025, arXiv:2503.14476で、主にentropy崩壊対策やRL安定化の文脈であり、ポーカーのchip delta/EV/bankroll報酬レシピを与えるものではない。
+
+dcaustin33/poker_rlは、小型LLM + 補助ヘッド + SFT + GRPO自己対戦という高レベル方針の参考として§48に記録していた。しかし、ローカルに本家コード、論文PDF、arXiv番号、詳細READMEは残っていなかった。確認できる範囲ではstar 1、commit 1の個人ブログ実験に近く、READMEにも報酬レシピの記載はない。したがって、`chip delta + EV + bankroll`、重み0.7/0.2/0.1という報酬構想は、どの論文にも根拠があるものではなく、過去セッションの推測レシピとして扱うべきである。
+
+このため、「論文どおりに戻せば強くなる」という戻り先は存在しない。独自設計の妥当性は、現実装、素材、trial、Spot Checksで詰めるしかない。
+
+補足として、SPEC.mdには報酬設計の記述は存在しなかった。`reward`、`報酬`、`chip delta`、`bankroll`、`rollout`、`weight` のいずれも該当箇所はなく、SPEC §10Aは訓練済みモデルを本番推論に使うbridge仕様である。報酬設計はSPEC管轄ではなく、DESIGN_NOTESおよびsnapshotで扱う。したがって本件についてSPEC.mdを編集する必要はない。
+
+また、2026年5月のPokerSkill（arXiv:2605.30094）はMW側（§54-55、完成済み）の出典であり、HU側のPokerRL+GRPO訓練とは別系統である。HU=PokerRL+GRPO訓練の方針自体は逸脱ではない。
+
+### 78.3 報酬3成分のGRPO不適（terminal帰属検証）
+
+現実装を再確認したところ、GRPO候補actionの報酬 `r_i` は `step_reward`、すなわちrollout EVのみである。`pokerrl_grpo/reward.py` では、`step_reward` がL72-L85で `rollout_ev` を呼び、`weight_rollout_ev` を掛けた `rollout_ev` componentだけを返す。一方、`chip_delta` と `bankroll` はL88-L100の `terminal_reward` に実装されており、環境infoと `Trajectory.terminal_reward` には存在する。しかし、`pokerrl_grpo/grpo_batch.py` L76-L91の `build_decision_groups` は `trajectory.terminal_reward` を参照せず、各recordの候補actionに対して `reward_fn(record, action, sizing_ratio)` だけを呼ぶ。
+
+つまり、chip_delta 0.7とbankroll 0.1は未実装ではないが、GRPO advantageには接続されていない。§67では「候補 `r_i` はMC EV、実プレイactionにterminalを帰属」と記録していたが、このterminal attributionは現GRPO実装に接続されていなかった。
+
+この未接続を修正すべきか検証した結果、terminal帰属は現在のdecision-state GRPO構造には不適と判明した。検証した罠は以下である。
+
+1. 全候補に同じterminalを加算すると、group内では定数シフトになる。group内mean/std正規化のためadvantageは完全に不変であり、数値シミュレーションでもadvantage配列が桁まで一致した。したがって無意味である。
+2. 実プレイactionだけにterminalを加算すると、そのactionだけが外れ値になり、advantageが±2.6付近に飽和した。他候補の繊細なEV差は潰れ、EV候補比較ではなく「実プレイactionだけを勝敗で強く押す/叩く」信号になる。
+3. terminalはhand全体の結果である。1 hand内にhero decisionが複数ある場合、各decisionへ丸ごと帰属すると二重・三重に計上される。均等割りしても、どのdecisionが勝敗に寄与したかは解けない。さらにgroup内候補は同じstateから再サンプルされた候補であり、実プレイaction列そのものではない。
+4. late-positionには逆効果である。A5s/A9s/Q9sのような薄いlate-openは、長期EVでは正でも単発chip deltaは負に振れやすい。実現値terminalを実プレイactionへ足すと、負けたhandで薄いopenを強く罰する信号になり、late-position侵食を悪化させる可能性が高い。
+
+数値例では、EVのみのrewards `[-0.10, -0.04, 0.02, 0.05, 0.06, 0.04, -0.02, 0.01]` に対し、advantageは `[-2.042, -0.847, 0.349, 0.946, 1.146, 0.747, -0.448, 0.149]` であった。全候補に+10を加えてもadvantageは同一であった。一方、実プレイactionに+0.5を足すと該当actionのadvantageは2.563、+10でも2.645に飽和した。-0.5では-2.521、-10では-2.645となり、terminalがEV比較を支配する。
+
+したがって、報酬3成分をGRPO advantageへ繋ぐ道は閉じたと判断する。terminal未接続は単純な劣化ではなく、decision-state group構造と噛み合わない成分が自然に外れた状態である。「3成分に戻せば直る」は誤りであり、むしろlate-positionには逆効果になり得る。次セッション以降で同じterminal帰属案を再試行しないこと。
+
+### 78.4 真因の確定＝素材の穴
+
+素材点検、論文照合、報酬検証の3つは同じ結論に収束した。late-position侵食の真因は、報酬3成分の欠落やreference KL不足ではなく、RL curriculumにpreflop/late-position維持教材が存在しないことである。
+
+現行 `data/curriculum_spots/scenarios.json` は6件のみであり、内訳はmade_hand 4件、all_in 1件、river_value 1件である。preflop教材、late-position open維持教材は0件である。一方、SFTデータはlate-openを全く知らないわけではない。PokerBench preflop trainは63,200件であり、position分布はBTN 10,019、CO 6,965、HJ 5,723、UTG 4,601、SB 13,538、BB 22,354であった。したがって、問題は「SFTがlate-positionを知らない」ことではなく、「RL中にlate-positionを維持する素材がなく、postflop curriculumやself-play driftに侵食される」ことにある。
+
+対処は報酬ではなく素材である。preflop/late-position維持curriculumを、Spot Checks 50とは別ID、別カード、別ラインで追加する必要がある（確定制約#11）。terminal帰属検証の代替案評価でも、現GRPO構造に最も合うのは `rollout_ev`、curriculum、reference KL側を整える方向であった。reference KLが効かなかった理由、すなわち守る対象が訓練分布に無いという解釈とも整合する。
+
+ただし§73の教訓を忘れてはならない。curriculum過多はpreflop崩壊を招いた。late-position教材を追加する場合も、postflop curriculumとの密度、比率、カテゴリバランスを慎重に管理し、第2次本訓練の轍を避ける必要がある。
+
+### 78.5 再設計の位置づけ（最後の手段）
+
+過去AIが論文ベースを推測で組み、一部の構想、特にterminal帰属やreference KLがlate-position対処として機能しなかったことは事実である。しかし、全体再設計は現時点では非推奨である。
+
+理由は3つある。第一に、論文に正解レシピが無い以上、作り直しても再び推測に依存する。第二に、SFT基盤、GRPO装置、microbatch、fold equity、hand強度依存fold prior、made_hand 7/8到達など、§71-77で解いた多くの問題を捨てると、解決済み問題を再発させる危険が大きい。第三に、現時点の真因は素材の穴であり、アーキテクチャ全体を作り直してもlate-position維持教材が無ければ同じ問題が残る。
+
+したがって、当面は一部改良で進める。具体的には、機能しない推測部分を剪定し、必要な素材を補充する。terminal帰属構想（§67）は追わない。未使用のchip_delta/bankroll weightは将来的に整理を検討する。reference KL機構は正常実装かつ後方互換であり、害も確認されていないため残置可能である。全体再設計は、素材補充や局所改良を行っても全く改善の余地がなくなった時の最後の手段として温存する。これは撤退基準§56.6と並ぶ、再設計判断ラインである。
+
+### 78.6 制約継承
+
+本節の診断と方針は、確定制約#6 / #7 / #8 / #9 / #11 / #16 / #20 と整合する。reference KL機構（コミット `095ae32`）は正常に動作し、`reference_kl_coef=0.0` で後方互換であるため残置する。報酬は現行どおりdecision-state候補actionに対するrollout EVを中心に扱う。terminal 3成分のGRPO復活は、group内定数化、外れ値化、信用割当、late-position逆効果のため不適と確定した。
+
+trial checkpoint（`trial_refkl_*` など）は本採用・resume元にしない（確定制約#20）。Spot Checks 50は評価専用であり、訓練へ混ぜない（確定制約#11）。撤退基準（§56.6）には未抵触である。late-position対処は報酬・KLではなく、preflop/late-position維持curriculumの素材補充へ進める。
