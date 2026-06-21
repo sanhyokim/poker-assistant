@@ -5102,3 +5102,75 @@ dcaustin33/poker_rlは、小型LLM + 補助ヘッド + SFT + GRPO自己対戦と
 本節の診断と方針は、確定制約#6 / #7 / #8 / #9 / #11 / #16 / #20 と整合する。reference KL機構（コミット `095ae32`）は正常に動作し、`reference_kl_coef=0.0` で後方互換であるため残置する。報酬は現行どおりdecision-state候補actionに対するrollout EVを中心に扱う。terminal 3成分のGRPO復活は、group内定数化、外れ値化、信用割当、late-position逆効果のため不適と確定した。
 
 trial checkpoint（`trial_refkl_*` など）は本採用・resume元にしない（確定制約#20）。Spot Checks 50は評価専用であり、訓練へ混ぜない（確定制約#11）。撤退基準（§56.6）には未抵触である。late-position対処は報酬・KLではなく、preflop/late-position維持curriculumの素材補充へ進める。
+
+## 79. late-position維持curriculumによる第3層対処（A5s/A9s回復、Q9s残、素材対処の実証）
+
+§78.4でpreflop第3層（late-position侵食）の真因を「RL curriculumにpreflop/late-position維持教材ゼロ」と確定し、対処をlate教材追加とした。reference KL（§78.1）と報酬3成分（§78.3）はlate-position対処として不適と却下済みである。本節は、その素材対処として実装したTask 14と、Task 15 trialの結果を記録する。
+
+### 79.1 実装（Task 14、コミット `c9dae39`）
+
+`data/curriculum_spots/scenarios.json` に `preflop_late_open` categoryを5件追加した。追加した教材はBTN K8s、BTN T9s、CO K9s、CO QTs、HJ KTsである。Spot ChecksのA5s/A9s/Q9sを直接使わず、別ID・別カード・別ラインで作成し、評価リークを避けた（確定制約#11）。相手holeは未指定とし、§72 `9199ca9` で導入した低ランク補完に乗せた。これにより、§74.3で確認した「相手holeが決定論的に強すぎてopen<foldになる歪みB」を避ける。
+
+混合側では、`curriculum_spots.collect_curriculum_trajectories_by_category_slots()` を追加し、`scripts/run_training.py` に `--curriculum-category-slots` を追加した。`--curriculum-category-slots made_hand,preflop_late_open` を指定すると、slotごとに該当categoryから1 scenarioをサンプルする。各scenarioは従来どおり1 state=1 decision-state groupであり、§67のgroup単位を維持する。`TrainConfig.curriculum_category_slots` も追加し、Config経由（#6）で扱う。slot未指定時は従来のuniform samplingへ落ちるため後方互換である。
+
+密度設計の核心は、§73のpreflop崩壊を避けるためにtotal densityを増やさない点である。従来の`--curriculum-groups-per-step 2`を維持し、構成だけを「made_hand 1枠 + preflop_late_open 1枠」に変えた。単純にscenariosを6件から11件へ増やしてuniform samplingすると、made_hand投入率が4/6から4/11へ薄まり、made_hand 7/8を壊す危険がある。slot方式はこの罠を避け、made_hand密度を1枠/stepで確保する。
+
+追加5教材の報酬probeでは、MC EV（#7）、playouts 8/32/64、seed20で全教材がopen>foldとなった。p64でのopen-fold差分は、BTN K8s +0.073、BTN T9s +0.050、CO K9s +0.104、CO QTs +0.038、HJ KTs +0.071である。薄margin教材のBTN T9s/CO QTsも低ランク補完で正方向を維持し、歪みBは再発していない。
+
+検証として、指定10ファイルpytestは67 passed、`verify_pokerrl_encode.py` はpassed=8/PASSであった。
+
+### 79.2 trial結果（Task 15、1300step、`--curriculum-category-slots made_hand,preflop_late_open`）
+
+Task 15はHEAD `c9dae39`、checkpoint `results\grpo\trial_latecurr`、`--curriculum-ratio 1.0 --curriculum-groups-per-step 2 --curriculum-category-slots made_hand,preflop_late_open --microbatch-groups 1` で実行した。curriculum投入は2600 groupsで、内訳はmade_hand 1300、preflop_late_open 1300であった。slot配分は訓練中も有効に機能している。
+
+late-positionの主目的spotは、Task11（late教材なし）と比べて全て大幅に改善した。
+
+| spot | Task11 final | Task15 final | Task15 step0→1300 |
+|---|---:|---:|---:|
+| A5s CO | 0.454 FAIL | 0.835 PASS | 0.887→0.835 |
+| A9s BTN | 0.372 FAIL | 0.794 PASS | 0.829→0.794 |
+| Q9s BTN | 0.083 FAIL | 0.354 FAIL | 0.534→0.354 |
+
+A5sとA9sはPASSへ回復した。Q9sは0.083から0.354へ劇的に改善したが、閾値0.5未満でFAIL継続である。
+
+非破壊性も概ね確認できた。made_handはstep400以降7/8を維持し、spot_016は0.330→0.685でPASSとなった。強handも維持され、KQsは0.973、55は0.922、AKoは0.997、QQは0.997でPASSである。trash判別も維持され、83o foldは0.545→0.756へ改善した。第2次本訓練（§73）のようなpreflop全面崩壊は起きていない。preflop_openはstep400以降4/4を維持した。spot_040は0.086→0.249でFAIL継続であり、made_hand 8/8の別軸として残る。
+
+Eval時系列は以下である。
+
+| step | total | made_hand | preflop_open | position | all_in | river | quality |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 100 | 0.88 | 6/8 | 4/4 | 7/8 | 4/7 | 1/1 | OK |
+| 200 | 0.88 | 6/8 | 4/4 | 7/8 | 4/7 | 1/1 | OK |
+| 300 | 0.84 | 6/8 | 3/4 | 7/8 | 4/7 | 0/1 | OK |
+| 400 | 0.88 | 7/8 | 4/4 | 7/8 | 4/7 | 0/1 | OK |
+| 500 | 0.88 | 7/8 | 4/4 | 7/8 | 4/7 | 0/1 | OK |
+| 600 | 0.88 | 7/8 | 4/4 | 7/8 | 4/7 | 0/1 | OK |
+| 700 | 0.88 | 7/8 | 4/4 | 7/8 | 4/7 | 0/1 | OK |
+| 800 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 900 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 1000 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 1100 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 1200 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+| 1300 | 0.86 | 7/8 | 4/4 | 6/8 | 4/7 | 0/1 | OK |
+
+HALTなし、floor非割れ、PokerKit crashなし、OOMなしで完走した。VRAM peakは4664MB、wall timeは約66分であった。
+
+### 79.3 残課題と新規観測
+
+Q9s（BTN Q9s after folds）はFAIL継続である。position 6/8の主因の一つであり、最薄late-openとして残った。Q9sは初期確信が0.534と低く、A5s 0.887、A9s 0.829よりかなり薄い。教材追加後も0.354までの改善に留まり、閾値0.5を越えられなかった。§77以来の「late-openは本質的に薄い」という構造の最後の最薄点である。
+
+新規観測として、SB K2o raise過多（spot_004）が残った。spot_004はposition categoryのもう一つのFAIL要因であり、Task 15 step1300ではraiseが約0.486で、max条件（raise≤0.35）を満たさなかった。これはlate-open侵食、すなわち薄openをfold側へ削る問題とは逆方向であり、trashを過剰openする別系統の課題である。本節の主筋ではないため、別途扱う。
+
+### 79.4 評価と方針
+
+§78.4で確定した真因（素材の穴）への対処は訓練で実証された。reference KL（§78.1）と報酬3成分（§78.3）が効かなかった末に、素材対処がpreflop第3層を実際に動かした。A5s/A9sのPASS回復、Q9sの大幅改善、made_hand 7/8と強hand/trashの非破壊は、§78の結論が正しかったことを示す。
+
+第3層は「9割解消」と評価する。中核であるA5s/A9sは回復し、Q9sという最辺縁の薄openが残った。完全解消ではないが、第2次本訓練（§73）がpreflop崩壊と引き換えにmade_hand 7/8へ到達したのに対し、Task 15はpreflopをほぼ守ったままmade_hand 7/8を達成した。
+
+方針としては、Q9s 1 spotを机上で追い続けるより、現状の到達点で本訓練、すなわち製品レベルの長時間訓練を回し、Phase2評価でQ9s/K2oの実戦的影響を見る段階である。Q9s近傍教材の強化、late slot内でBTN系を厚くすること、中程度holeを明示してmarginを上げることは有効な次手である。しかし、最薄openに過度に合わせるとtrash判別やSB K2o過多を悪化させる可能性がある。製品評価で重要度を見てから判断する。
+
+### 79.5 制約継承
+
+本節は #5 / #6 / #7 / #11 / #16、および §67 / §72 / §73 / §74.3 / §77 / §78 と整合する。late教材は別ID・別カード・別ラインであり、Spot Checks 50を訓練に混ぜていない（#11）。報酬はMC EVであり、solver/CFR/反実仮想を持ち込んでいない（#7）。stateはstate_factory起点で、非破壊に扱う（#5/#16）。相手holeは低ランク補完により歪みBを避ける（§72/§74.3）。total density 2を維持し、§73のpreflop崩壊教訓を反映した。各curriculum stateは1 state=1 decision-state groupであり、§67を維持する。
+
+trial checkpoint（`results\grpo\trial_latecurr\latest`, step1300）はQ9s/K2o残課題を含む暫定状態であり、本採用・resume元にしない（#20）。撤退基準（§56.6）には未抵触である。made_hand 7/8、preflop第3層9割解消、強hand/trash非破壊という改善トレンドは健在である。
