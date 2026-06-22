@@ -4675,6 +4675,8 @@ trial4 / trial5 の 200step では、preflop崩壊は顕在化しなかった。
 
 ## 74. preflop崩壊の診断と7層目（報酬関数のpreflop open過小評価）の発見
 
+> **【§80による再評価注記】** 本章がSpot Checks（canonical 50）の数値（pass率・生確率・カテゴリ評価）に言及する場合、それらは後に判明した評価基盤の構造欠陥（§80参照）の影響を受け、額面通りには信頼できない。本章は判断の履歴として残すが、Spot Checks数値の解釈には§80の留保が適用される。評価指標に依存しない記述（メカニズム・実装・crash対処等）はこの限りでない。
+
 §73では、第2次本訓練で made_hand が 7/8 に到達した一方、preflop_open と position_sensitivity が崩壊したことを6層目の課題として記録した。すなわち、made_hand 改善と preflop 維持のトレードオフ、あるいは破滅的忘却の疑いである。本セッションでは、その機序を診断した。その結果、6層目の対処、すなわち curriculum 比率調整、preflop維持 curriculum 混合、KL正則化に着手する前提を崩す、より深い7層目が判明した。
 
 本節では、preflop崩壊の生確率診断、訓練分布の実測、preflop open 局面に対する候補action別MC報酬の実測を記録する。核心は、現行の `action_conditioned_reward` / `rollout_ev` が preflop open を構造的に過小評価し、強い参加handすら `open < fold` と教えることである。したがって、6層目の対処に飛びつく前に、7層目、すなわち報酬側の扱いを先に切り分ける必要がある。
@@ -4755,6 +4757,8 @@ preflop維持 curriculum を追加する前提として、MC EVのみ（確定�
 
 ## 75. fold equity対処の実装とtrial結果（7層目の対処：preflop忘却停止と固定pの限界）
 
+> **【§80による再評価注記】** 本章がSpot Checks（canonical 50）の数値（pass率・生確率・カテゴリ評価）に言及する場合、それらは後に判明した評価基盤の構造欠陥（§80参照）の影響を受け、額面通りには信頼できない。本章は判断の履歴として残すが、Spot Checks数値の解釈には§80の留保が適用される。評価指標に依存しない記述（メカニズム・実装・crash対処等）はこの限りでない。
+
 §74で、7層目として `rollout_ev` が全員showdown前提でpreflop openのfold equityを評価できず、強い参加handでもopen報酬がfold報酬を下回る歪みAを特定した。本節は、その対処として `rollout_ev` にMC opponent fold responseを追加したTask 7と、短時間trialでpreflop忘却停止・固定pの限界・made_hand未達を確認したTask 8の結果を記録する。
 
 ### 75.1 対処の実装（Task 7、コミット `b026dbb`）
@@ -4828,6 +4832,8 @@ made_hand未達は、この選択肢Cとは切り分けて扱う。一度に複�
 撤退基準（§56.6）には未抵触である。preflop忘却という主要因には明確な前進があり、タイムボックスにも余裕がある。ただし、「made_hand 7/8とpreflop維持の両立」というtrial合格線にはまだ届いていない。次段階では、固定pの限界を踏まえてハンド強度依存fold確率を検討し、その後にmade_hand未達の原因を再度切り分ける。
 
 ## 76. hand強度依存fold確率の実装とtrial（固定pの限界解消・trash判別の訓練回復）
+
+> **【§80による再評価注記】** 本章がSpot Checks（canonical 50）の数値（pass率・生確率・カテゴリ評価）に言及する場合、それらは後に判明した評価基盤の構造欠陥（§80参照）の影響を受け、額面通りには信頼できない。本章は判断の履歴として残すが、Spot Checks数値の解釈には§80の留保が適用される。評価指標に依存しない記述（メカニズム・実装・crash対処等）はこの限りでない。
 
 §75で、固定p=0.7の限界を記録した。強い参加handをopen>foldに立てるには十分なfold equityが必要だが、固定pではtrash openにも同じfold equityが乗る。その結果、Task 8 trialでは spot_023 HJ 83o が fold 0.522→0.434 へ低下し、FAIL化した。本節は、その対処としてhand強度依存fold確率を実装したTask 9と、短時間trialでtrash判別の訓練回復を確認したTask 10の結果を記録する。
 
@@ -4933,6 +4939,8 @@ all_inは別軸の未解決課題である。カテゴリは4/7を維持した�
 
 ## 77. step延長trialでのmade_hand 7/8達成とlate-position侵食の発見（preflop第3層）
 
+> **【§80による再評価注記】** 本章がSpot Checks（canonical 50）の数値（pass率・生確率・カテゴリ評価）に言及する場合、それらは後に判明した評価基盤の構造欠陥（§80参照）の影響を受け、額面通りには信頼できない。本章は判断の履歴として残すが、Spot Checks数値の解釈には§80の留保が適用される。評価指標に依存しない記述（メカニズム・実装・crash対処等）はこの限りでない。
+
 §76で7層目の対処がpreflop面、すなわち強hand忘却停止とtrash判別回復で決着し、made_hand 6/8の原因切り分けを次課題とした。その後の切り分け調査で、made_hand未達は(a)step不足であると確定した。Task 10 trial_strengthfoldでは、made_hand失敗2 spotの正解側生確率がstep0→step300で上昇していた。spot_016は0.333→0.463（+0.131）で閾値0.5直前、spot_040は0.080→0.149（+0.069）であった。これは横ばいではなく上昇トレンドであり、(b)学習配分停滞を主因とは見なしにくい。
 
 curriculum made_hand group投入比率も第2次本訓練と同等であった。Task 10では600 curriculum trajectory中384件がmade_hand（約4/6）、第2次本訓練では13000件中8677件がmade_handであった。hand強度依存fold確率はpreflop限定で発火し、postflop fold probabilityは0.0のため、made_hand(postflop)報酬は変わらない。実測でもmade_hand curriculum局面はcall/raise>foldを維持していた。したがって、(c)density低下やpostflop報酬低下は否定寄りである。本節は、この切り分けに基づいて行ったstep延長trial（Task 11）の結果を記録する。
@@ -5032,6 +5040,8 @@ trialではcheckpointがstep400に保存されていたため、`--resume-from r
 
 ## 78. late-position対処の再評価：reference KL失敗・報酬3成分のGRPO不適・真因は素材の穴
 
+> **【§80による再評価注記】** 本章がSpot Checks（canonical 50）の数値（pass率・生確率・カテゴリ評価）に言及する場合、それらは後に判明した評価基盤の構造欠陥（§80参照）の影響を受け、額面通りには信頼できない。本章は判断の履歴として残すが、Spot Checks数値の解釈には§80の留保が適用される。評価指標に依存しない記述（メカニズム・実装・crash対処等）はこの限りでない。
+
 §77.6で、late-position侵食、すなわちpreflop第3層であるA5s/A9s/Q9sの薄いopen維持を次タスクとして切り分ける方針を残した。本節では、その切り分けを実行した結果と、そこから派生した手法照合、報酬再検証、今後の方針確定までを記録する。
 
 ### 78.1 切り分けの実行とreference KL（Task 12-13）の失敗
@@ -5105,6 +5115,8 @@ trial checkpoint（`trial_refkl_*` など）は本採用・resume元にしない
 
 ## 79. late-position維持curriculumによる第3層対処（A5s/A9s回復、Q9s残、素材対処の実証）
 
+> **【§80による再評価注記】** 本章がSpot Checks（canonical 50）の数値（pass率・生確率・カテゴリ評価）に言及する場合、それらは後に判明した評価基盤の構造欠陥（§80参照）の影響を受け、額面通りには信頼できない。本章は判断の履歴として残すが、Spot Checks数値の解釈には§80の留保が適用される。評価指標に依存しない記述（メカニズム・実装・crash対処等）はこの限りでない。
+
 §78.4でpreflop第3層（late-position侵食）の真因を「RL curriculumにpreflop/late-position維持教材ゼロ」と確定し、対処をlate教材追加とした。reference KL（§78.1）と報酬3成分（§78.3）はlate-position対処として不適と却下済みである。本節は、その素材対処として実装したTask 14と、Task 15 trialの結果を記録する。
 
 ### 79.1 実装（Task 14、コミット `c9dae39`）
@@ -5174,3 +5186,370 @@ Q9s（BTN Q9s after folds）はFAIL継続である。position 6/8の主因の一
 本節は #5 / #6 / #7 / #11 / #16、および §67 / §72 / §73 / §74.3 / §77 / §78 と整合する。late教材は別ID・別カード・別ラインであり、Spot Checks 50を訓練に混ぜていない（#11）。報酬はMC EVであり、solver/CFR/反実仮想を持ち込んでいない（#7）。stateはstate_factory起点で、非破壊に扱う（#5/#16）。相手holeは低ランク補完により歪みBを避ける（§72/§74.3）。total density 2を維持し、§73のpreflop崩壊教訓を反映した。各curriculum stateは1 state=1 decision-state groupであり、§67を維持する。
 
 trial checkpoint（`results\grpo\trial_latecurr\latest`, step1300）はQ9s/K2o残課題を含む暫定状態であり、本採用・resume元にしない（#20）。撤退基準（§56.6）には未抵触である。made_hand 7/8、preflop第3層9割解消、強hand/trash非破壊という改善トレンドは健在である。
+
+## 80. 評価基盤欠陥の発見と混合戦略を狙う土台再設計への方針転換
+
+### 80.0 本節の位置づけと§70〜§79への影響
+
+run_6c_3のGo/No-go判定過程で、評価基盤に構造欠陥があることが判明した。§70〜§79に記録したSpot Checks由来の数値、すなわちpass率・生確率・A5s/A9s/Q9s open確率・made_hand 7/8・各層の対処効果は、欠陥のある評価基盤上の値であり、額面通りには信頼できない。これらは削除せず判断の履歴として残すが、再評価を要する。
+
+一方、評価指標に依存しない運用事実は有効である。crash対策3層のTask 16〜18、およびrun_6c_3が6000stepを完走し、`halted=False`、crashなし、discard=1、floor非割れ、VRAM peak 4687.8MBであった事実は揺らがない。揺らいだのは「強くなったか」であって「安定動作したか」ではない。
+
+### 80.1 発見の経緯
+
+ユーザーの「参加人数・ベット額・スタックが評価promptに加味されているか」「Q9sのペアだけがおかしいのか」という問題提起を契機に評価基盤を徹底監査した。その結果、canonical 50は「最適アクションを一意判定するGTOベンチマーク」として成立していないことが判明した。
+
+### 80.2 canonical 50の構造欠陥（実測確定、7項目）
+
+1. 50件中、製品ルーティング範囲であるHU postflopは19件のみである。preflop 24件とMW postflop 7件、合計31/50は製品ルーティング範囲外である。
+2. preflop unopened 12件のpromptが空文 `Before the flop, .` になっている。
+3. preflop jam 4件（007 AA、041 KK、042 AQo、008 72o）はstateとpromptが矛盾する。stateはactive=6で、007は`stacks=[99.5,99,0,100,100,100]`である一方、promptは全員foldと記述する。このためAA継続0.380等の値は無効である。
+4. 各player現在stack、common pot、参加人数、all-in具体額がpromptに明示されない。all-inは抽象的な`all in`表記に留まる。
+5. 42/50が複数action合算（union）であり、単一の最適actionが定義されていない。閾値（majority > 0.5、min、max）は`scenarios.json`に手書きされたheuristicで、solver由来ではない。
+6. baseline 43/50 = 0.86は、同一SFT初期モデルによる自己評価であり、独立したGTO真値ではない。
+7. `run_spot_checks`はlegal maskを適用せず、raw logitsを直接softmaxする。jam時にも違法actionが4-class確率に残る。
+
+### 80.3 訓練側への波及
+
+評価のprompt生成器`pokerbench_prompt.py`は、curriculumの`curriculum_spots.py`およびself-playの`selfplay_env.py`と同じ`build_pokerbench_prompt`を共有する。§79のlate-open curriculum 5件も同じ`Before the flop, .`欠陥を持つ。
+
+したがって、§79で「第3層9割解消」と評価したlate-open生確率（A5s 0.835等）も欠陥prompt上の値である。GRPO教材自体が欠陥を抱えており、意図通り学習できていたかに疑義がある。
+
+### 80.4 SFT土台の監査結果（最上流）
+
+ユーザーの「土台も欠陥promptなら、その上のGRPO全ステップが無効ではないか」という問いを受け、SFT `results/sft_sequential/seg_003_offset_66000`を監査した。
+
+SFTのpromptはPokerBench正本JSONの`instruction`を忠実にコピーしており、自作生成器を通していない。563,200件が全件一致し、`Before the flop, .`は0件であった。このため、自作prompt欠陥による直接汚染はない。
+
+ただし、厳格基準ではSFT土台を健全と認定できない。
+
+1. 正本`instruction`自体に現在stack、all-in具体額、legal movesが欠落している。
+2. canonical LoRAのpreflop学習が未証明である。resume鎖で確認できたsegmentはすべてpostflop範囲であり、preflopは50万行目以降にある。
+3. shuffle学習であるにもかかわらず、offsetで先頭N件を消費済みとみなして再開しており、coverageを復元できない。
+4. all-in aux教師783件は、すべて`amount >= starting_stack × 0.95`というheuristic由来である。all-inの検証件数は0件、accuracyは0.0である。
+
+### 80.5 根本的発見：完全情報でも単一最適は一意でない（混合戦略）
+
+promptに渡すべき情報の必要十分リストを、PokerBench CSV、GTO Wizard schema、postflop-solver入力、PokerKit取得可能項目、本番GameState供給能力の5観点で調査した。
+
+現状の項目では不十分であり、street別bet、累積拠出、side-pot資格、call額、raise-to範囲、rake、各player状態、range/belief、戦略目的、action abstraction等を追加する必要がある。
+
+さらに理論上、完全情報を与えても最適actionは単一には一意化しない。GTOは混合戦略であり、複数均衡もあり得る。一意に定義できるのは、次の最適action確率分布までである。
+
+```text
+固定ルール＋完全情報集合＋hidden stateへのbelief/range＋payoff目的
+＋action abstraction＋equilibrium選択規約
+→ 最適action確率分布
+```
+
+PokerBenchは教師作成時に「dominant strategyを持つhole cards」を選別しており、混合分布を教師化していない。自作50はこの限定を外し、混合戦略局面に0.5閾値を適用したため、評価が理論的に成立しなかった。
+
+### 80.6 方針転換（ユーザー決定）
+
+ユーザーは次の方針転換を決定した。
+
+1. 混合戦略を正面から狙う。単一正解・0.5閾値を捨て、正解確率分布を教師および評価基準とする。これは当初採用理由である§48に最も忠実な方針である。
+2. promptへ渡す情報は欠落ゼロ・計算誤りゼロを条件とする。モデルには計算させず、必要情報を事前計算してpromptへ明示し、後から実物検証できる検算で担保する。
+3. SFT・GRPO・評価・本番の4箇所を、同一schema・同一単位・同一計算器に統一する。現状はSFTのみが正本JSONを使い、残り3箇所が自作生成器を使うミスマッチがある。
+
+### 80.7 やり直し範囲
+
+ユーザー基準「少しでも疑義があれば不可・始めからやり直し」に従い、SFTからやり直す方針をユーザーが決定した。理由は次の4点であり、GRPOの再実行だけでは解消しない。
+
+1. 完全状態prompt契約をSFTにも適用する必要がある。
+2. canonical LoRAのpreflop学習が未証明である。
+3. shuffle/offsetによりcoverageが破壊されている。
+4. all-in aux headが未検証のheuristic教師で作られている。
+
+ただし「やり直し」は単なる巻き戻しではない。本節で確定した正しい設計、すなわち完全情報prompt・4箇所統一・混合戦略教師・確率分布評価へ直してから再構築することを意味する。着手は即時ではなく、§80.10の残る全系監査を終えて設計を確定してからとする。§80.8の設計課題が未確定であるためである。
+
+### 80.8 次段の設計課題（未確定・要調査）
+
+1. 混合戦略の正解確率分布の供給源を確定する。論文は混合分布を教師化しておらず、ソルバー統合または既存GTO由来データが必要となる可能性がある。手元資産であるRust SolverとDeep CFR（#12保持）、およびソルバー統合の現実性を調査する。
+2. promptに渡す情報の必要十分リスト確定版を設計文書化する。
+3. 0.5閾値に代わる分布間距離等の確率分布評価指標を設計し、母集団をHU postflopに絞る。
+4. 統一prompt生成器のschemaと、call額・raise範囲・effective-stack vector・SPR・pot odds・side-pot資格の事前計算器を設計・実装する。
+
+### 80.9 制約との整合
+
+- #7（報酬MCのみ）について、solverから混合戦略教師を得る場合の教師レイヤーと報酬計算レイヤーの切り分けを§80.8で検討する必要がある。
+- #11（Spot Checks削除/緩和/訓練混入禁止）について、canonical 50は診断用に残す。Go/No-go母集団の見直しは「緩和」ではなく、正しい母集団選択と評価指標の是正として整理し、canonical 50を削除しない。
+- #12（Stage D前にDeep CFR/Rust Solver削除禁止）について、両者は混合戦略教師の供給源候補として重要性が増した。
+- #21（全体再設計は最後の手段）について、本件は却下済み対処の再試行ではなく、評価基盤欠陥という新事実に基づく土台是正である。§21の禁止対象である報酬3成分復活・reference KL再試行・position priorとは別である。ただしSFTからのやり直しは§21が想定する最後の手段に近い重い決定であり、ユーザーの明示決定に基づく。
+
+### 80.10 メタ：自己点検の不全とユーザーの問いの役割
+
+本節の欠陥群はCommanderの自己点検では発見されず、ユーザーの連続した問い、すなわち「人数・額は加味されているか」「ペアだけがおかしいのか」「論文は何をpromptに渡すか」「SFTとGRPOは同じpromptか」「土台の重みも欠陥promptではないか」によって一層ずつ掘り出された。
+
+「一つ欠陥が見つかれば同種が他にもある」という前提で全系を疑う必要がある。今後は影響上流であるprompt schema・教師データ・報酬・state構築・確率取り出しを同じ深度で監査し、検算可能な形で健全性を担保してから進む。
+
+## 81. 統一prompt計算器 schema・定義契約
+
+本節は `docs/design/unified_prompt_schema.md` を全文移植し一元化したものである。SFTやり直しの実装はこの §81 を正本とする。元の独立ファイルは廃止した（本セッション）。
+
+### 81.1 目的と適用範囲
+
+本書は、SFT・GRPO・評価・本番推論で共用する統一prompt計算器の出力項目、真値源、導出式、検算、欠落時の停止条件を定義する。計算器の実装仕様ではなく、実装が従うデータ契約である。
+
+根拠は次の実測・既存仕様に限定する。
+
+- PokerKit 0.7.4と`pokerrl_grpo/state_factory.py`の実測（コード本体HEAD `2c0f744`）
+- `SPEC.md` §4.1 `GameState`、§4.2 `PlayerState`、§4.3 `ActionRecord`
+- `DESIGN_NOTES.md` §80.5、§80.6、§80.8
+
+本契約は確定制約#1、#5、#15、#16に従う。PokerKit本体を変更せず、state正本を複製せず、pot・side-pot・dead blind・chips pushingはPokerKit automationを真値源とし、観測stateを変更しない。
+
+本契約が一意に定義する対象は「最適な単一action」ではなく、完全に定義された情報集合を入力とする最適action確率分布である。range/belief、payoff目的、action abstraction、equilibrium選択規約も最終promptの必須入力とする。
+
+### 81.2 基本表現
+
+全チップ量はPokerKit stateと同じchip単位の有限な非負数で表す。bbへの換算値を追加する場合も、chip値を正本として併記する。欠落値を`0`、空文字、推定値で代用してはならない。
+
+playerを`i`、heroを`h`、現在actorを`a`、現在streetを`s`とする。
+
+```text
+S_i = state.stacks[i]                    # 現在のbehind stack
+B_i = state.bets[i]                      # 現在streetのoutstanding bet
+C_i = -state.payoffs[i]                  # payout前decisionでの累積拠出
+X_i = C_i - B_i                          # collection済み拠出
+G   = state.total_pot_amount             # 現在action前のgross total pot
+```
+
+`C_i = -payoffs[i]`はactorが存在し、chips pushing開始前のdecision snapshotに限り使用する。終了後stateには適用しない。
+
+### 81.3 必要十分項目リスト
+
+「本番供給」は現行SPEC §4.1〜§4.3だけを基準とする。`要拡張`は、推測による補完を禁止し、GameStateまたはその正規入力契約の拡張が完了するまで生成停止する項目である。
+
+| group / field | 取得区分 | PokerKit真値源・定義 | 現行本番供給 |
+|---|---|---|---|
+| `schema_version` | 設定 | 固定version | 可能 |
+| `hand_id` | 外部 | state外のhand識別子 | `GameState.hand_id` |
+| `variant` / `betting_structure` / `mode` | 直接・設定 | NLHE、`state.betting_structure`、`state.mode` | 要設定追加 |
+| `player_count` | 直接 | `state.player_count` | `players`から可能だが明示推奨 |
+| `street` / `actor_index` | 直接 | `state.street_index` / `state.actor_index` | `phase` / `hero.is_my_turn`、相手actorは要拡張 |
+| `positions` / `button` / action order | 直接・設定 | player indexと固定seat mapping | dealerとseatから可能 |
+| blinds / antes / straddles / `min_bet` | 直接・設定 | `state.blinds_or_straddles`、`state.antes`、game設定 | blinds・antes・min betは要設定追加 |
+| `starting_stacks[i]` | 直接 | `state.starting_stacks[i]` | `hand_start_stacks`を正規field化要 |
+| hero hole cards | 直接 | `state.hole_cards[h]` | `hero.cards` |
+| board cards | 直接 | `state.board_cards` | `GameState.board` |
+| known dead/exposed cards | 直接 | hole/board/mucked/burn情報のうち観測可能範囲 | 要拡張。未知カードを推定禁止 |
+| player status | 直接・導出 | §81.8 | `is_seated`、`in_current_hand`は一部可能。fold/all-in区別は要拡張 |
+| current stack `S_i` | 直接 | `state.stacks[i]` | `PlayerState.stack` |
+| current street bet `B_i` | 直接 | `state.bets[i]` | `PlayerState.bet` |
+| street別拠出 | 導出 | §81.4.1 | preflop/current streetのみ。一ハンド全street保持へ要拡張 |
+| 累積拠出 `C_i` | 導出 | `-payoffs[i]`、検算は§81.6 | 全action履歴またはhand-start stackから導出。完全性保証は要拡張 |
+| `common_gross_pot` | 導出 | §81.4.2 | `GameState.pot`の意味が未確定。要拡張 |
+| main/side-pot breakdown | 直接 | `tuple(state.pots)`、先頭main、以降side | 取得不能。要拡張 |
+| pot別eligible players | 直接 | `Pot.player_indices` | 取得不能。要拡張 |
+| `gross_total_pot` | 直接 | `state.total_pot_amount` | `GameState.pot`の意味をgross totalとして確定するまで要拡張 |
+| collected raked/unraked amount | 直接 | `Pot.raked_amount` / `Pot.unraked_amount` | 取得不能。要拡張 |
+| `outstanding_bets_total` | 導出 | `sum(B_i)` | player betsから可能 |
+| legal base actions | 直接 | `can_fold()`、`can_check_or_call()`、`can_complete_bet_or_raise_to()` | buttonsから一部可能。正規field化要 |
+| `call_amount` | 直接 | `state.checking_or_calling_amount` | §81.4.2 betsから導出可。PokerKit相当検算には要拡張 |
+| `min_raise_to` / `max_raise_to` | 直接 | `state.min_completion_betting_or_raising_to_amount` / `state.max_completion_betting_or_raising_to_amount` | 取得不能。要拡張 |
+| raise reopen status | 直接 | `can_complete_bet_or_raise_to()`に反映済み | 取得不能。要拡張 |
+| all-in具体額 | 直接 | raise all-in=`max_raise_to`、call all-in=`call_amount` | stack/betから導出可能だがaction種別明示要 |
+| effective-stack vector | 導出 | §81.4.3 | stacksが全員確定すれば可能 |
+| SPR vector | 導出 | §81.4.4 | pot契約確定後に可能 |
+| pot odds | 導出 | §81.4.5 | contribution/pot資格の拡張後に可能 |
+| action history | 直接・正規化 | `state.operations`、全actionの具体額とstreet境界 | 現状はpreflop/current streetのみ。要拡張 |
+| rake configuration | 設定・直接 | `state.rake`。現stateは標準0% | 取得不能。要設定追加 |
+| hero range / opponent range-belief | 外部必須 | PokerKit stateから取得不能。solver/range provider | 取得不能。供給機構が必要 |
+| payoff objective | 外部必須 | GTO chip EV / exploit / tournament utility等 | 要設定追加 |
+| action abstraction / sizing menu | 外部必須 | solver・policy契約 | 要設定追加 |
+| equilibrium selection rule | 外部必須 | 教師分布生成側の規約 | 要設定追加 |
+
+### 81.4 導出5項目の統一定義
+
+#### 81.4.1 過去street別拠出
+
+正本入力は`state.operations`であり、文字列promptや`_prompt_pot_amount`の履歴状態を入力にしない。
+
+処理順を次に固定する。
+
+1. playerごとに`ante_contribution`、`street_contribution[preflop|flop|turn|river]`、`street_outstanding`を0で初期化する。
+2. operationを記録順に一度だけ走査する。
+3. `AntePosting.amount`は`ante_contribution[player]`とoutstandingへ加算する。
+4. `BlindOrStraddlePosting.amount`はpreflop contributionとoutstandingへ加算する。
+5. `CheckingOrCalling.amount`は現在street contributionとoutstandingへ加算する。このamountは増分額である。
+6. `CompletionBettingOrRaisingTo.amount`はraise-to額である。増分を`operation.amount - street_outstanding[player]`とし、その増分だけを現在street contributionへ加算した後、outstandingを`operation.amount`にする。
+7. `BetCollection.bets[i]`が各playerのoutstandingと完全一致することを検算してからoutstandingを0へ戻す。`BetCollection`だけではstreetを進めない。ante collectionも存在し得るためである。
+8. `BoardDealing`でのみstreetをpreflop→flop→turn→riverへ進める。`CardBurning`はstreet境界にしない。
+9. decision時の最終outstandingが`state.bets`と一致しなければ生成停止する。
+
+各playerの累積拠出は次式と一致しなければならない。
+
+```text
+C_i = ante_contribution_i + Σ_s street_contribution[i, s]
+```
+
+#### 81.4.2 common pot
+
+正本値を次式に固定する。
+
+```text
+common_gross_pot = state.total_pot_amount - Σ_i state.bets[i]
+```
+
+独立検算値は次式とする。
+
+```text
+common_gross_pot_check = Σ_j state.pots[j].amount
+```
+
+actorが存在するdecision snapshotでは両者が完全一致しなければ生成停止する。main/side-pot内訳と資格は`state.pots`をそのまま使い、自前履歴からpotを再構築しない。
+
+現行`pokerbench_prompt._prompt_pot_amount`の自前履歴集計は新計算器では使用禁止とする。
+
+#### 81.4.3 effective-stack vector
+
+effective stackはbehind定義に固定する。hero対各「まだhandに残る相手」について次を出力する。
+
+```text
+effective_stack_behind[h, i] = min(state.stacks[h], state.stacks[i])
+```
+
+出力は単一scalarではなく、`opponent_index -> amount`のvectorとする。fold済みplayerは除外する。all-inでhandに残るplayerは値0で含める。side-potごとの既拠出額はeffective stackへ混ぜず、pot breakdownと累積拠出で別に表現する。
+
+#### 81.4.4 SPR
+
+SPRはhero対相手ごとのvectorとし、分母をaction前にheroが獲得可能な
+`playable_unraked_pot`に固定する。heroの既拠出とbehind stackの合計を、heroがこのhandで
+拠出できる上限`M_h`とする。
+
+```text
+M_h = C_h + state.stacks[h]
+hero_playable_gross_pot_before_action = Σ_i min(C_i, M_h)
+SPR[h, i] = effective_stack_behind[h, i] / playable_unraked_pot_before_action
+```
+
+fold済みplayerのdead moneyも`C_i`として含む。`M_h`を超える他playerの拠出は、heroが
+資格を持たないpotまたは返却対象なので分母から除外する。現行stateはrake 0%なので、次が
+成立する。
+
+```text
+playable_unraked_pot_before_action = hero_playable_gross_pot_before_action
+```
+
+全playerについて`C_i <= M_h`なら、この値は`gross_total_pot`と一致する。この条件を満たさない
+multiway/side-pot局面ではgross totalをSPR分母にしてはならない。
+
+分母0では生成停止する。将来non-zero rakeを有効化した場合、§81.5の未確定条件を解消するまでSPR生成を停止し、gross potで代用しない。
+
+#### 81.4.5 pot odds
+
+HUまたはheroのcall後拠出が全potをcoverする局面では次式とする。
+
+```text
+pot_odds = call_amount / (gross_total_pot + call_amount)
+```
+
+multiwayおよびside-pot局面では、heroがcall後に獲得可能なpotだけを分母にする。call前累積拠出を`C_i`、call額を`c`、call後hero累積拠出を`H = C_h + c`とし、次式に固定する。
+
+```text
+C'_h = H
+C'_i = C_i  (i != h)
+hero_contestable_gross_after_call = Σ_i min(C'_i, H)
+pot_odds = c / hero_contestable_gross_after_call
+```
+
+fold済みplayerのdead moneyも拠出額として和に含む。heroがcoverできない相手の超過拠出は`min`で除外する。`c = 0`のcheck局面では`pot_odds = 0`とする。non-zero rake時はgross値をplayable値へ置換するためのPokerKit真値経路が確定するまで生成停止する。
+
+### 81.5 pot・side-pot・rake契約
+
+potの真値源はPokerKitだけとする。
+
+```text
+pot_j.gross_amount    = Pot.amount
+pot_j.raked_amount   = Pot.raked_amount
+pot_j.unraked_amount = Pot.unraked_amount
+pot_j.eligible       = Pot.player_indices
+gross_total_pot      = state.total_pot_amount
+```
+
+schemaは少なくとも次を別fieldで保持する。
+
+```text
+common_gross_pot
+outstanding_bets_total
+gross_total_pot
+collected_raked_amount
+collected_unraked_amount
+playable_unraked_pot_before_action
+pots[]: {index, kind, gross_amount, raked_amount, unraked_amount, eligible_players}
+```
+
+`kind`はindex 0を`main`、以降を`side`とする。potの結合・分割・資格判定を計算器側で再実装してはならない。
+
+現stateは`pokerkit.utilities.rake`の標準percentage 0%であり、`raked_amount = 0`、
+`playable_unraked_pot_before_action = hero_playable_gross_pot_before_action`である。
+
+将来non-zero rakeを有効化した場合、collection済みpotは`Pot.raked_amount`と`Pot.unraked_amount`から取得できる。一方、現在streetのoutstanding betsはまだpot分割・rake適用前である。これを含むaction前playable potの真値はステップ1で未実測である。PokerKitによる非破壊な真値取得方法が確定するまで、non-zero rake stateの統一prompt生成は停止する。gross値や独自rake式による代用は禁止する。
+
+### 81.6 検算規約
+
+全検算はprompt文字列化前の構造化値に対して行う。整数chipでは完全一致、float chipではPokerKit入力精度と同じ正規化後の一致を要求する。許容差で不整合を隠してはならない。
+
+| 対象 | 正本経路 | 独立検算経路 | 不一致時 |
+|---|---|---|---|
+| current stack | `state.stacks[i]` | `starting_stacks[i] - C_i` | 停止 |
+| current street bet | `state.bets[i]` | operations replayのoutstanding | 停止 |
+| 累積拠出 | `-state.payoffs[i]` | operations replay、および`starting_stacks[i]-stacks[i]` | 停止 |
+| street別拠出 | operations replay | 各`BetCollection.bets`とoutstandingの一致 | 停止 |
+| common gross pot | `total_pot_amount - sum(bets)` | `sum(pot.amount)` | 停止 |
+| gross total pot | `state.total_pot_amount` | `sum(pot.amount) + sum(bets)`、さらに`sum(C_i)` | 停止 |
+| pot内訳 | `state.pots` | pot gross合計とcommon grossの一致 | 停止 |
+| side-pot資格 | `Pot.player_indices` | active statusとtier拠出の整合確認のみ。資格を上書きしない | 停止 |
+| call額 | `state.checking_or_calling_amount` | `min(S_a, max(B)-B_a)` | 停止 |
+| raise範囲 | `min_completion_betting_or_raising_to_amount` / `max_completion_betting_or_raising_to_amount` | 両端に`can_complete_bet_or_raise_to(amount)`、範囲外がFalse | 停止 |
+| effective vector | §81.4.3式 | vector各値が両stack以下であること | 停止 |
+| SPR | §81.4.4式 | side-potなし・全拠出cover可能時はgross totalを分母にした値と一致 | 停止 |
+| pot odds | §81.4.5式 | side-potなしでは`c/(G+c)`との一致 | 停止 |
+| rake | potごとのraked/unraked | `gross = raked + unraked`、全pot合計 | 停止 |
+| player status | §81.8 | operationsのfold/all-in事実との一致 | 停止 |
+
+`starting_stacks - stacks`はchips pushing/pulling後にはgross contribution検算として使えない。本計算器はactorが存在するdecision snapshotだけを受理する。
+
+### 81.7 欠落ゼロ・fail-closed契約
+
+次のいずれかを満たさない場合、promptを生成せず構造化エラーを返す。
+
+1. `schema_version`、rules、player count、street、actor、positions、blinds、starting stacksが存在する。
+2. hero cardsはちょうど2枚、boardはstreetに対応する枚数である。preflop boardは欠落ではなく明示的な空listとする。
+3. 全seatにstatus、starting stack、current stack、current bet、累積拠出、street別拠出がある。
+4. action historyは空文字ではなく配列である。actionがない場合は空配列と`no_action_yet=true`を明示する。
+5. all-in actionは必ず具体額を持つ。抽象的な`all in`だけの表現を禁止する。
+6. gross/common/playable/raked/unraked pot、pot内訳、資格、outstanding betsが存在し、§81.6を通過する。
+7. legal actions、call amount、min/max raise-to、raise reopen statusが存在する。非該当値は欠落ではなく、理由付きの明示的`null`とする。
+8. effective-stack vector、SPR vector、pot oddsが存在する。
+9. rake設定が明示される。現行は`enabled=false`, `percentage=0`とする。
+10. hero range、active opponent range/belief、payoff objective、action abstraction、equilibrium selection ruleが外部providerから供給される。
+11. §81.6の全検算が成功する。
+
+`Before the flop, .`のような空文を防ぐため、自然言語promptは構造化schemaの検証成功後にのみ生成する。文字列生成器は欠落補完・再計算・推定を行わない。
+
+### 81.8 player status契約
+
+PokerKit decision snapshotでは次に固定する。
+
+```text
+folded           = not state.statuses[i]
+all_in           = state.statuses[i] and state.stacks[i] == 0
+active_with_chips = state.statuses[i] and state.stacks[i] > 0
+```
+
+`all_in`はfoldと区別し、pot資格を失わない。raise all-in額は`max_completion_betting_or_raising_to_amount`、short all-in call額は`checking_or_calling_amount`であり、両者を同じaction subtypeに潰さない。
+
+本番`PlayerState.in_current_hand`だけではfold、all-in、未参加を完全に区別できない。正規化済み`status` enumと、fold/all-inの具体action履歴をGameState側へ追加するまで、本番統一promptは生成停止とする。
+
+### 81.9 現時点の未解決事項
+
+次は式を推測で確定していない。後続調査または供給機構が必要である。
+
+- non-zero rake時に、未collectionのcurrent-street betsを含めた`playable_unraked_pot_before_action`をPokerKitから非破壊取得する方法
+- hero/opponentのGTO range/beliefと混合戦略教師分布の供給源
+- 本番GameStateで全street action history、pot breakdown、side-pot資格、raise reopen状態を欠落なく維持する方法
+- action abstractionとequilibrium選択規約の正本
+
+これらが未供給の状態では、値をheuristicで埋めず、対応する用途のprompt生成を停止する。
