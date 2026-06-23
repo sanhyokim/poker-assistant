@@ -22,10 +22,12 @@ struct SolveRequest {
     turn_bet_sizes_ip: String,
     turn_raise_sizes_oop: String,
     turn_raise_sizes_ip: String,
+    turn_donk_sizes: Option<String>,
     river_bet_sizes_oop: String,
     river_bet_sizes_ip: String,
     river_raise_sizes_oop: String,
     river_raise_sizes_ip: String,
+    river_donk_sizes: Option<String>,
     rake_rate: f64,
     rake_cap: f64,
     add_allin_threshold: f64,
@@ -35,6 +37,7 @@ struct SolveRequest {
     target_exploitability_pct: f64,
     timeout_ms: u64,
     bunching: Option<serde_json::Value>,
+    enable_compression: Option<bool>,
     actions_played: Option<Vec<String>>,
 }
 
@@ -47,6 +50,8 @@ struct SolveResponse {
     exploitability_pct: f64,
     solve_time_ms: u64,
     memory_usage_bytes: u64,
+    memory_uncompressed: u64,
+    memory_compressed: u64,
     iterations_run: u32,
     #[serde(skip_serializing_if = "Option::is_none")]
     root_strategy: Option<RootStrategy>,
@@ -196,6 +201,22 @@ fn process_request(line: &str) -> SolveResponse {
         Ok(value) => value,
         Err(response) => return response,
     };
+    let turn_donk_sizes = match parse_donk_sizes(
+        req.turn_donk_sizes.as_deref(),
+        "turn donk",
+        started_at,
+    ) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
+    let river_donk_sizes = match parse_donk_sizes(
+        req.river_donk_sizes.as_deref(),
+        "river donk",
+        started_at,
+    ) {
+        Ok(value) => value,
+        Err(response) => return response,
+    };
 
     let card_config = CardConfig {
         range: [range_oop, range_ip],
@@ -212,8 +233,8 @@ fn process_request(line: &str) -> SolveResponse {
         flop_bet_sizes: [flop_bet_sizes_oop, flop_bet_sizes_ip],
         turn_bet_sizes: [turn_bet_sizes_oop, turn_bet_sizes_ip],
         river_bet_sizes: [river_bet_sizes_oop, river_bet_sizes_ip],
-        turn_donk_sizes: None,
-        river_donk_sizes: None,
+        turn_donk_sizes,
+        river_donk_sizes,
         add_allin_threshold: req.add_allin_threshold,
         force_allin_threshold: req.force_allin_threshold,
         merging_threshold: req.merging_threshold,
@@ -228,8 +249,14 @@ fn process_request(line: &str) -> SolveResponse {
         Err(error) => return error_response(format!("game config error: {}", error), started_at),
     };
 
-    let (memory_usage_bytes, _) = game.memory_usage();
-    game.allocate_memory(false);
+    let (memory_uncompressed, memory_compressed) = game.memory_usage();
+    let compress = req.enable_compression.unwrap_or(false);
+    let memory_usage_bytes = if compress {
+        memory_compressed
+    } else {
+        memory_uncompressed
+    };
+    game.allocate_memory(compress);
 
     let timeout = Duration::from_millis(req.timeout_ms);
     let target_exploitability = req.starting_pot as f64 * (req.target_exploitability_pct / 100.0);
@@ -288,6 +315,8 @@ fn process_request(line: &str) -> SolveResponse {
         exploitability_pct,
         solve_time_ms: elapsed_ms(started_at),
         memory_usage_bytes,
+        memory_uncompressed,
+        memory_compressed,
         iterations_run,
         root_strategy,
         node_strategy,
@@ -424,6 +453,24 @@ fn parse_bet_sizes(
     })
 }
 
+fn parse_donk_sizes(
+    donk_sizes: Option<&str>,
+    label: &str,
+    started_at: Instant,
+) -> Result<Option<DonkSizeOptions>, SolveResponse> {
+    match donk_sizes.map(str::trim) {
+        Some(value) if !value.is_empty() => DonkSizeOptions::try_from(value)
+            .map(Some)
+            .map_err(|error| {
+                error_response(
+                    format!("invalid donk sizes for {}: {}", label, error),
+                    started_at,
+                )
+            }),
+        _ => Ok(None),
+    }
+}
+
 fn optional_card_from_str(value: Option<&str>, label: &str) -> Result<Card, String> {
     match value {
         Some(card) if !card.trim().is_empty() => {
@@ -511,6 +558,8 @@ fn error_response(error: String, started_at: Instant) -> SolveResponse {
         exploitability_pct: 0.0,
         solve_time_ms: elapsed_ms(started_at),
         memory_usage_bytes: 0,
+        memory_uncompressed: 0,
+        memory_compressed: 0,
         iterations_run: 0,
         root_strategy: None,
         node_strategy: None,
