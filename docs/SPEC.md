@@ -4231,6 +4231,8 @@ KV cache warm-startを行い、システムプロンプトをprefix cacheする�
 
 ### 10A.4 入力変換
 
+> **【DESIGN_NOTES §80による改訂注記】** prompt構築はSFT・GRPO・評価・本番の4箇所で同一schema・同一単位・同一計算器に統一する。情報欠落ゼロを絶対条件とし、各player現在stack・all-in具体額・legal moves・call額・raise範囲・effective-stack vector・SPR・pot odds・side-pot資格等はモデルに計算させず、事前計算してpromptへ明示する。現状の自作生成器（`pokerbench_prompt.py`）はpreflop空文・state不一致・情報欠落の欠陥があり、刷新対象とする。（DESIGN_NOTES §80参照）
+
 GameStateからテキストプロンプトを構築する。
 
 変換関数: pokerrl_prompt_builder.py
@@ -4320,6 +4322,8 @@ models/pokerrl/
 ```
 
 ### 10A.11 品質評価基準
+
+> **【DESIGN_NOTES §80による保留注記】** 「Spot Checks 50で95%合格」は、評価基盤（canonical 50）の構造欠陥により現状無効である。欠陥は、(a) HU postflopが19件のみで31件が製品ルーティング範囲外、(b) preflop空文prompt・state不一致、(c) 単一正解の0.5閾値が混合戦略の本質と理論的に不整合、である。今後は混合戦略（正解確率分布）を前提に、確率分布評価・HU postflop母集団・完全情報promptへ刷新する。canonical 50は診断用に残し、Go/No-go主指標には使用しない。改訂版確定まで本項の数値基準は保留する。（DESIGN_NOTES §80参照）
 
 - Spot Checks 50シナリオで95%合格
 - Entropy健全（top-1確率中央値 ≤ 0.85）

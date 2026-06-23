@@ -5553,3 +5553,75 @@ active_with_chips = state.statuses[i] and state.stacks[i] > 0
 - action abstractionとequilibrium選択規約の正本
 
 これらが未供給の状態では、値をheuristicで埋めず、対応する用途のprompt生成を停止する。
+
+## 82. postflop-solver の完全理解と flop 生成設定の確定（本セッション）
+
+### 82.1 solver API の完全理解
+
+postflop-solver の正本理解は、公式ドキュメント b-inary.github.io/postflop_solver と GitHub README を基準とする。ライセンスは AGPL-3.0、開発は 2023年10月に停止しており、GUI（WASM/Desktop Postflop）のバックエンドとして使われることが本来用途である。
+
+TreeConfig は次の13フィールドで構成される。
+
+1. `initial_state`
+2. `starting_pot`
+3. `effective_stack`
+4. `rake_rate`
+5. `rake_cap`
+6. `flop_bet_sizes` `[OOP, IP]`
+7. `turn_bet_sizes` `[OOP, IP]`
+8. `river_bet_sizes` `[OOP, IP]`
+9. `turn_donk_sizes`
+10. `river_donk_sizes`
+11. `add_allin_threshold`
+12. `force_allin_threshold`
+13. `merging_threshold`
+
+`BetSizeOptions` は bet と raise が分離され、`try_from((bet_str, raise_str))` で構築する。bet size 文字列は、`%`（pot比）、`x`（前ベット倍数、raise専用）、`c`（定数）、`e`（geometric: 残りstreet数からall-inに到達するサイズを自動計算）、`a`（all-in）を解釈する。
+
+`merging_threshold` は PioSOLVER と同方式で近いbet sizeを統合する。`add_allin_threshold` は bet/pot 比がこの値以下なら all-in を追加し、`force_allin_threshold` は call 後 SPR がこの値以下なら all-in を強制する。
+
+圧縮は `allocate_memory(true)` によって16-bit整数化を有効にする。メモリは約半減するが、既定は32-bit floatである。
+
+### 82.2 26GB crash の真因（前セッションの誤り訂正）
+
+当初、自前テストで flop が 26GB に達して crash し、「flop は手元32GBで解けない」と一時結論した。しかしこれは誤りであった。
+
+真因は、公式設定パラメータである `merging_threshold`、`add_allin_threshold`、`force_allin_threshold`、`raise_sizes`、geometric size を使わず、手動の `%` 複数指定だけで木を構築したため木が膨張したことである。bet sizes の数だけが原因ではなかった。
+
+bunching は元から OFF であり、CLI が読み捨てていた。これは §3.5 の想定と一致する。bunching ON は逆にメモリを増やす方向である。
+
+教訓は明確である。既存本番設定である `config.yaml` の `60%,a` / `2.5x` と `solver_request_builder.py` を確認せず、自前パラメータでテストしたことが順序の誤りだった。これは調査ファースト原則違反として記録する。
+
+### 82.3 公式設定での全street実測（メモリ解決）
+
+公式設定は、全streetで bet=`60%, e, a`、raise=`2.5x`、`merging_threshold=0.1`、`add_allin_threshold=1.5`、`force_allin_threshold=0.15`、32-bit とする。
+
+実測対象は SRP_BTN_vs_BB の pekarstas 到達レンジであり、OOP 77クラス、IP 96クラス、`starting_pot=5.5`、`effective_stack=97.5` の100bb系設定である。
+
+この設定では、flop はメモリ 9-16GB に収まり、turn は約1.2秒・57MB、river は約40ms・0.3MBで解けた。したがって、26GB crash は設定不備が原因であり、公式設定なら手元32GBで flop が解けることが確定した。
+
+CLI修正は `main.rs` に donk 2フィールドを追加したのみである。他11フィールドは既に接続済みだった。solver binary の SHA は `C048B54D...` から `67A520B1...` へ変わったが、solver library本体は変更していない。
+
+### 82.4 16-bit圧縮の却下
+
+river 同一5ボードで 32-bit と 16-bit を比較した。16-bit はメモリを約70%に減らしたが、混合分布の最大絶対差が 0.36 に達した。具体例では Check 確率が 98% から 62% へ変化した。
+
+平均差は小さいが、最大乖離が教師として大きすぎる。したがって、16-bit 圧縮は No-go とし、flop 救済には使わない。
+
+### 82.5 flop品質の確定（exploitability目標）
+
+solver は単一実行で全16論理コアをほぼ使用する。同時2件実行は RAM 上は可能であり、合計19GBに収まった。しかし同一timeoutでは各solveのiterationが減り、exploitabilityが悪化した。同一品質では並列不可とみなす。timeoutを延長すれば約1.95倍スループットの可能性はあるが、これは未実測である。
+
+低品質解は却下する。exploitability 4-9% の解は混合分布が最大 0.73-0.79 変動し、Check 確率が 0.20 から 0.93 へ反転する例があった。教師としては不可である。
+
+flop 0.5% 目標は、3ボードすべて30分内に到達した。平均は411秒/件、すなわち約6.8分であり、最大は10.5分だった。1%目標の平均211秒と比べ、約2倍である。
+
+ただし、flop 0.5% と 1% の混合分布差は未測定である。次セッションで、この差が教師品質として許容できるかを判断する。
+
+### 82.6 教師数の単位（旧SFTとの非互換）
+
+旧SFTは 563,200件であり、これは局面単位である。1局面は単一正解actionを持つ PokerBench 由来データとして扱われていた。
+
+新方式では、1局面（ボード）から OOP/IP 全hand × 全action の混合分布を得る。1ボードあたり約1000教師例、すなわち hand 単位の教師になる。
+
+したがって、旧56万（局面単位）と新方式（hand単位）は直接比較できない。必要総教師例数は、§80.8 のSFT設計と照合して次セッションで確定する。
