@@ -5625,3 +5625,425 @@ flop 0.5% 目標は、3ボードすべて30分内に到達した。平均は411�
 新方式では、1局面（ボード）から OOP/IP 全hand × 全action の混合分布を得る。1ボードあたり約1000教師例、すなわち hand 単位の教師になる。
 
 したがって、旧56万（局面単位）と新方式（hand単位）は直接比較できない。必要総教師例数は、§80.8 のSFT設計と照合して次セッションで確定する。
+
+### 82.7 flop 0.5% vs 1% 混合分布差の実測（1%却下・0.5%確定）
+
+§82.5 で宿題として残した「flop 0.5% と 1% の混合分布差が教師として許容できるか」を本セッションで実測し、1% は却下、flop 教師の目標 exploitability は 0.5% に確定した。これにより制約 #24 は消化済みである。
+
+手法は §82.4 の 16-bit 比較と同型である。既存 0.5% 実測の3ボード（`6d8h9s` / `7d2d3c` / `6hAs3s`、SRP_BTN_vs_BB pekarstas 到達レンジ、`starting_pot=5.5`、`effective_stack=97.5`）を使い、公式設定を固定したまま `target_exploitability_pct` のみ 0.5 / 1.0 に変えて逐次 solve した。全 hand × 全 action の絶対差を取得した。スクリプトは `data/teacher_proto/flop_quality_05_vs_1/compare_flop_quality.py` であり、一時計測用で、報告後削除予定である。
+
+測定前提は健全である。両 target はすべて `succeeded`、`timeout=false`、`memory_stopped=false`、確率和誤差は 1e-7 オーダーである。到達 exploitability は 0.5% 側が 0.4415〜0.4649%、1.0% 側が 0.9712〜0.9970% であり、両者が狙いどおり別品質へ収束した。したがって、観測された差は設定差ではなく品質差そのものとみなす。
+
+| board | 0.5%到達(iter) | 1.0%到達(iter) | max_abs_diff | mean_abs_diff |
+|---|---|---|---:|---:|
+| `6d8h9s` | 0.4415%(290) | 0.9970%(120) | 0.2746 | 0.0176 |
+| `7d2d3c` | 0.4649%(200) | 0.9712%(140) | 0.2676 | 0.0124 |
+| `6hAs3s` | 0.4526%(230) | 0.9923%(130) | 0.2952 | 0.0153 |
+
+`max_abs_diff` は 0.27〜0.30 であり、§82.4 の 16-bit 却下水準 0.36 に匹敵する。material 反転（0.5 跨ぎ、かつ絶対差がしきい値以上）を 0.05 / 0.10 / 0.15 の3しきい値で評価したが、いずれも red 判定であり、最緩の 0.15 でも 27 件が残った。具体例として、board `6d8h9s` では IP `Jc5c` の Check が 0.675 から 0.400 へ、IP `As5s` の Bet330 が 0.632 から 0.414 へ動いた。
+
+`mean_abs_diff` は 0.012〜0.018 と小さい。しかし、§82.4 と同様に「平均は小さいが最大乖離が大きい」ケースであり、平均差を根拠に 1% を採用することはできない。教師データでは局所的に大きな混合分布の崩れがそのままラベル品質の崩れになるためである。
+
+判定は red である。flop 教師は 0.5% で確定し、1% 採用による生成時間半減（411秒/件から 211秒/件）は断念する。3ボードすべてが独立に red で、かつ全しきい値で red であったため、ボード追加再測は不要と判断した。
+
+0.5% より高精度な 0.1% などの採否は別問題であり、本セッションでは未実測である。0.1% は iteration が 0.5% の数倍以上になる見込みであり、メモリも現状の flop 0.5% で最大 15GB 程度まで達しているため、手元 32GB 環境では上限リスクがある。検討する場合は、0.5% vs 0.1% を本節と同じ手法でまず1ボード試走してから判断する。本セッションでは 0.5% を採用し、高精度化は本生成、SFT、強さ実測の後に回す。
+
+### 82.8 統一計算器（§81.4）申し送り3点の実測決着
+
+§81.4 末尾および snapshot §10.3 に残っていた申し送り3点 (a)(b)(c) を、計算器実装前に実測確認した。環境は HEAD `c144392`、`pokerkit==0.7.4`（§63.4）である。この確認では、計算器実装、正本変更、solve は行っていない。
+
+(a) `C_i = -state.payoffs[i]` は成立する。§81.2 の条件、すなわち actor が存在し、chips pushing 前の decision snapshot であることを満たす場合、2シナリオ × flop/turn/river の計6 decision が手計算の累積拠出と一致した。例として、BTN open / BB call 系の river では `-payoffs=[0.5,13.3,0,0,0,13.3]`、UTG open / BTN 3bet 系の river では `-payoffs=[0.5,1.0,28.0,0,0,28.0]` であった。snapshot が指摘していた「1局面のみ実測」の穴は、複数 street の decision で解消した。
+
+(b) PokerKit 0.7.4 で必要属性は実在する。`street_index` は flop=1、turn=2、river=3 として存在し、`actor_index`、`payoffs`、`pots`、`bets`、`stacks`、`starting_stacks`、`checking_or_calling_amount`、`min_completion_betting_or_raising_to_amount`、`max_completion_betting_or_raising_to_amount`、`board_cards`、`get_board_cards(0)` も実在する。pot 取得は既存の `pokerbench_prompt.safe_total_pot_amount()`（§71.4 の防御込み）を正経路とする。実測での重要な発見として、`state.rake` は値ではなく関数であった。したがって、属性の存在と値取得は別であり、rake 設定は config / request 由来で明示保持する必要がある。
+
+(c) non-zero rake ガードは要対処である。現行設定は `poker-system/config.yaml`、solver request、board 生データのいずれも `rake_rate=0.0`、`rake_cap=0.0` であり、現時点では実害はない。一方で、CLI / wrapper は rake を solver へ渡すだけで、`rake != 0` の停止ガードは持っていない。§81.5 に従い、計算器実装時には `rake_rate != 0 or rake_cap != 0` の場合に生成停止するガードを明示実装する。rake≠0 の真値経路解明は将来課題として残す。
+
+計算器実装タスクへの申し送りは次の3点である。第一に、`C_i = -payoffs[i]` は `actor_index is not None` かつ terminal / chips pushing 後でない decision snapshot のみで使用する。第二に、`state.rake` は関数であるため、rake 設定は外部 config / request 由来で保持する。第三に、`rake_rate != 0 or rake_cap != 0` の場合は生成停止ガードを入れる。
+
+## 83. 統一計算器（変換器）の実装（本セッション）
+
+### 83.0 本節の位置づけ
+
+§80（方針転換）・§81（統一prompt契約）・§82（solver/flop設定）を受け、本セッションで統一計算器（変換器）の土台と本実装を行った記録である。変換器は solver 出力（hand×action 混合分布）を §81 統一prompt schema に沿った SFT 教師形式へ変換する層であり、前回（§80）「訓練に渡す情報が欠けた」層に相当する。本節は実装の段階・検証結果・残スコープを記録する。
+
+### 83.1 二段構えの段取り
+
+根幹改修のため、いきなり全実装せず段階を分けた。第一段=最小E2E（synthetic state 再構築と §81.4 数値一致の実証）、第二段=本実装（§81.6 検算・§81.7 fail-closed・§81.8 status・IP node）。土台がズレた場合に傷を浅くするため、最もズレると痛い「synthetic state 再構築が §81.4 と数値一致するか」を1ボード1局面で先に潰す方針とした。
+
+### 83.2 最小E2E（第一段）の結果
+
+`pokerrl_grpo/unified_prompt_calculator.py` を新規作成。SRP_BTN_vs_BB flop root decision snapshot を `state_factory` で再構築し、§81.4 最小導出（C_i / common_gross_pot / effective stack / SPR / pot odds）を実装した。operations 列は BlindOrStraddlePosting(SB0.5, BB1.0) → fold×3(UTG/MP/CO) → complete_to(2.5)(BTN) → fold(SB) → call(BB) → deal_board(6d8h9s) であり、§81.4.1 の処理順（手順3-8）に対応する。
+
+実測受け入れ値（test 3 passed）: C_i = [0.5, 2.5, 0, 0, 0, 2.5]、payoffs = [-0.5, -2.5, 0, 0, 0, -2.5]、common_gross_pot = 5.5（`total_pot_amount - Σbets` と `Σpots[j].amount` の二系一致）、effective_stack_behind = 97.5、SPR = 97.5/5.5、pot_odds = 0、確率和 < 1e-5。
+
+operations 走査の C_i と `-state.payoffs[i]` の二系一致を検算した。死にSB 0.5 を含む common_gross_pot = 5.5 を正とし、§63.5 の旧PokerBench 互換（死にSB除外）は新計算器では使わない旨をコメントで明示した。除外ロジックの混入はなく、二系とも 5.5 で一致した。
+
+### 83.3 本実装（第二段）の結果
+
+最小E2E版を拡張し、§81.6 検算規約14項目・§81.7 fail-closed 11条件・§81.8 player status契約を実装、OOP root に加え IP node（OOP check 後）を扱えるようにした（test 18 passed）。
+
+IP node 経路: `oop_root` state から `call(state)` を1回進めて `ip_after_oop_check` を構築する。flop root は actor=seat1(OOP)・`checking_or_calling_amount=0` のため、この `call()` は PokerKit 0.7.4 上で check operation になる。実装の検算で、`call()` 後の `state.operations` 末尾が `CheckingOrCalling(player_index=1, amount=0)` になることを実測確認した（推測でなく実挙動として裏付け）。IP node では actor=5・street_index=1・pot=5.5・bets=0 を検算し、solver response の `node_strategy`（IP 535 hands）に対応づけた。IP hand `2d2c` の混合分布 [0.722224, 0.152734, 0.125040, 0.0] が label に正しく載ることを確認した。
+
+§81.7 条件7「非該当値は理由付き null」は `{value, reason}` 構造で表現する。該当値は `reason=None`、非該当は `reason` 必須（例 `raise_not_legal`）、理由なし null は §81.7 違反で停止する。`call_amount=0` は check 可能額として有効値のため null にしない（§81.4.5 が check 局面を c=0 として正式に扱う）。
+
+§81.8 status契約は `folded = not statuses[i]` / `all_in = statuses[i] and stacks[i]==0` / `active_with_chips = statuses[i] and stacks[i]>0` で実装。SRP 局面で fold status と `Folding` operations 集合 {0,2,3,4}（SB/UTG/MP/CO）の一致を実測突合した。これは §81.8（本番 `in_current_hand` だけでは fold/all-in/未参加を完全区別できない）の never-active 罠を、operations を正とすることで回避するためである。all_in は fold と区別し、raise all-in額（`max_completion_betting_or_raising_to_amount`）と short call all-in額（`checking_or_calling_amount`）を別フィールドに保持、抽象 `all in` のみの action は §81.7 条件5違反とする。
+
+fail-closed の機能を、正常系PASSに加え異常系で検証した。§81.6 の矛盾注入で停止、§81.7 の11条件を1つずつ欠落させて構造化エラー、reasoned null / all-in具体額欠落 / rake設定欠落 / status契約違反でそれぞれ停止することをテストした。§82.8 の rake≠0 fail-closed ガード（NonZeroRakeError）を継続実装した。
+
+自然言語 prompt は §81.7 末尾に従い、構造化schema検証成功後にのみ生成し、空文（`Before the flop, .`）を防ぐ。欠落補完・再計算・推定は行わない。
+
+### 83.4 §81.9 未解決4点との関係
+
+§81.9 は本番 GameState 側で全street action history・pot breakdown・side-pot資格・raise reopen を欠落なく維持する方法が未解決で、未供給ならprompt生成停止と定める。教師生成では synthetic state を完全再構築するため、これら未解決（本番側の制約）を回避できる。ただし「教師生成では解決、本番 GameState では依然停止対象」の区別をコメントで明示し、混同を防いだ。§81.3 の「現行本番供給=要拡張/取得不能」は本番 GameState 前提であり、教師生成の入力（solver出力＋manifest＋synthetic state）では事情が異なる。
+
+### 83.5 残スコープ（次段）
+
+本実装は calculator 単体・1ボード（6d8h9s）の root/IP 2局面で §81 契約をフル充足した段階である。未着手は次段 converter の仕事として残る: 全hand展開（root 469 + IP 535 ≈ 1000例の一括生成）、複数ボード、JSONL 教師出力、turn/river node。「calculator単体が完成」であって「教師生成パイプライン完成」ではない。最終的に「訓練に渡る健全性」は小規模 SFT 試走まで実証されない。
+
+### 83.6 配置とテスト
+
+新規: `pokerrl_grpo/unified_prompt_calculator.py`（§81 schema の state 計算専用）、`tests/test_unified_prompt_calculator.py`（test 18 passed）。既存 `state_factory.py` / `pokerbench_prompt.py` は再利用のみで不変更。`_prompt_pot_amount` の自前履歴集計は使用禁止、pot は `safe_total_pot_amount()` 経由。`pokerkit==0.7.4`、HEAD c144392、solve は実行せず既存 response JSON を使用。
+
+## 84. converter 実装と訓練側 loss 改修の必要性（本セッション）
+
+### 84.0 本節の位置づけ
+
+§83（統一計算器=calculator の実装）を受け、本セッションで converter（変換CLI）を実装し、その出力を既存SFT訓練コードが食えるかを接続調査した。結論として、訓練側に混合分布を学習する経路が無く、loss を含む中規模改修が必要であることが判明した。これは §80（評価基盤欠陥）で問題化した「混合分布を単一最適に潰す」構造が、教師データ側だけでなく訓練側 loss にも存在することの発見であり、前回「訓練に渡す情報が欠けた」失敗の正体に当たる可能性が高い。本節はこの発見を記録する。
+
+### 84.1 converter の実装
+
+`data/teacher_proto/solver_teacher_converter.py` を新規作成。calculator（§83）の `build_teacher_example(request, response, hand, node_kind)` を hand 単位で呼び、1ボード（`6d8h9s`、target 0.5%）の全hand を JSONL 教師へ展開した。calculator は改造せず「呼ぶだけ」で成立した（§83 の検証を無効化しないため）。
+
+manifest 情報（solver_sha256 / range_source / seat_map 等）は calculator 出力だけでは不足するため、converter が manifest を組み立て各行に `source_manifest` として埋める設計とした。多少冗長だが、SFT 入力単体で出所を追えるため「訓練に渡る層で情報が欠ける」事故に強い。solver_sha256 は response の出所と一致することを確認する。
+
+実測（test 21 passed = converter 3 + calculator 既存 18 維持）: rows 1004（root 469 + IP 535）、unique_ids 1004、multi（複数action非ゼロ）595、bad_prob 0。代表例 root `2d2c=[1.0,0,0,0]`、IP `2d2c=[0.722224,0.152735,0.125041,0.0]`。出力 `data/teacher_proto/unified_sft_jsonl/board_000_6d8h9s_target_0_5.jsonl`。本番 `results/` は不可侵。
+
+§80.5（混合分布を潰さない）を、argmax/best_action/単一actionラベルを生成せず probabilities ベクトルをそのまま保持し、全行 `label.type=mixed_strategy_distribution`・確率和<1e-5・複数非ゼロ例の残存（multi 595）を検査することで構造的に保証した。なお `data/teacher_proto/` は gitignore 対象のため converter 本体と生成 JSONL は ignored、テストは untracked。本生成パイプライン昇格時に converter を追跡対象モジュールへ移すか判断する（次段論点）。
+
+### 84.2 接続調査の結論（C: 訓練側 loss 改修が必要）
+
+既存SFT訓練コードは新JSONLをそのまま食えない。判定は (A)そのまま食える=否、(B)データローダ小改修で食える=否、(C)loss含む訓練側改修が必要=是。
+
+理由は2つ。第一に入力形式。旧SFTは `prompt` / `completion` / `action_type` 前提（`scripts/run_sft_comparison.py` L80-103 が `record["prompt"]` / `record["completion"]` を直接読む）。新JSONLは `natural_language_prompt` / `label.probabilities` で、フィールド名から不一致。
+
+第二に loss 構造（より本質的）。旧SFT本体は HuggingFace causal LM の completion token列 cross entropy（`run_sft_comparison.py` L401-402 `outputs.loss`）、評価は単一action token の argmax 比較（L207-211）、補助ヘッドも単一action class の hard-label CE（`scripts/train_aux_heads.py` L520 `cross_entropy(action_logits, action_class)`）。混合分布 `[0.72,0.15,0.125,0]` を soft-label として学習する経路が存在しない。
+
+すなわち、converter 側で混合分布を正しく保持しても、訓練側 loss が単一正解 CE のままならそこで分布が潰れる。§80.5「PokerBench は混合分布を教師化せず単一最適に潰したため評価が理論的に成立しなかった」の構造が、訓練側 loss にも残存していた。前回「訓練に渡す情報が欠けた」失敗の正体はこの訓練側 loss 構造である疑いが濃い。converter まで完璧でもここを直さなければ同じ轍であった。接続調査を試走の前に挟んだことでこれを試走前に掘り当てた。
+
+補足: `tests/test_train_harness.py` は SFT JSONL を読む訓練ではなく GRPO harness のテスト（L18 `from pokerrl_grpo.train_harness import GRPOTrainer`）であり、SFT接続判定の対象外。SFT本体は `scripts/run_sft_comparison.py` および `scripts/train_aux_heads.py` 系である。
+
+### 84.3 拡張の所在と規模感
+
+最短で筋が良いのは `scripts/train_aux_heads.py` 系の拡張。既に4 action logits を持つ補助ヘッドがあり、混合分布 soft-label に自然接続できる。改修対象は、(1)`AuxPokerBenchDataset`（L169 付近）に新JSONL経路を追加し `natural_language_prompt` を prompt、`label.actions`/`label.probabilities` を `target_action_probs` tensor に変換、(2)`compute_loss()`（L511）を hard CE から soft-label loss（例 `-(target_probs * log_softmax(action_logits)).sum(dim=-1).mean()`）へ拡張し既存 hard CE と切替可能にする、(3)collator/batch に `action_class` でなく `action_probs` を載せる。
+
+規模感はモデル全体や calculator/converter の再設計ではなく、SFT/aux-head 訓練側の中規模改修。ただし「loss を soft-label に変える」ことと「実際に学習が成功する（収束・過学習しない・solver 分布を忠実再現する）」ことは別であり、改修後の試走まで確定しない。soft-label loss の具体（soft-CE か KL か、温度設定）は改修の設計段階で §80.5 と照らして詰める論点として残る。
+
+## 85. aux-head soft-label loss 経路の実装（本セッション）
+
+### 85.0 本節の位置づけ
+§84.2 で判明した (C)＝既存 aux-head 訓練に混合分布を soft-label で学習する経路が無い、への対処を本セッションで実装した。converter（§84）が出す混合分布 JSONL を、action 順序を正しく対応させたうえで soft cross-entropy で学習できる経路を新設し、既存 hard CE 経路は温存した。これにより「教師生成（calculator §83 + converter §84）→ 訓練配線（soft-label 経路）」までが揃い、前回「訓練に渡す情報が欠けた」失敗への配線レベルの対処が完了した。ただし配線が正しいことと学習が成功することは別であり、実証は次段の小規模 SFT 試走を要する。
+
+### 85.1 action 順序対応（地雷箇所の無力化）
+既存 aux-head の `ACTION_CLASS_NAMES = ("fold","check_call","raise","all_in")`（`scripts/train_aux_heads.py` L32）と、converter の `label.actions = ["Check","Bet 330","Bet 637","AllIn 9750"]` は意味も順序も異なる。既存4クラスへそのまま流すと `Check` が `fold` logit に入り分布をエラーなく静かに壊す（§84.2）。対処として soft-label 専用に `SOLVER_SOFT_ACTIONS = ("Check","Bet 330","Bet 637","AllIn 9750")`（L33 付近）を固定した別経路を新設。検出は2段。Dataset 変換時に `tuple(label["actions"]) == SOLVER_SOFT_ACTIONS` でなければ即停止し、確率をこの順序のまま `target_action_probs` に載せる（Check=0/Bet330=1/Bet637=2/AllIn=3）。Collator/batch 時に batch 内全行の `label_actions` が一致することを再検証し不一致なら停止。入口と集約点の2段で守るため、後から別 node・別 abstraction が混ざっても静かに壊れず停止する。
+
+### 85.2 別 head 新設（意味衝突の回避）
+soft 経路は別 head を新設した。既存 `action_head`（4次元 fold/check_call/raise/all_in）は hard 用に温存し、soft 用に `solver_action_head`（4次元 `SOLVER_SOFT_ACTIONS` 順）を追加。同一 head を意味の異なる2モードで使い回す危うさを head 分離で構造的に排除し、hard/soft 混在時の意味衝突も予防した。
+
+### 85.3 soft CE loss と評価指標
+loss は soft cross-entropy。`log_probs = F.log_softmax(action_logits, dim=-1); loss = -(target_action_probs * log_probs).sum(dim=-1).mean()`。温度 T=1 固定（§80.5 に忠実、solver 分布そのものを教師とする）。`target_probs=0` 要素は寄与0、`log(target)` を取らず数値安定（`AllIn=0.0` を含む `2d2c` で NaN/Inf なしを検証）。KL は学習勾配としては soft CE と同等（`KL(target||model)=soft_CE - target_entropy`）で評価指標に用いる。`label_mode = "hard_action" | "solver_soft_distribution"` で明示切替。既存 hard CE 経路（`cross_entropy(action_logits, action_class)` L520）は変更せず温存。旧 `sft_train_full.jsonl`（hard）と新 mixed JSONL（soft）は当面別 run（混在は後回し）。§80.6 決定3（4箇所統一、SFT だけ直して評価が argmax のままはミスマッチ）に従い評価へ分布指標 `eval_soft_ce`/`eval_kl`/`mean_abs_diff`/`max_abs_diff` を追加、`top_action_match` は補助診断。`run_sft_comparison.py` の argmax 評価系の本格改修は次段へ切り分け。
+
+### 85.4 旧 checkpoint 互換
+`solver_action_head` 新設のため旧 hard checkpoint には `solver_action_head.*` が無い。読み込み時、旧 hard checkpoint に `solver_action_head.*` が無い場合のみ許容する互換を入れ、新 head 追加で旧 checkpoint のロードが壊れないようにした。
+
+### 85.5 検証結果と残スコープ
+`tests/test_train_aux_heads_soft.py` を新規作成。action 順序対応・順序不一致で停止・確率和≠1 で停止・soft CE 手計算一致・0確率安定性・hard CE 維持・soft 評価指標・別 head・旧 checkpoint 互換を検証。`test_train_aux_heads_soft.py` + `test_solver_teacher_converter.py` + `test_unified_prompt_calculator.py` で 28 passed。HEAD c144392。本段は forward と loss 計算とテストまでで訓練 run は未実施。すなわち「混合分布を正しい順序で受け取り潰さず soft CE で損失計算できる配線」が完成した段階であり、「実際に学習が成功するか」は次段の小規模 SFT 試走で実証する。
+
+## 86. 小規模SFT試走（Yellow）とIP平均退避の発見（本セッション）
+
+**【無効・破棄 2026-06-24】本節（§86.0〜86.5）の試走Yellow・IP平均退避・層特定・複数ボード検証は、廃棄予定のseg_003 LoRA〔捨てると決めたPokerBench単一正解データで作った重み〕を凍結土台にした分析であり無効。原因分析として引き継がない。再出発方針は§87を見よ。**
+
+### 86.0 結論
+soft-label経路（§85）に converter の1004例JSONL（§84、board `6d8h9s`/0.5%）を食わせる小規模SFT試走を実施し、判定はYellowであった。配線は正しく動き、混合分布へ近づくこと自体は実測できた（前回§80の「分布が一点に潰れる」は起きていない）。しかしGo基準 `eval_kl≤0.10`/`mean_abs_diff≤0.05` に未達。原因はIP nodeの偏った混合手を覚え切れず、IP node全体の平均分布に退避していることであった。情報欠落は否定され、凍結base+pooled hidden+aux-headがpromptにあるhand差を出力に反映できていない疑いが残った。これは「混合分布を小型凍結LLMで学べるか」という、元ネタ（dcaustin33は単一正解SFT）に答えのない未踏領域である。
+
+### 86.1 試走条件と結果
+`label_mode=solver_soft_distribution`、base Phi-4-mini 3.8B（4bit凍結）+ LoRA(seg_003)凍結 + aux-head学習。出力は `results/` 外の専用dir。lr=1e-3（epoch2）と lr=3e-4（epoch2）、さらに lr=3e-4 epoch8 まで実施。
+- lr=1e-3 epoch2: eval_kl 0.1556 / mean_abs_diff 0.0776 / max_abs_diff 0.2295 / top_action_match 0.737 / 7.87分 / peak_vram 3930MiB。
+- lr=3e-4 epoch2: eval_kl 0.1520 / mean_abs_diff 0.0765 / max_abs_diff 0.2240。
+- lr=3e-4 epoch8: eval_kl 0.1487 / mean_abs_diff 0.0756 / max_abs_diff 0.2187（epoch3以降ほぼ水平、18.6分）。
+NaN/Infなし、`final_aux_heads`保存成功、action順序崩れ・AllIn暴走・one-hot潰れなし。lr感度低くepoch増でも頭打ちで、学習量不足は弱い。
+
+### 86.2 原因＝IP平均退避（決定的証拠）
+epoch8時点のIP全体平均出力 `[0.416713,0.346554,0.236650,0.000083]` が、IP教師平均 `[0.416010,0.345694,0.238296,0.0]` とほぼ一致（差 `[0.0015,0.0012,0.0027,0.0001]`）。すなわちモデルはhandを区別せず、IP node全体の平均分布を全handに返している。均等な混合手（教師が平均に近い）は当たり、偏った手（教師が平均から遠い）は外す。
+- OOP root 469件: mean row MAD 0.00039（ほぼ完璧）。
+- IP node 531件: mean row MAD 0.1421（平均化）。
+- IP strong mixed（target_max≥0.6）: mean row MAD 0.1849、IP pureish（target_max≥0.95）: 0.2825。
+- multi内 target_max ↔ row MAD 相関 +0.653。
+偏りが強い手ほど外す非対称で、`2d2c`固有でなくIP node偏り分布全般が苦手。
+
+### 86.3 情報欠落の否定（実物確認）
+IP node（`ip_after_oop_check`）promptに `flop BB CHECK` が入り、OOP root と actor/seat/role/action history で区別可能。IP hand間も `Hero seat 5 (IP) holds ...` で hole cards が行ごとに変わる。全IP 535行で duplicate prompts 0 / missing_count 0 / prompt_has_hand=True / prompt_has_check=True / last_flop_check=True。state `effective_stack_behind=97.5`/`spr=17.727`/`pot_odds=0.0`、legal actions 一致。§81.7欠落ゼロを満たす。よって原因は入力情報の欠落ではなく、promptにあるhand差を表現・利用できていない側（凍結base/pooled hidden/aux-head）にある。
+
+### 86.4 仮説と切り分け方針
+仮説1（学習量不足）は弱い（epoch8頭打ち）。仮説3（データ/ラベル競合）も否定（prompt重複0、`2d2c`固有でない）。仮説4（soft CEが均等化を強制）は理論上否定（soft CEの最適解は教師分布）。残る有力仮説は「凍結base+pooled hidden+aux-headがhand差を分離できていない（仮説2）」と「1ボード極小データゆえhand差の学習信号が不足」。次段は、hand差がどの層（凍結base出力/pooling/head容量）で消えるか、複数ボードで解決するかを実測切り分けする。対処は実装せず切り分けまで。
+
+### 86.5 対処候補と制約（速度トレードオフ）
+推論はリアルタイムT1 50-300ms目標（§0）。安易な大型化は速度とぶつかるため不可寄り。対処候補は速度を犠牲にしない順に、(1)複数ボードでデータ増（モデル・凍結・速度すべて維持、最有力候補）、(2)本体凍結のままLoRA/headの使い方変更（pooling・特徴取り出し）、(3)本体一部だけ訓練し凍結し直す（推論速度は維持、訓練のみ重くなる）、(4)より大きい/強いベースモデル（速度とぶつかる・最終手段）。どれが要るかは§86.4の切り分け後に決める。元ネタは単一正解SFTで、混合分布を小型凍結LLMで学べるかは論文・先行例に答えがなく、自前で実測して切り拓く領域である。
+
+## 87. 訓練やり直し方針の確定（base素体から再出発）
+
+### 87.0 結論
+§86の試走（seg_003 LoRA凍結+aux-head学習）でIP平均退避が起きたが、これは廃棄予定の土台に乗った無効な試走であった。seg_003 LoRA は PokerBench単一正解データ（§80で品質不良と判断し捨てると決めたデータ）で作られた重みであり、捨てるデータで作った重みは捨てる重みである。よって §86 の原因分析（層特定・複数ボード検証含む）は全て破棄する。確定方針＝base(Phi-4-mini)素体から、ソルバー正本データ（混合分布）で新しいLoRA+headをゼロから訓練し直す。
+
+### 87.1 不使用と決めたもの
+seg_003 LoRA（`results/sft_sequential/seg_003_offset_66000/final_adapter`）、旧aux-head、PokerBench由来データ（`data/sft_train_full.jsonl`等）、前セッションで作った既存検証JSONL（`data/teacher_proto/unified_sft_jsonl/`等、前任Commanderの勘違いの上で生成）。これらは初期化点・教師・検証のいずれにも使わない。削除してよい。
+
+### 87.2 §61.5との関係
+§61.5は「シナリオ1=LoRA凍結+ヘッドのみ訓練（82%LoRAを保護）」「シナリオ2=LoRA+ヘッド同時訓練（不十分なら進む）」を定めた。旧構成はシナリオ1だが、その前提（保護すべき82%LoRA）はPokerBench廃棄により崩れた。やり直しは「base素体から新LoRAを混合分布で訓練」＝実質シナリオ2相当の新規訓練であり、§61.5の保護前提は適用されない。
+
+### 87.3 確定した順序
+(1)既存検証JSONL全削除 →(2)検証用に最低10ボードの正本データを新規作成（solver 0.5%・公式設定#23→修正済みconverterで混合分布JSONL変換）→(3)10ボードでテスト訓練（base素体→新LoRA+head、混合分布SFT、§80.5を潰さず学べるか実証）→(4)問題なければ本番ボード正本データ作成（配分設計→大量生成）→(5)GRPO。テスト訓練が混合分布を捉えられるかが、やり直しの最初の関門。
+
+### 87.4 生きている道具
+calculator（§83、多ボード対応済）・converter（§84、多ボード対応済）・soft-label loss経路（§85）は道具として有効。ただしsoft-label経路の訓練対象設計は、base素体から新LoRAを訓練する形に見直す（旧=LoRA凍結+headのみ、新=base素体から新LoRA+head）。
+
+##　88. base素体テスト訓練の実験記録と構造問題の発見（2026-06-28セッション）
+
+### 88.0 本節の位置づけ
+§87（訓練やり直し方針）を受け、base素体(Phi-4-mini)から新LoRA＋solver_action_headを混合分布でゼロから訓練する実験を5回実施した。結論として、OOPは完璧に学べるがIPはデータ量増加で悪化する構造問題が判明した。データ量・epoch数・OOP-IP干渉・LoRA容量の4仮説を実測で切り分けた記録である。
+
+### 88.1 実験前の準備作業（本セッション）
+(a) §87追記＋§86破棄注記をDESIGN_NOTESに反映。
+(b) 既存検証JSONL（`unified_sft_jsonl/`）全削除。
+(c) converter改修: `comparison_json`を任意化し、無条件品質ガード（exploitability ≤ target）追加。新規ボードの直接変換に対応。test 8 passed。
+(d) SRP_BTN_vs_BB 10ボード正本データ生成: solver 0.5%・公式設定(#23)、10,102例、全exploitability ≤ 0.5%、棄却0。wall_time約66分。
+(e) promptテンプレートに§81の8項目追加: blinds/starting stacks/positions list/effective stack/SPR/pot odds/call amount/raise range。構造化フィールドには計算済みだがpromptテキストに埋め込まれていなかった。元ネタ(PokerBench)のpromptにもSPR/pot odds/call amount/raise rangeは含まれていなかったことを実物確認。10ボードJSONL再生成（solver再実行不要）、実物でprompt内の値と構造化フィールドの一致を確認。test 21 passed。
+(f) train_aux_heads.py改修: `--train-lora`フラグで「base素体→新LoRA＋head同時訓練」対応。`LoraConfig`+`get_peft_model`による新規adapter作成、`extract_pooled_hidden(training=True)`で勾配経路開通、optimizer対象にLoRA+head、checkpoint/finalにLoRA adapter保存。Phi-4-mini実物確認でtarget_modules=`qkv_proj,o_proj`（`q_proj,k_proj,v_proj,o_proj`は存在しない）。test 11 passed。
+(g) 追加20ボード生成（seed=43）: 20/20成功、20,130例、wall_time約116分。30ボード統合combined_train.jsonl=30,232例。
+
+### 88.2 実験1: 10ボード5epoch（ベースライン）
+条件: base Phi-4-mini 4bit + 新LoRA(rank16) + solver_action_head、lr=2e-4、5epoch、batch_size=2、SRP_BTN_vs_BB 10ボード10,102例。
+結果: OOP mean row MAD=0.00179（ほぼ完璧）、IP mean row MAD=0.09165、IP model行間ばらつき=0.12959（教師0.16624の78%）。IP教師平均≒モデルIP平均（差<0.004）だが完全な平均退避ではない。eval_kl最良0.1767（step3500）。VRAM peak 7044MiB、224分。
+所見: OOPは完全に学べる。IPは手間のばらつきを部分的に捉えているが偏った手（target_max高）の再現が弱い。条件付きGoとし、30ボードで改善するか実測。
+
+### 88.3 実験2: 30ボード3epoch
+条件: 同上、30ボード30,232例、3epoch（10ボードでepoch3以降鈍化のため減）。
+結果: IP mean row MAD=0.16618（悪化）、IP model行間ばらつき=0.03468（潰れた）。OOP=0.00246（維持）。375分。
+所見: データ3倍で悪化。No-go。epoch不足の可能性あり。
+
+### 88.4 実験3: 30ボード5epoch（epoch数の切り分け）
+条件: 同上、30ボード、5epoch。
+結果: IP mean row MAD=0.16280（3epから微改善のみ）、IP model行間ばらつき=0.03873（ほぼ変わらず）。619分。
+所見: epoch不足ではない。データ量増加で構造的に悪化することが確定。
+
+### 88.5 実験4: IP-only 30ボード rank16（OOP-IP干渉の切り分け）
+条件: IP nodeのみ16,096例（OOP除外）、rank16、5epoch。
+結果: IP mean row MAD=0.13782（0.16280から改善）、IP model行間ばらつき=0.07565（0.03873から改善）。346分。
+所見: OOP-IP干渉は一部寄与する（MAD 0.163→0.138）が主因ではない（10ボード水準0.092に未到達）。
+
+### 88.6 実験5: IP-only 30ボード rank64（容量の切り分け）
+条件: IP nodeのみ、rank64（alpha128）、5epoch、lr=2e-4。
+結果: IP mean row MAD=0.17124（悪化）、IP model行間ばらつき=0.0000002（完全崩壊）。全hand全boardで同一出力`[0.463,0.418,0.119,0.0]`。352分。
+所見: 完全な平均退避。rankを増やして同じlrでは崩壊する。容量不足が主因かの結論は出ていない（lr不適合で崩壊しただけの可能性）。rank64でlr低減の再試行が残る。
+
+### 88.7 構造問題の整理
+5実験から確定した事実:
+(1) OOPは常に完璧（MAD 0.002付近）。アーキテクチャは混合分布を学ぶ能力を持つ。
+(2) IPはデータ量増加で悪化する。10ボード（少数記憶）では機能するが30ボード（汎化要求）では平均退避。
+(3) OOP-IP干渉は部分的に寄与するが主因ではない。
+(4) LoRA rank増加はlr=2e-4では崩壊。容量仮説は未決着。
+(5) 勾配はLoRAに正常到達（128/128 grad有り、norm=1.04）。
+(6) eval構成に問題あり: train/evalが同一ファイルの先頭1000行固定で、holdoutでなくboard偏り（4sKcAh 983例/3cThJc 17例）。指標の絶対値は信頼しにくいが、全データ上の追加診断（mean row MAD等）は有効。
+
+構造問題の核心仮説: 「promptの最終トークン1点のhidden stateを取り出して小さなlinear headで4次元確率に変換する」仕組みで、board textureの多様性が増すと1点hidden stateへの情報圧縮が苦しくなりIPの出し分けが崩れる。OOPは教師分布のboard依存性が低い（大半がほぼcheck）ため影響を受けない。
+
+### 88.8 未決着の対処候補（次セッションへ）
+(A) rank 64 + lr低減（1e-4）再試行: 容量仮説の正確な切り分け。短い実験。
+(B) アーキテクチャ見直し: pooling方法の変更（最終1点→複数トークンattention pooling等）、head構造の変更。設計議論が先。
+(C) 現状の10ボード水準（IP MAD 0.09）をSFT到達点として受け入れ、GRPOで改善を狙う。
+選択はA→B→Cの順が推奨（§88.6のlr不適合を排除してから構造議論に入る方が効率的）。
+
+## 89. LLM hidden state方式の最終結論と専用PokerNetへの方針転換（2026-06-29セッション）
+
+### 89.0 本節の位置づけ
+§88（テスト訓練5実験）で発見した「IPがデータ量増加で平均退避する」構造問題に対し、本セッションで容量仮説の最終切り分け（rank64+lr低減）・pooling方式変更（mean pooling）を実施し、いずれも根本解決に至らなかった。これを受け、LLM hidden state経由のアーキテクチャを断念し、数値入力→専用ネットワーク（PokerNet）→混合戦略出力の方式に転換した。本節はその判断根拠・実験結果・新方式の設計を記録する。
+
+### 89.1 LLM方式の追加実験（本セッション）
+
+**(a) rank64 + lr低減（1e-4）IP-only**
+§88.6でrank64+lr=2e-4が完全崩壊したのがlr不適合のせいかを切り分ける実験。結果:
+- IP mean row MAD: 0.128（実験4 rank16の0.138から微改善）
+- IP modelばらつき: 0.093（崩壊は解消）
+- 判定: No-go。容量増加は微改善（7%）をもたらすが主因ではない。rank128にしても根本解決はしない。lr不適合の排除は完了。
+
+**(b) mean pooling IP-only**
+最終1トークンの代わりに全non-paddingトークンのhidden stateを平均する方式を実装。結果:
+- eval_kl: 0.65付近で停滞（last_tokenの最終0.30より大幅に悪化）
+- 判定: No-go。均等平均では定型文（"You are playing 6-handed..."等）がboard/hand情報を薄める。epoch9000stepで打ち切り。
+- 意義: 「均等に見渡す」は逆効果。「どこを重点的に見るかを学ぶ」必要がある。ただしattention poolingを追加してもLLMの4bit量子化hidden stateがポーカー戦略の微妙な差を保持できるかは不明。
+
+**(c) LLM方式の最終結論**
+7回の実験（§88の5回 + 本セッション2回）を経て、「Phi-4-mini 4bit量子化の最終トークンhidden state → 小さなlinear head」というアーキテクチャがIPの混合戦略を30ボード以上にスケールさせることは困難と結論した。OOPは常に完璧（MAD 0.002付近）だがIPはデータ量増加で悪化する。原因はrank不足でもpooling方法でもなく、ポーカー訓練を受けていない汎用LLMのhidden stateがboard texture × hand identityの微細な戦略差を圧縮する用途に適していないこと。
+
+### 89.2 方針転換: 専用PokerNet
+
+転換先は「数値入力 → ポーカー専用の小規模ニューラルネットワーク → 混合戦略出力」。LLMを経由せず、ポーカーの状態を数値特徴として直接ネットワークに入力する。
+
+**転換根拠:**
+1. DeepStack/Pluribus/ReBeLなど実績のあるポーカーAIは全てこの方式（数値入力→専用ネットワーク）。LLMベースで成功したポーカーAIの先例はない。
+2. PokerBench(dcaustin33)はLLM+補助ヘッドだが単一正解SFTのみで混合戦略は扱っていない。混合戦略をLLM hidden stateで学ぶ試みは先例がなく、本プロジェクトの7実験で困難と実証された。
+3. 専用ネットワークはパラメータ数が約12万（LLM方式の約3万分の1）、推論が1ms以下（LLM方式の数百msに対し大幅高速）。
+
+**再利用できる資産:**
+- calculator（§83）、converter（§84）、生成パイプライン: そのまま再利用
+- soft-label loss（§85のsoft CE）: そのまま再利用
+- 教師データ（30ボード30,232例 + 生成中の200ボード）: 構造化フィールドから数値を直接抽出可能
+- solver公式設定(#23)、品質ガード(#24): 変更なし
+
+**使わなくなるもの:**
+- LLM関連コード: extract_pooled_hidden、AuxiliaryHeads、LoRA関連、train_aux_heads.pyのLLM経路
+- Phi-4-miniモデルファイル: 訓練では不要（推論ブリッジ接続時に再検討）
+
+### 89.3 PokerNet アーキテクチャ
+
+**入力（構造化フィールドから直接取得、promptパース不要）:**
+- board cards: 3枚 → card_to_index(0-51) → Embedding(52, 32) → sum → [32]
+- hole cards: 2枚 → card_to_index(0-51) → Embedding(52, 32) → sum → [32]
+- numerical features [8]: position(OOP=0/IP=1), pot/100, eff_stack/100, spr, pot_odds, call/100, min_raise/100, max_raise/100
+
+**ネットワーク:**
+```
+[board_embed(32) | hand_embed(32) | numerical(8)] = [72]
+→ Linear(72, 256) → ReLU → Dropout
+→ Linear(256, 256) → ReLU → Dropout
+→ Linear(256, 128) → ReLU → Dropout
+→ Linear(128, 4) → logits
+```
+パラメータ数: 約120,000。
+
+**出力:** 4次元logits → softmax → [Check, Bet 330, Bet 637, AllIn 9750] の確率分布。
+**loss:** soft CE（§85と同一: `-(target_probs * log_softmax(logits)).sum(-1).mean()`）。
+
+**データ分割:** ボード単位でtrain/eval分割（ソート末尾3ボード=eval holdout）。§88.7-6のeval構成問題をここで解消。
+
+**実装ファイル:** `pokerrl_grpo/poker_nn.py`（ネットワーク+データローダ）、`scripts/train_poker_nn.py`（訓練CLI）、`tests/test_poker_nn.py`（テスト5件）。
+
+### 89.4 PokerNet 30ボード実験結果
+
+**(a) v1（dropout=0.1）**
+- train IP MAD: 0.031（LLM方式最良の0.092の3倍良い。表現力は十分）
+- eval IP MAD: 0.168 (best epoch 1)、0.189 (final epoch 50)。過学習。
+- OOP train MAD: 0.001、OOP eval MAD: 0.001。完璧。
+- wall time: 1.87分（LLM方式350分の1/180）。
+
+**(b) dropout=0.3 + weight_decay=1e-4**
+- eval IP MAD: 0.166 (best epoch 10)。正則化で微改善だが根本解決せず。
+
+**(c) hidden=64, embed=16（縮小版）**
+- eval IP MAD: 0.171 (best epoch 7)。縮小は逆効果。
+
+**(d) スケーリング実験（dropout=0.3, wd=1e-4、eval 3ボード固定）**
+| train boards | train例数 | best eval IP MAD | epoch |
+|---|---|---|---|
+| 10 | 10,180 | 0.194 | 34 |
+| 20 | 20,295 | 0.179 | 11 |
+| 27 | 27,264 | 0.166 | 10 |
+
+10→20→27でeval IP MADが単調改善。データ量増加が汎化改善に直結する明確な傾向。
+
+### 89.5 200ボードデータ生成（実行中）
+
+確定コマンド:
+```
+.\.venv\Scripts\python.exe data/teacher_proto/generate_flop_boards.py ^
+  --target-succeeded-boards 200 --initial-candidate-count 240 ^
+  --seed 100 --output-dir data/teacher_proto/flop_200boards ^
+  --exclude-combined-jsonl data/teacher_proto/flop_30boards/combined_train.jsonl
+```
+
+進捗: 100/200完了時点で全ボードexploitability ≤ 0.5%、棄却0、ペース約5-6分/ボード。推定残り8-10時間。既存30ボードとの重複は除外済み。
+
+### 89.6 アクション空間の正規化（設計ノート）
+現行の`label.actions = ["Check", "Bet 330", "Bet 637", "AllIn 9750"]`はSRP BTN vs BBフロップ（pot=5.5, eff_stack=97.5）で固定。将来ターン・リバー・別シナリオでpot/stackが変わるとチップ絶対額が変わる。解決策はポット比率表現（Bet 330 → 60% pot, Bet 637 → geometric, AllIn → all-in）で、solver設定(#23)自体がこの比率ベース（bet=60%,e,a）。変換に必要な情報（pot, stack）は教師データ内にある。ただし現時点では全行同一actionなので後回しでよい。
+
+### 89.7 次の判断分岐
+200ボード生成完了後、PokerNet 200ボード訓練を実施し、スケーリング傾向（eval IP MAD）を確認する。
+- eval IP MAD < 0.12 → Strong Go。500-1755ボード生成に進む
+- eval IP MAD 0.12-0.15 → Go。データ増加 or ネットワーク拡張を検討
+- eval IP MAD > 0.15 → 改善不足。特徴量追加（hand strength等）やネットワーク構造見直し
+
+### 89.8 card embedding sumの衝突リスク（本セッションで発見）
+現行PokerNetはboard 3枚のembeddingを足し算（sum）で集約している。これは異なるカード組み合わせで同じ合計ベクトルになる理論的リスクがある。32次元あるので完全一致確率は極めて低く、学習中に分離される傾向があるが、推測で安全とは断定できない。
+
+**推奨修正:** カードをインデックス順にソートして連結する方式。board 3枚→[32]×3=[96]、hand 2枚→[32]×2=[64]、合計[160]+numerical[8]=[168]。衝突が構造的に排除される。順番依存性もソートで解消。データ生成には影響しない（ネットワーク側のみの変更）。
+
+### 89.9 canonical フロップ列挙（本セッションで実装）
+ランダム生成では1,755 canonical typeの完全カバーが保証されない。52枚から3枚のC(52,3)=22,100 flopを、24通りのスート置換による最小表現で分類すると、戦略的に異なるタイプは正確に1,755種。
+
+`canonical_flop_enumerator.py`を実装。`canonical_key(board)`で任意ボードをcanonical keyに変換（順番非依存）。`enumerate_canonical_flops()`で1,755代表ボードを決定論的に返す。
+
+実測: 既存230実ボード（30+200）= 216 canonical typeカバー。残り1,539タイプの生成を開始（2026-06-29 22:41 JST）。`generate_flop_boards.py`に`--boards-list`入力を追加し、canonical全種リストを直接入力してexclude後の未カバー分だけsolveする機能を実装。
+
+## 90. canonical 1,755ボード訓練とStrong Go判定（2026-07-05セッション）
+
+### 90.0 本節の位置づけ
+§89の方針転換（PokerNet）とcanonical生成の帰結である。フロップSRP 2ノード（OOP root / IP after OOP check）のスケーリング確認が完了し、Strong Go判定でターン・リバー設計フェーズへ移行する転換点として記録する。
+
+### 90.1 canonical 1,539ボード生成完了（実測）
+canonical未カバー分1,539ボードの生成は、2026-06-29 22:41開始、2026-07-05 13:35完了。wall timeは485,676秒（約5.6日）である。
+
+結果は succeeded 1,539/1,539、rejected 0、attempted 1,539、total_examples 1,562,243。manifest上の exploitability > 0.5% は0件であり、§24の品質ガードを全件通過した。
+
+### 90.2 データ統合
+30ボード、200ボード、1,539ボードを統合し、`data/teacher_proto/flop_all_canonical/combined_train.jsonl` を作成した。行数は 30,232 + 202,736 + 1,562,243 = 1,795,211。
+
+canonicalカバレッジ実測は、covered 1,755/1,755、uncovered 0。`--check-coverage` 上の input_boards は1,769であり、重複canonicalタイプを含む実カードボードの重複は許容する。
+
+### 90.3 訓練結果（実測）
+条件は200ボード時と同一である。`lr=1e-3`、`epochs=50`、`batch_size=64`、`hidden_dim=256`、`card_embed_dim=32`、`dropout=0.3`、`weight_decay=1e-4`、`seed=42`。
+
+splitは train 1,592ボード / 1,614,210行、eval 177ボード / 181,001行。wall timeは158.83分。VRAM peakは訓練スクリプトが記録していないため未計測である。完了後の `nvidia-smi` 実測は 1,314 / 10,240 MiB。
+
+| epoch | train_loss | eval IP MAD | train IP MAD |
+|---:|---:|---:|---:|
+| 1 | 0.441587 | 0.119542 | 0.093452 |
+| 2 | 0.407197 | 0.114308 | 0.083722 |
+| 3 | 0.397416 | 0.107330 | 0.078865 |
+| 5 | 0.388536 | 0.102538 | 0.071179 |
+| 10 | 0.379742 | 0.101135 | 0.066047 |
+| 20 | 0.375299 | 0.096604 | 0.062505 |
+| 30 | 0.374091 | 0.096749 | 0.063979 |
+| 37 | 0.373338 | 0.093463 | 0.062181 |
+| 49 | 0.373146 | 0.093625 | 0.061096 |
+| 50 | 0.373073 | 0.094900 | 0.063460 |
+
+best epochは37で、eval IP MADは **0.093463**。finalは0.094900で、best比 +0.00144。finalとの乖離は小さく、過学習兆候はない。OOP eval MADは0.004705。
+
+### 90.4 スケーリング系列の確定
+dropout=0.3、weight_decay=1e-4の同一系列で、train boards 10→20→27→180→1,592 に対し、best eval IP MAD は 0.194→0.179→0.166→0.126→0.093 と単調改善した。
+
+| train boards | best eval IP MAD | epoch |
+|---:|---:|---:|
+| 10 | 0.194 | 34 |
+| 20 | 0.179 | 11 |
+| 27 | 0.166 | 10 |
+| 180 | 0.126 | 38 |
+| 1,592 | 0.093 | 37 |
+
+これにより、「同一シナリオ内ではデータ量が効く」ことが実測で確定した。
+
+### 90.5 判定: Strong Go
+Go/No-go基準は eval IP MAD < 0.10 を Strong Go とした。今回のbest eval IP MADは0.093463であり、基準をクリアした。
+
+判定は **Strong Go**。次フェーズはターン・リバー・他ノード設計へ移行する。
+
+### 90.6 残課題（全面成功ではない）
+(a) Bet 637 過小出力は改善したが未解消である。evalでは教師9.89%に対しモデル6.29%。200ボード時は教師12.3%に対しモデル4.0%であり、改善は明確だが残差はある。train側は教師10.25%に対しモデル10.38%まで一致しているため、容量不足ではなく汎化ギャップである。同一シナリオのデータ増加はこれで打ち止めであり、この軸での追加改善は不可。
+
+(b) evalのモデルばらつきがtrainより低い。action std meanは eval 0.126、train 0.160。未知ボードで平均に寄る傾向が残存している。
+
+(c) sum embedding衝突リスク（§89.8）は未修正のままこの結果である。ソート連結修正で改善余地があるため、次タスクで対応する。
+
+### 90.7 成果物
+訓練成果物は `results/poker_nn_1755boards_v1`。`training_log.jsonl`、`final_metrics.json`、`model.pt` を含む。
+
+訓練データ正本は `data/teacher_proto/flop_all_canonical/combined_train.jsonl`。行数は1,795,211で、canonicalカバレッジは1,755/1,755である。
