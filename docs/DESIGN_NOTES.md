@@ -6156,3 +6156,60 @@ solver実体は `C:\Users\user\Desktop\dev\poker-system` 側にのみ存在す�
 
 ### 92.8 次の再開点
 次の再開点はP3である。具体的には、flop solve木から抽出したturnノード戦略と、P1.6で出力したraw weightsから構成したレンジでの単体solve戦略を突き合わせる。turn/river各1ノードで、hand別戦略差分、exploitability、pot/stack計算根拠、chance跨ぎweightスケールを確認し、抽出データの正しさを独立検証する。
+
+## 93. P3系列の整合検証・品質ガード設計と制約追加（2026-07-06セッション）
+
+### 93.0 位置づけ
+本節は、§92で採用したB路線（CLI改修+flop再solve）の土台検証であるP3系列を記録する。目的は、multinode CLIで抽出したturn/riverノード戦略が教師として使える健全性を持つかを判定し、あわせてturn/river教師生成で用いる品質定義を具体化することである。
+
+### 93.1 P3: 整合検証の一次結果
+P3では、抽出ノードと単体solveの整合、およびCLIが返すpot/stackメタの検算を行った。pot/stackは、turnノードでpot 1210 / effective stack 9420、riverノードでpot 550 / effective stack 9750となり、パス上のアクション額からの手計算と一致した。
+
+chance跨ぎのraw weightは、non-block handについて差分0で不変であることを確認した。すなわち、chance card配布によってraw weightへ1/45等の確率スケールは掛からず、ブロックされたhandが0になるだけである。
+
+turnノードでは、抽出戦略とraw weightsから構成したレンジによる単体solveが実効的に整合し、weighted row MADは0.003535であった。一方、riverノードではweighted row MAD 0.064619の食い違いを検出した。食い違いは低weight handだけでなく、高weight handにも現れており、追加切り分けが必要となった。
+
+### 93.2 P3.1: 物差し検証
+P3.1では、river食い違いの原因候補として疑った「単体solveレンジへのnormalized混入（二重計上）」を検証した。結果として、turn/riverともに、単体solve requestのrange_oop/range_ipはraw_weightsから再構成したレンジとOOP/IP全handで差分0で一致した。したがって、normalized混入は棄却された。
+
+同時に、normalized_weightsから構成した値はrequest内レンジと一致しないことも確認した。これにより、単体solve検証で使うレンジの物差しはrawで確定した。
+
+ただし当時のresponseに含まれていた`ev`はhand別スカラーEVのみであり、合法アクション間のEV差を直接算出できなかった。そのため、食い違いがEV無差別handの均衡選択差なのか、真の構造的乖離なのかは判定不能であった。
+
+### 93.3 P3.2: アクション別EV出力
+P3.2では、`postflop_cli`にアクション別EV出力を追加した（コミット`ddf3eea`）。postflop-solverの`expected_values_detail(player)`はaction-major配列を返すため、CLI側でhands x actionsの`action_ev_matrix`へ変換し、`root_strategy`および`queried_nodes[].strategy`に追加した。
+
+自己検算として、各handについて`Σ(strategy × action_ev) = ev`を確認した。最大差は2.30e-04であり、許容1e-3内に収まった。P3保存済みrequestを新バイナリで再実行した回帰確認では、既存フィールドの差分は0であった。`solve_time_ms`のみ計測メタとして相違し、回帰対象外とした。
+
+responseサイズは、P3の5パス抽出で565,248 bytesから804,157 bytesへ増加した。増分は約239KBであり、おおむね+48KB/ノード、合計約161KB/ノードの規模である。新バイナリ`postflop_cli_multinode.exe`のSHA-256は`129C8483129CDC5A3A75F0C63D879CD98FE54C69C31F687BE9B637075A6654CE`である。旧`postflop_cli.exe`は不変であり、制約#12を維持した。
+
+### 93.4 P3.3/P3.4: river食い違いの3層分解
+P3.3/P3.4では、river食い違いをアクション別EVで再評価し、原因を3層に分解した。
+
+第一に、単体solve 0.5%の検証器具側の揺れが確認された。passive riverノードでは、単体solve品質を0.1%へ上げると、KdQcのrow MADは0.375から0.050へ、7h4hは0.324から0.013へ収束した。単体solve側の自己EV矛盾も、0.5%で0.392% pot、0.1%で0.114% pot、0.02%で0.022% potと単調に減少した。したがって、hand単位検証にroot exploitability 0.5%の単体solveをそのまま使うのは分解能不足である。
+
+第二に、良性の均衡多重性が存在する。5s3s型のhandでは、単体solve品質を上げても戦略row MADは残るが、アクションEVプロファイル上は別均衡の選択として説明できる部分がある。
+
+第三に、抽出側の低到達ノード局所収束不足が確認された。bet入りriverノードでは、抽出側の自己EV矛盾が2.33% potであり、単体solve品質を0.1%へ上げてもweighted EV gapは0.51%から0.54% potへ改善しなかった。これは単体solve 0.5%の揺れだけでは説明できず、flop solve木内の局所ノード品質を別途評価する必要がある。
+
+### 93.5 P3.5: 分布実測と0.25%不採用
+P3.5では、4sKcAhのturn/river代表ノード80件を抽出し、自己EV矛盾の分布とflop solve品質感度を実測した。内訳はturn 27 / river 53、passive 4 / bet 76である。
+
+0.5% solveでは、自己EV矛盾（pot比%）の分布はmedian 1.043、mean 4.666、p90 15.222、max 39.079であった。到達weightとの相関は、corr(log10 weight, 自己矛盾) = -0.394であり、低weightノードほど悪い傾向が見られた。
+
+同じ80ノードを0.25% solveで再抽出したところ、medianは0.231へ改善した。しかしtailは悪化し、p99 47.1、max 54.4となった。weight相関は-0.035まで薄れたが、bet系tailの問題は解決しなかった。コストはiterations 210から290、solve時間429秒から593秒へ増え、約+38%であった。
+
+このため、本番品質設定は0.5%を維持し、0.25%への引き上げは不採用とする。0.25%化は中央値やpassive系には効くが、リスク実体であるbet系tailに効かず、コスト増に見合わない。低到達ノードではweight自体も不安定であり、P3.4のbet入りノードではnormalized weightが56.60から1.98へ変化した。Ac3cでも、戦略はほぼ不変のままaction EV順位が揺れた。
+
+### 93.6 ノード品質ガードの確立
+turn/river教師生成では、root exploitabilityだけでは品質を十分に保証できない。したがって、ノード単位の品質ガードとして「手番プレイヤーの自己EV矛盾」を採用する。
+
+定義は、劣位アクションへの配分 × EV劣後幅を、手番プレイヤーのnormalized weightで加重平均した値であり、pot比%として評価する。この値は、multinode CLIの抽出出力（strategy、action_ev_matrix、normalized_weights、pot）だけから計算できるため、単体solveを追加せずに本番生成時のノード品質ガードとして使える。
+
+具体的な閾値とweight下限は、次フェーズのサンプリング設計で確定する。さらに、パイロット（#29）で複数ボードに対して分布を検証してから本番生成に進む。
+
+### 93.7 確定制約の追加
+本節の結果により、以下の制約を追加する。
+
+- #30: turn/river本番flop再solveの品質はtarget 0.5%（#24）を維持する。0.25%への引き上げは不採用とする（§93.5）。
+- #31: turn/riverサンプリングでは、到達weight下限とノード自己EV矛盾ガード（§93.6）の併用を必須とする。具体的な数値はサンプリング設計で確定する。
