@@ -66,6 +66,7 @@ struct RootStrategy {
     actions: Vec<String>,
     hands: Vec<String>,
     strategy_matrix: Vec<Vec<f64>>,
+    action_ev_matrix: Vec<Vec<f64>>,
     equity: Vec<f64>,
     ev: Vec<f64>,
     average_strategy: HashMap<String, f64>,
@@ -609,6 +610,15 @@ fn extract_strategy(game: &PostFlopGame) -> Result<RootStrategy, String> {
         }
     }
 
+    let action_ev_raw = game.expected_values_detail(current_player);
+    let mut action_ev_matrix = vec![vec![0.0; num_actions]; num_hands];
+    for action_idx in 0..num_actions {
+        for hand_idx in 0..num_hands {
+            let raw_idx = action_idx * num_hands + hand_idx;
+            action_ev_matrix[hand_idx][action_idx] = action_ev_raw[raw_idx] as f64;
+        }
+    }
+
     let equity: Vec<f64> = game
         .equity(current_player)
         .iter()
@@ -643,6 +653,7 @@ fn extract_strategy(game: &PostFlopGame) -> Result<RootStrategy, String> {
         actions,
         hands,
         strategy_matrix,
+        action_ev_matrix,
         equity,
         ev,
         average_strategy,
@@ -754,6 +765,8 @@ mod tests {
             nodes[1]["available_actions"],
             nodes[1]["strategy"]["actions"]
         );
+        assert_strategy_action_ev_shape_and_weighted_ev(&nodes[0]["strategy"]);
+        assert_strategy_action_ev_shape_and_weighted_ev(&nodes[1]["strategy"]);
         assert_eq!(
             nodes[0]["weights"].as_array().expect("weights array").len(),
             nodes[0]["strategy"]["hands"]
@@ -850,6 +863,7 @@ mod tests {
 
         assert_eq!(response["success"], true);
         assert!(response.get("root_strategy").is_some());
+        assert_strategy_action_ev_shape_and_weighted_ev(&response["root_strategy"]);
         assert!(response.get("node_strategy").is_none());
         assert_eq!(
             response["queried_nodes"]
@@ -858,5 +872,49 @@ mod tests {
                 .len(),
             0
         );
+    }
+
+    fn assert_strategy_action_ev_shape_and_weighted_ev(strategy: &Value) {
+        let actions_len = strategy["actions"].as_array().expect("actions array").len();
+        let hands_len = strategy["hands"].as_array().expect("hands array").len();
+        let strategy_matrix = strategy["strategy_matrix"]
+            .as_array()
+            .expect("strategy_matrix array");
+        let action_ev_matrix = strategy["action_ev_matrix"]
+            .as_array()
+            .expect("action_ev_matrix array");
+        let ev = strategy["ev"].as_array().expect("ev array");
+
+        assert_eq!(strategy_matrix.len(), hands_len);
+        assert_eq!(action_ev_matrix.len(), hands_len);
+        assert_eq!(ev.len(), hands_len);
+
+        for hand_idx in 0..hands_len {
+            let strategy_row = strategy_matrix[hand_idx]
+                .as_array()
+                .expect("strategy row array");
+            let action_ev_row = action_ev_matrix[hand_idx]
+                .as_array()
+                .expect("action ev row array");
+            assert_eq!(strategy_row.len(), actions_len);
+            assert_eq!(action_ev_row.len(), actions_len);
+
+            let weighted_ev = strategy_row
+                .iter()
+                .zip(action_ev_row.iter())
+                .map(|(probability, action_ev)| {
+                    probability.as_f64().expect("probability number")
+                        * action_ev.as_f64().expect("action ev number")
+                })
+                .sum::<f64>();
+            let scalar_ev = ev[hand_idx].as_f64().expect("scalar ev number");
+            assert!(
+                (weighted_ev - scalar_ev).abs() < 1e-3,
+                "weighted_ev={} scalar_ev={} hand_idx={}",
+                weighted_ev,
+                scalar_ev,
+                hand_idx
+            );
+        }
     }
 }
