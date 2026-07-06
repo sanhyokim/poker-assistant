@@ -6047,3 +6047,41 @@ Go/No-go基準は eval IP MAD < 0.10 を Strong Go とした。今回のbest eva
 訓練成果物は `results/poker_nn_1755boards_v1`。`training_log.jsonl`、`final_metrics.json`、`model.pt` を含む。
 
 訓練データ正本は `data/teacher_proto/flop_all_canonical/combined_train.jsonl`。行数は1,795,211で、canonicalカバレッジは1,755/1,755である。
+
+## 91. card embedding sum→ソート連結の実測検証と採否判断（2026-07-06セッション）
+
+### 91.0 位置づけ
+§89.8で指摘したsum embeddingの衝突リスクに対し、card index昇順ソート→embedding連結へ変更した実測検証である。該当修正はコミット `8ba860e`、入力次元は72→168、パラメータ数は144,132。v1（sum）と同一条件、すなわち1,755ボード、`lr=1e-3`、50epoch、`seed=42`で直接対比した。
+
+### 91.1 実測結果
+v2_concatのbest eval IP MADは **0.09679 (epoch 49)**、finalは0.09706。v1（sum）はbest **0.09346 (epoch 37)**、final 0.09490。同一データ・split・seedの直接対比で、v2は +0.0033 劣後した。
+
+wall timeは、訓練約3.2時間 + データロード約47分。2026-07-06 8:11起動、8:58訓練開始、12:15完了である。eval action std finalは0.1297（v1: 0.1258）で微増。train IP MAD finalは0.0621（v1: 0.0635）で、train側はv2がわずかに良い。
+
+### 91.2 アクション別確率（eval）
+v2_concatの `results/poker_nn_1755boards_v2_concat/final_metrics.json` を実測確認したが、evalのアクション別teacher/model平均は final_metrics に未記録である。従って、v2のteacher/model 4値は推測で補完しない。
+
+参照値として、v1のeval平均は teacher [0.4235, 0.4776, 0.0989, 0.0000] / model [0.4445, 0.4926, 0.0629, 0.0000]。actions順は [Check, Bet 330, Bet 637, AllIn]。
+
+### 91.3 判断: v1（sum）を正式版として維持、v2は不採用・保留
+正式モデルはv1成果物 `results/poker_nn_1755boards_v1/model.pt` を維持する。v2_concatは不採用・保留とする。
+
+理由は3点である。
+
+(a) sumの衝突は理論上の懸念であり、v1の0.09346はその懸念込みの実測である。現時点で実害は観測されていない。
+
+(b) 実害未観測の理論リスク解消と、実測 +0.0033 の悪化は交換に値しない。
+
+(c) v2のbestは最終盤のepoch 49であり、収束未了の可能性がある。epochs延長・lr調整で逆転する余地は未検証であるため、「連結が本質的に劣る」とは断定しない。
+
+コミット `8ba860e` はrevertしない。コード上はconcatが現行だが、正式モデルはv1成果物を採用する。
+
+### 91.4 深追いしない判断
+epochs延長などの追検証は行わず、ターン・リバー・他ノード設計フェーズへ進む。
+
+次フェーズでは、street対応・カード枚数可変を含む入力設計を再設計する。その際にembedding集約方式も設計に内包して再検討する。ここでv2をさらに詰めると二度手間になるため、深追いしない。
+
+### 91.5 運用注意: train_poker_nn.py の終了時ハング
+v2訓練では、成果物保存完了後にプロセスが終了せず残留した。2026-07-06 12:15時点で `model.pt`、`final_metrics.json`、`training_log.jsonl` は書込済みであり、成果物はディスク上で確定していた。残留プロセスはCPU微増のみで、手動killして問題なかった。
+
+原因は未調査である。DataLoader worker終了まわりの可能性は推測であり、未確認とする。長時間訓練後は、成果物保存確認に加えて残プロセス確認を運用に組み込む。調査は低優先の残課題とする。
