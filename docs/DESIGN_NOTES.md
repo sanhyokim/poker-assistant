@@ -6085,3 +6085,74 @@ epochs延長などの追検証は行わず、ターン・リバー・他ノー�
 v2訓練では、成果物保存完了後にプロセスが終了せず残留した。2026-07-06 12:15時点で `model.pt`、`final_metrics.json`、`training_log.jsonl` は書込済みであり、成果物はディスク上で確定していた。残留プロセスはCPU微増のみで、手動killして問題なかった。
 
 原因は未調査である。DataLoader worker終了まわりの可能性は推測であり、未確認とする。長時間訓練後は、成果物保存確認に加えて残プロセス確認を運用に組み込む。調査は低優先の残課題とする。
+
+## 92. ターン・リバー拡張のB路線確定とmultinode CLI基盤
+
+### 92.0 位置づけ
+本節は、フロップSFT完了後のターン・リバー拡張フェーズの設計記録である。§90でcanonical 1,755ボード訓練がStrong Goに到達し、§91でcard embedding連結案を保留してv1成果物を正式モデルとして維持する判断を行った。その次段階として、フロップ2ノードに閉じていた教師データ生成をターン・リバーへ拡張するための路線と、P1〜P1.6で確定したCLI基盤を記録する。
+
+### 92.1 路線決定: B(CLI改修+flop再solve)採用
+ターン・リバー教師データ生成は、B路線、すなわちCLI改修により1回のflop solve木から複数ノードを抽出し、必要ボードをflopから再solveする方式を採用する。
+
+理由は3点である。
+
+1. 保存済みflop responseにはターン・リバー部分木が含まれていない。response JSON上は `root_strategy` と `node_strategy` のみで、ゲーム木全体は出力時に破棄されていることを実測確認した。
+2. turn/river単体solve路線(A)は、単体solve自体の速度は速いが、到達レンジの条件付けが未解決である。到達レンジを誤ると、教師分布そのものが実戦分布と食い違い、毒データになる。
+3. flop solve木からの抽出は、同一solve内でレンジ更新とアクション条件付けが行われるため、レンジ整合が構造的に保証される。
+
+単体solveの実測では、solver公式設定(#23)かつ0.5%品質で、turnは平均0.862秒、riverは平均0.0153秒であった。§82.3の「turn約1.2秒 / river約40ms」の品質条件は、当時のログからは未確認のままである。
+
+### 92.2 リスク管理
+本番7日再solveの前に、以下4リスクをパイロットで潰す。全て緑になるまで本番生成には着火しない。
+
+1. 抽出戦略の正しさ: P3で、flop solve木から抽出したturn/riverノード戦略と、raw weightsから構成したレンジでの単体solveを突き合わせる。
+2. responseサイズ破綻: multinode出力によりresponseが巨大化するため、ノード数・weight配列・JSONサイズを実測し、サンプリング設計に反映する。
+3. 訓練側スキーマ未確定のまま生成してしまうリスク: アクション空間・weight・street表現をパイロットで固めてから本番再solveする。
+4. 時間見積もり違い: 代表ボードの抽出ノード数・responseサイズ・solve時間を実測し、1,755ボード本番のwall timeを再見積もりする。
+
+### 92.3 multinode CLI(P1, コミット `db29221`)
+P1では `postflop_cli` に `actions_played_many` を追加した。これは複数のアクションパスを1回のsolve後に辿り、各ノードの戦略を `queried_nodes` として返す機能である。
+
+各pathは既存 `actions_played` と同じ形式で、アクション文字列とchance card文字列の列として渡す。パス単位でエラーを分離し、あるpathが不正・chance node終端・terminal node到達で失敗しても、リクエスト全体は失敗させず当該要素に `error` を格納して続行する。`actions_played_many` 未指定時の挙動は完全に従来形式を維持する。
+
+保存済みrequestで回帰確認を行い、`exploitability`、`exploitability_pct`、`iterations_run`、root/nodeの平均戦略が旧responseと差分0で一致した。新バイナリは `solver/bin/postflop_cli_multinode.exe` として配置し、旧 `solver/bin/postflop_cli.exe` は不変のまま保持する(#12)。
+
+### 92.4 weight出力(P1.5+P1.6, コミット `888f4d6`)
+P1.5およびP1.6では、`queried_nodes` にレンジ再構成とサンプリング設計に必要なweight情報を追加した。最終的な成功要素は、従来の `path`、`available_actions`、`strategy` に加えて、以下を含む。
+
+- `current_player`
+- `hands_oop`, `hands_ip`
+- `raw_weights_oop`, `raw_weights_ip`
+- `normalized_weights_oop`, `normalized_weights_ip`
+- `pot`
+- `effective_stack_oop`, `effective_stack_ip`
+
+確定した定義は以下である。
+
+- raw weight: 初期レンジ重みと、そのpath上で当該プレイヤーが選択した戦略確率の積。rootではpekarstas初期レンジ重みと一致することを実測確認した。
+- normalized weight: raw weightに相手レンジとカードブロッカー効果を掛けた組合せ量。rootサンプルhandで、rawから再構成した値と出力値の差分0を確認した。
+- chance配布: raw weightに `1/45` 等のchance確率スケールは掛からない。配布カードを含むhandが0になるだけで、非ブロックhandのraw weightはchance前後で差分0であった。したがってstreet横断でもraw weightは同一物差しとして使える。
+
+P1.6後のresponseサイズは、同じ5成功pathで565,248 bytesであった。P1.5の390,125 bytesからの増分は175,123 bytesであり、おおむね113KB/ノード規模の見積もり材料として扱う。
+
+### 92.5 P2実測(全木規模)
+P2では、代表ボード `4sKcAh` についてmultinode抽出対象の木規模を測定した。代表カード1組でのノード数は848で、内訳はflop 22、turn 192、river 634であった。
+
+全カード展開に換算すると、1ボードあたり約150万ノード、1,755ボードでは約26億ノードとなる。さらにhand展開まで含めると約1.29T例に達するため、全木抽出は不可であり、サンプリングが必須である。
+
+設計中の方向は、到達weight加重サンプリング、turn/river canonical圧縮、street別目標総量の上限設定である。現時点の目安として、turn/river合計で1,000万〜1,500万例オーダーを上限候補とする。プロトタイプ列挙器は `data/teacher_proto/tr_probe/enumerate_multinode_tree.py` に残している。
+
+### 92.6 アクション空間の設計骨子(§89.6の具体化)
+ターン・リバー拡張では、アクションを絶対チップ額そのものではなく、solver設定#23由来の有限な役割語彙として表現する。
+
+候補語彙は、`Fold`、`Check`、`Call`、`Bet60%`、`BetGeometric`、`AllIn`、`Raise2.5x` などである。各教師例には、役割語彙に加えて絶対額とpot比を併記する。モデル出力は固定スロット+合法マスクとし、streetやノードごとの合法アクション差分はmaskで扱う。
+
+全streetを新スキーマで再solve・再生成する方針のため、新旧互換シムは不要である。既存のフロップ180万行は検証用対照としてread-only保持する。語彙の最終確定はパイロット実測後に行う。
+
+### 92.7 リポジトリ構成の訂正
+solver実体は `C:\Users\user\Desktop\dev\poker-system` 側にのみ存在することを実測確認した。`C:\dev\pokerrl-training` 側はsolverを絶対パス参照しているだけで、solverソース・バイナリの実体は持たない。
+
+したがって、`poker-system` は製品本体とsolverを含むメインリポジトリであり、docsはその一部である。従来snapshot内の「docsリポジトリ」という表現は不正確であり、今後は `poker-system` リポジトリ内docsとして扱う。
+
+### 92.8 次の再開点
+次の再開点はP3である。具体的には、flop solve木から抽出したturnノード戦略と、P1.6で出力したraw weightsから構成したレンジでの単体solve戦略を突き合わせる。turn/river各1ノードで、hand別戦略差分、exploitability、pot/stack計算根拠、chance跨ぎweightスケールを確認し、抽出データの正しさを独立検証する。
