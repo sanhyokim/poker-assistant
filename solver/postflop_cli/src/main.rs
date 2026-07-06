@@ -39,6 +39,7 @@ struct SolveRequest {
     bunching: Option<serde_json::Value>,
     enable_compression: Option<bool>,
     actions_played: Option<Vec<String>>,
+    actions_played_many: Option<Vec<Vec<String>>>,
 }
 
 #[derive(Serialize)]
@@ -307,6 +308,11 @@ fn process_request(line: &str) -> SolveResponse {
     } else {
         None
     };
+    let queried_nodes = if let Some(ref paths) = req.actions_played_many {
+        extract_queried_nodes(&mut game, paths)
+    } else {
+        Vec::new()
+    };
 
     SolveResponse {
         success: true,
@@ -320,8 +326,31 @@ fn process_request(line: &str) -> SolveResponse {
         iterations_run,
         root_strategy,
         node_strategy,
-        queried_nodes: Vec::new(),
+        queried_nodes,
     }
+}
+
+fn extract_queried_nodes(
+    game: &mut PostFlopGame,
+    paths: &[Vec<String>],
+) -> Vec<serde_json::Value> {
+    paths
+        .iter()
+        .map(|path| match navigate_and_extract(game, path) {
+            Ok(strategy) => {
+                let available_actions = strategy.actions.clone();
+                serde_json::json!({
+                    "path": path,
+                    "available_actions": available_actions,
+                    "strategy": strategy,
+                })
+            }
+            Err(error) => serde_json::json!({
+                "path": path,
+                "error": error,
+            }),
+        })
+        .collect()
 }
 
 fn navigate_and_extract(
@@ -573,4 +602,105 @@ fn elapsed_ms(started_at: Instant) -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::{json, Value};
+
+    fn base_request() -> Value {
+        json!({
+            "board": "QsJh2h",
+            "turn": null,
+            "river": null,
+            "range_oop": "66+,A8s+,AJo+",
+            "range_ip": "66+,A8s+,AJo+",
+            "starting_pot": 200,
+            "effective_stack": 900,
+            "flop_bet_sizes_oop": "60%,a",
+            "flop_bet_sizes_ip": "60%,a",
+            "flop_raise_sizes_oop": "2.5x",
+            "flop_raise_sizes_ip": "2.5x",
+            "turn_bet_sizes_oop": "60%,a",
+            "turn_bet_sizes_ip": "60%,a",
+            "turn_raise_sizes_oop": "2.5x",
+            "turn_raise_sizes_ip": "2.5x",
+            "river_bet_sizes_oop": "60%,a",
+            "river_bet_sizes_ip": "60%,a",
+            "river_raise_sizes_oop": "2.5x",
+            "river_raise_sizes_ip": "2.5x",
+            "rake_rate": 0.0,
+            "rake_cap": 0.0,
+            "add_allin_threshold": 1.5,
+            "force_allin_threshold": 0.15,
+            "merging_threshold": 0.1,
+            "max_iterations": 20,
+            "target_exploitability_pct": 99.0,
+            "timeout_ms": 3000,
+            "bunching": null
+        })
+    }
+
+    fn solve_value(request: Value) -> Value {
+        let response = process_request(&request.to_string());
+        serde_json::to_value(response).expect("response serializes")
+    }
+
+    #[test]
+    fn actions_played_many_returns_nodes_in_input_order() {
+        let mut request = base_request();
+        request["actions_played_many"] = json!([
+            ["Check"],
+            ["Check", "Check", "2c"],
+        ]);
+
+        let response = solve_value(request);
+        assert_eq!(response["success"], true);
+        let nodes = response["queried_nodes"].as_array().expect("queried_nodes array");
+        assert_eq!(nodes.len(), 2);
+        assert_eq!(nodes[0]["path"], json!(["Check"]));
+        assert_eq!(nodes[1]["path"], json!(["Check", "Check", "2c"]));
+        assert!(nodes[0].get("strategy").is_some());
+        assert!(nodes[1].get("strategy").is_some());
+        assert_eq!(nodes[0]["available_actions"], nodes[0]["strategy"]["actions"]);
+        assert_eq!(nodes[1]["available_actions"], nodes[1]["strategy"]["actions"]);
+    }
+
+    #[test]
+    fn actions_played_many_keeps_success_when_one_path_errors() {
+        let mut request = base_request();
+        request["actions_played_many"] = json!([
+            ["Check"],
+            ["NotARealAction"],
+        ]);
+
+        let response = solve_value(request);
+        assert_eq!(response["success"], true);
+        let nodes = response["queried_nodes"].as_array().expect("queried_nodes array");
+        assert_eq!(nodes.len(), 2);
+        assert!(nodes[0].get("strategy").is_some());
+        assert!(nodes[0].get("error").is_none());
+        assert!(nodes[1].get("strategy").is_none());
+        assert!(nodes[1]["error"]
+            .as_str()
+            .expect("error string")
+            .contains("action 'NotARealAction' not found"));
+    }
+
+    #[test]
+    fn request_without_actions_played_many_keeps_legacy_response_shape() {
+        let response = solve_value(base_request());
+
+        assert_eq!(response["success"], true);
+        assert!(response.get("root_strategy").is_some());
+        assert!(response.get("node_strategy").is_none());
+        assert_eq!(
+            response["queried_nodes"]
+                .as_array()
+                .expect("queried_nodes array")
+                .len(),
+            0
+        );
+    }
 }
