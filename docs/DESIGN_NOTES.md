@@ -6255,6 +6255,8 @@ SD-1では、turn/river canonical圧縮の前提を実測した。
 同型対応後、strategy_matrix、action_ev_matrix、raw_weights両側、normalized_weights両側の全フィールドで差分0であった。比較対象は452/502 handsで、missingは0であった。
 
 ### 94.3 圧縮方式の確定
+> **§96による再評価注記**: 本節の無損失性はturn圧縮については正しいが、river圧縮の群定義に過剰併合が判明した。正しい定義と種数（turn+river 2,554,656）は§96を正とする。#33の種数もこれに従い訂正する。
+
 SD-1の結果により、同型turn/riverカードは代表1枚のみ抽出する無損失圧縮を採用する。
 
 根拠は、§94.2のsolver同型性実測で差分0が確認されたことである。これは、CFRの決定的反復、solverの対称実装、スート対称なpekarstasレンジの帰結である。
@@ -6373,3 +6375,112 @@ SC-1で用いたBetGeometricの分類式はturn用である。SPEC初稿では�
 しかし、§4.9.6では全streetを新スキーマで再生成し、既存flop教師の`Bet 637`をBetGeometricへ写像可能とする。このままでは、flop再生成時に幾何ベットが分類不能となり、§4.9.5のフェイルセーフでflopノードが弾かれる矛盾が残る。
 
 コミット前確認でこの矛盾を検出したため、SPEC §4.9.4を修正した。BetGeometricはsolver設定`e`（幾何サイズ）の理論額とし、その理論額は残りstreet数に依存する。turnではSC-1で使った式を用いる。flop用の幾何式はconverter設計時に実測で確定する。riverでは幾何サイズはAllInと一致するため、BetGeometricは原則出現しない。万一出現した場合はフェイルセーフで検出する。
+
+## §96. river圧縮群の定義訂正（G_set→G_fix）と列挙器turn/river拡張
+
+### 96.0 位置づけ
+本節は、§94.3で採用したturn/river canonical圧縮のうち、river側の群定義を再評価し、正しい定義へ訂正した記録である。
+
+結論として、turn圧縮は§94.3のまま有効である。一方、river圧縮では、SD-1で用いた集合安定化群G_setではなく、turn固定群G_fixを正とする。これにより、turn+river代表総数は2,526,576から2,554,656へ訂正される。
+
+### 96.1 発見の経緯
+タスクA第一段階でSD-1の定義を確認した際、river軌道の群 `stabilizer(flop + [turn_rep])`、すなわちG_setに、turnカードをflopカードと入れ替える置換が混入しうるという数理的疑義がCommander確認で提起された。
+
+turnカードとflopカードは、同じ最終board集合に含まれていても、レンジの条件付けとなる歴史が異なる。flopはrootから存在する公開カードであり、turnはchanceを跨いで追加されたカードである。したがって、turnカードをflopカードと入れ替える置換は、固定された1本のsolve木上の同一局面への対称操作ではない。
+
+### 96.2 taskA_a1実測
+追加確認A-1では、`residual_symmetry_counts()`と同じ列挙フローで、以下の2つの群を比較した。
+
+```text
+G_set = stabilizer(flop + [turn_rep])
+G_fix = {σ ∈ stabilizer(flop) | σ(turn_rep) = turn_rep}
+```
+
+実測結果は以下である。
+
+```text
+G_set != G_fix となる (canonical flop, turn代表) 組: 2,353件
+turn代表総数: 63,193（不変）
+turn+river代表総数 by G_set: 2,526,576
+turn+river代表総数 by G_fix: 2,554,656
+差分: +28,080（+1.1%）
+所要時間: 56.71秒
+```
+
+具体例は以下である。
+
+```text
+1. flop 2c2d2h + turn 2s
+   G_set size 24 / G_fix size 6
+   river軌道数 12 -> 24
+   G_setはriver 5hと5sを同型として潰すが、5sはturnで初出のスートであり歴史が異なる。
+
+2. flop 3c2c2d + turn 3d
+   G_set size 4 / G_fix size 2
+   river軌道数 24 -> 35
+
+3. flop 3c2c2d + turn 2h
+   G_set size 2 / G_fix size 1
+   river軌道数 36 -> 48
+```
+
+### 96.3 判断
+river圧縮の正はG_fixである。G_fixは、flop集合を保存し、かつ具体的に配布されたturnカードを固定する群であり、固定された1本のsolve木の真の対称性に対応する。
+
+この訂正は、圧縮を弱める保守側の変更である。代表数は増えるが、過剰併合による教師汚染を避けられる。無損失性の原理自体は、§94.3のturn同型実証と同一である。
+
+### 96.4 §94.3との関係
+§94.3のうち、turn圧縮（63,193）、pekarstasレンジのスート対称性、AcKcQcでのsolver同型実証は有効である。
+
+誤りはriver側の群定義と総数のみである。したがって、§94.3は削除せず、再評価注記を付して残す。正しいriver定義と総数は本節を正とする。
+
+### 96.5 #33の訂正
+#33のcanonical圧縮種数を以下へ訂正する。
+
+```text
+turn代表総数: 63,193（不変）
+turn+river代表総数: 2,554,656
+```
+
+turnの圧縮率は26.5%減で不変である。turn+riverの圧縮率は、SD-1時点の38.8%減から、2,554,656 / 4,127,760 = 0.6189、すなわち38.11%減へ訂正する。
+
+総量#34（turn/river計1,200万例）への影響は、母集団+1.1%のみであり、枠組みは不変である。
+
+### 96.6 実装
+pokerrl-training側で、canonical列挙器のturn/river拡張を実装した。コミットは`632dada`である。
+
+追加APIは以下である。
+
+```text
+enumerate_canonical_turns(flop)
+enumerate_canonical_rivers(flop, turn)
+enumerate_canonical_turn_river_tree(flops=None)
+```
+
+`enumerate_canonical_rivers()`はG_fixを用いる。代表選定はSD-1と同一の`card_sort_key`（ランク降順、同ランクではcdhs順）であり、決定的である。
+
+全数検証では、以下がすべて一致した。
+
+```text
+canonical flops: 1,755
+stabilizer分布: {1: 286, 2: 1,170, 6: 299}
+turn代表総数: 63,193
+turn+river代表総数: 2,554,656
+```
+
+既存4テストファイルは47 passedで回帰なしであった。canonical新規テスト3件を追加したため、health check期待値は従来5ファイルで59 passedへ更新する。
+
+### 96.7 パイロット検証項目の追加
+パイロットでは、G_setで併合されていたriverペアを1件選び、solver実測比較を行う。
+
+候補例は、flop 2c2d2h + turn 2s におけるriver 5h vs 5sである。この2つが実際に異なる戦略を持つことを確認できれば、G_fix訂正が実務上も必要だったことの実証になる。
+
+### 96.8 成果物
+本節の実測・検証成果物は以下である。
+
+```text
+data\teacher_proto\tr_probe\schema_design\taskA_a1_*
+data\teacher_proto\tr_probe\schema_design\taskA_verify_*
+```
+
+これらは非追跡成果物であり、制約#26に従ってgit管理しない。
