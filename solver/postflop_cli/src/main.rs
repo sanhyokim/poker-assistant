@@ -71,6 +71,21 @@ struct RootStrategy {
     average_strategy: HashMap<String, f64>,
 }
 
+struct ExtractedNode {
+    strategy: RootStrategy,
+    weights: Vec<f64>,
+    hands_oop: Vec<String>,
+    hands_ip: Vec<String>,
+    raw_weights_oop: Vec<f64>,
+    raw_weights_ip: Vec<f64>,
+    normalized_weights_oop: Vec<f64>,
+    normalized_weights_ip: Vec<f64>,
+    current_player: String,
+    pot: i32,
+    effective_stack_oop: i32,
+    effective_stack_ip: i32,
+}
+
 fn main() {
     eprintln!("ready");
 
@@ -202,22 +217,16 @@ fn process_request(line: &str) -> SolveResponse {
         Ok(value) => value,
         Err(response) => return response,
     };
-    let turn_donk_sizes = match parse_donk_sizes(
-        req.turn_donk_sizes.as_deref(),
-        "turn donk",
-        started_at,
-    ) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
-    let river_donk_sizes = match parse_donk_sizes(
-        req.river_donk_sizes.as_deref(),
-        "river donk",
-        started_at,
-    ) {
-        Ok(value) => value,
-        Err(response) => return response,
-    };
+    let turn_donk_sizes =
+        match parse_donk_sizes(req.turn_donk_sizes.as_deref(), "turn donk", started_at) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
+    let river_donk_sizes =
+        match parse_donk_sizes(req.river_donk_sizes.as_deref(), "river donk", started_at) {
+            Ok(value) => value,
+            Err(response) => return response,
+        };
 
     let card_config = CardConfig {
         range: [range_oop, range_ip],
@@ -309,7 +318,7 @@ fn process_request(line: &str) -> SolveResponse {
         None
     };
     let queried_nodes = if let Some(ref paths) = req.actions_played_many {
-        extract_queried_nodes(&mut game, paths)
+        extract_queried_nodes(&mut game, paths, req.starting_pot, req.effective_stack)
     } else {
         Vec::new()
     };
@@ -333,23 +342,39 @@ fn process_request(line: &str) -> SolveResponse {
 fn extract_queried_nodes(
     game: &mut PostFlopGame,
     paths: &[Vec<String>],
+    starting_pot: i32,
+    effective_stack: i32,
 ) -> Vec<serde_json::Value> {
     paths
         .iter()
-        .map(|path| match navigate_and_extract(game, path) {
-            Ok(strategy) => {
-                let available_actions = strategy.actions.clone();
-                serde_json::json!({
+        .map(
+            |path| match navigate_and_extract_node(game, path, starting_pot, effective_stack) {
+                Ok(node) => {
+                    let strategy = node.strategy;
+                    let available_actions = strategy.actions.clone();
+                    serde_json::json!({
+                        "path": path,
+                        "available_actions": available_actions,
+                        "weights": node.weights,
+                        "current_player": node.current_player,
+                        "hands_oop": node.hands_oop,
+                        "hands_ip": node.hands_ip,
+                        "raw_weights_oop": node.raw_weights_oop,
+                        "raw_weights_ip": node.raw_weights_ip,
+                        "normalized_weights_oop": node.normalized_weights_oop,
+                        "normalized_weights_ip": node.normalized_weights_ip,
+                        "pot": node.pot,
+                        "effective_stack_oop": node.effective_stack_oop,
+                        "effective_stack_ip": node.effective_stack_ip,
+                        "strategy": strategy,
+                    })
+                }
+                Err(error) => serde_json::json!({
                     "path": path,
-                    "available_actions": available_actions,
-                    "strategy": strategy,
-                })
-            }
-            Err(error) => serde_json::json!({
-                "path": path,
-                "error": error,
-            }),
-        })
+                    "error": error,
+                }),
+            },
+        )
         .collect()
 }
 
@@ -357,6 +382,57 @@ fn navigate_and_extract(
     game: &mut PostFlopGame,
     actions_played: &[String],
 ) -> Result<RootStrategy, String> {
+    navigate_to_node(game, actions_played)?;
+    game.cache_normalized_weights();
+    extract_strategy(game)
+}
+
+fn navigate_and_extract_node(
+    game: &mut PostFlopGame,
+    actions_played: &[String],
+    starting_pot: i32,
+    effective_stack: i32,
+) -> Result<ExtractedNode, String> {
+    navigate_to_node(game, actions_played)?;
+    game.cache_normalized_weights();
+    let current_player = game.current_player();
+    let hands_oop = holes_to_strings(game.private_cards(0))
+        .map_err(|error| format!("OOP hand conversion error: {}", error))?;
+    let hands_ip = holes_to_strings(game.private_cards(1))
+        .map_err(|error| format!("IP hand conversion error: {}", error))?;
+    let raw_weights_oop = weights_to_f64(game.weights(0));
+    let raw_weights_ip = weights_to_f64(game.weights(1));
+    let normalized_weights_oop = weights_to_f64(game.normalized_weights(0));
+    let normalized_weights_ip = weights_to_f64(game.normalized_weights(1));
+    let weights = if current_player == 0 {
+        normalized_weights_oop.clone()
+    } else {
+        normalized_weights_ip.clone()
+    };
+    let total_bet_amount = game.total_bet_amount();
+    let current_player = if current_player == 0 { "OOP" } else { "IP" }.to_string();
+    let strategy = extract_strategy(game)?;
+    Ok(ExtractedNode {
+        strategy,
+        weights,
+        hands_oop,
+        hands_ip,
+        raw_weights_oop,
+        raw_weights_ip,
+        normalized_weights_oop,
+        normalized_weights_ip,
+        current_player,
+        pot: starting_pot + total_bet_amount[0] + total_bet_amount[1],
+        effective_stack_oop: effective_stack - total_bet_amount[0],
+        effective_stack_ip: effective_stack - total_bet_amount[1],
+    })
+}
+
+fn weights_to_f64(weights: &[f32]) -> Vec<f64> {
+    weights.iter().map(|v| *v as f64).collect()
+}
+
+fn navigate_to_node(game: &mut PostFlopGame, actions_played: &[String]) -> Result<(), String> {
     game.back_to_root();
 
     for (step, action_str) in actions_played.iter().enumerate() {
@@ -369,8 +445,9 @@ fn navigate_and_extract(
 
         if game.is_chance_node() {
             let card_str = action_str.trim();
-            let card = card_from_str(card_str)
-                .map_err(|e| format!("invalid chance card '{}' at step {}: {}", card_str, step, e))?;
+            let card = card_from_str(card_str).map_err(|e| {
+                format!("invalid chance card '{}' at step {}: {}", card_str, step, e)
+            })?;
             let possible = game.possible_cards();
             if possible & (1u64 << card) == 0 {
                 return Err(format!(
@@ -383,15 +460,13 @@ fn navigate_and_extract(
         }
 
         let available = game.available_actions();
-        let action_index = match_action(&available, action_str)
-            .ok_or_else(|| {
-                let available_strs: Vec<String> =
-                    available.iter().map(format_action).collect();
-                format!(
-                    "action '{}' not found at step {}. available: {:?}",
-                    action_str, step, available_strs
-                )
-            })?;
+        let action_index = match_action(&available, action_str).ok_or_else(|| {
+            let available_strs: Vec<String> = available.iter().map(format_action).collect();
+            format!(
+                "action '{}' not found at step {}. available: {:?}",
+                action_str, step, available_strs
+            )
+        })?;
         game.play(action_index);
     }
 
@@ -400,13 +475,10 @@ fn navigate_and_extract(
     }
 
     if game.is_chance_node() {
-        return Err(
-            "navigation ended at a chance node (turn/river deal pending)".to_string(),
-        );
+        return Err("navigation ended at a chance node (turn/river deal pending)".to_string());
     }
 
-    game.cache_normalized_weights();
-    extract_strategy(game)
+    Ok(())
 }
 
 fn match_action(available: &[Action], action_str: &str) -> Option<usize> {
@@ -428,7 +500,11 @@ fn match_action(available: &[Action], action_str: &str) -> Option<usize> {
         "bet" => {
             if let Some(target) = amount {
                 find_closest_sized(available, target, |a| {
-                    if let Action::Bet(v) = a { Some(*v) } else { None }
+                    if let Action::Bet(v) = a {
+                        Some(*v)
+                    } else {
+                        None
+                    }
                 })
             } else {
                 available.iter().position(|a| matches!(a, Action::Bet(_)))
@@ -437,7 +513,11 @@ fn match_action(available: &[Action], action_str: &str) -> Option<usize> {
         "raise" => {
             if let Some(target) = amount {
                 find_closest_sized(available, target, |a| {
-                    if let Action::Raise(v) = a { Some(*v) } else { None }
+                    if let Action::Raise(v) = a {
+                        Some(*v)
+                    } else {
+                        None
+                    }
                 })
             } else {
                 available.iter().position(|a| matches!(a, Action::Raise(_)))
@@ -488,14 +568,14 @@ fn parse_donk_sizes(
     started_at: Instant,
 ) -> Result<Option<DonkSizeOptions>, SolveResponse> {
     match donk_sizes.map(str::trim) {
-        Some(value) if !value.is_empty() => DonkSizeOptions::try_from(value)
-            .map(Some)
-            .map_err(|error| {
+        Some(value) if !value.is_empty() => {
+            DonkSizeOptions::try_from(value).map(Some).map_err(|error| {
                 error_response(
                     format!("invalid donk sizes for {}: {}", label, error),
                     started_at,
                 )
-            }),
+            })
+        }
         _ => Ok(None),
     }
 }
@@ -529,7 +609,11 @@ fn extract_strategy(game: &PostFlopGame) -> Result<RootStrategy, String> {
         }
     }
 
-    let equity: Vec<f64> = game.equity(current_player).iter().map(|v| *v as f64).collect();
+    let equity: Vec<f64> = game
+        .equity(current_player)
+        .iter()
+        .map(|v| *v as f64)
+        .collect();
     let ev: Vec<f64> = game
         .expected_values(current_player)
         .iter()
@@ -650,34 +734,106 @@ mod tests {
     #[test]
     fn actions_played_many_returns_nodes_in_input_order() {
         let mut request = base_request();
-        request["actions_played_many"] = json!([
-            ["Check"],
-            ["Check", "Check", "2c"],
-        ]);
+        request["actions_played_many"] = json!([["Check"], ["Check", "Check", "2c"],]);
 
         let response = solve_value(request);
         assert_eq!(response["success"], true);
-        let nodes = response["queried_nodes"].as_array().expect("queried_nodes array");
+        let nodes = response["queried_nodes"]
+            .as_array()
+            .expect("queried_nodes array");
         assert_eq!(nodes.len(), 2);
         assert_eq!(nodes[0]["path"], json!(["Check"]));
         assert_eq!(nodes[1]["path"], json!(["Check", "Check", "2c"]));
         assert!(nodes[0].get("strategy").is_some());
         assert!(nodes[1].get("strategy").is_some());
-        assert_eq!(nodes[0]["available_actions"], nodes[0]["strategy"]["actions"]);
-        assert_eq!(nodes[1]["available_actions"], nodes[1]["strategy"]["actions"]);
+        assert_eq!(
+            nodes[0]["available_actions"],
+            nodes[0]["strategy"]["actions"]
+        );
+        assert_eq!(
+            nodes[1]["available_actions"],
+            nodes[1]["strategy"]["actions"]
+        );
+        assert_eq!(
+            nodes[0]["weights"].as_array().expect("weights array").len(),
+            nodes[0]["strategy"]["hands"]
+                .as_array()
+                .expect("hands array")
+                .len()
+        );
+        assert_eq!(
+            nodes[1]["weights"].as_array().expect("weights array").len(),
+            nodes[1]["strategy"]["hands"]
+                .as_array()
+                .expect("hands array")
+                .len()
+        );
+        for node in nodes {
+            let hands_oop_len = node["hands_oop"].as_array().expect("hands_oop array").len();
+            let hands_ip_len = node["hands_ip"].as_array().expect("hands_ip array").len();
+            assert_eq!(
+                node["raw_weights_oop"]
+                    .as_array()
+                    .expect("raw_weights_oop array")
+                    .len(),
+                hands_oop_len
+            );
+            assert_eq!(
+                node["raw_weights_ip"]
+                    .as_array()
+                    .expect("raw_weights_ip array")
+                    .len(),
+                hands_ip_len
+            );
+            assert_eq!(
+                node["normalized_weights_oop"]
+                    .as_array()
+                    .expect("normalized_weights_oop array")
+                    .len(),
+                hands_oop_len
+            );
+            assert_eq!(
+                node["normalized_weights_ip"]
+                    .as_array()
+                    .expect("normalized_weights_ip array")
+                    .len(),
+                hands_ip_len
+            );
+            let current_player = node["current_player"]
+                .as_str()
+                .expect("current_player string");
+            let current_normalized = if current_player == "OOP" {
+                &node["normalized_weights_oop"]
+            } else {
+                &node["normalized_weights_ip"]
+            };
+            assert_eq!(node["weights"], *current_normalized);
+            assert!(node["pot"].as_i64().expect("pot integer") > 0);
+            assert!(
+                node["effective_stack_oop"]
+                    .as_i64()
+                    .expect("effective_stack_oop integer")
+                    >= 0
+            );
+            assert!(
+                node["effective_stack_ip"]
+                    .as_i64()
+                    .expect("effective_stack_ip integer")
+                    >= 0
+            );
+        }
     }
 
     #[test]
     fn actions_played_many_keeps_success_when_one_path_errors() {
         let mut request = base_request();
-        request["actions_played_many"] = json!([
-            ["Check"],
-            ["NotARealAction"],
-        ]);
+        request["actions_played_many"] = json!([["Check"], ["NotARealAction"],]);
 
         let response = solve_value(request);
         assert_eq!(response["success"], true);
-        let nodes = response["queried_nodes"].as_array().expect("queried_nodes array");
+        let nodes = response["queried_nodes"]
+            .as_array()
+            .expect("queried_nodes array");
         assert_eq!(nodes.len(), 2);
         assert!(nodes[0].get("strategy").is_some());
         assert!(nodes[0].get("error").is_none());
