@@ -6295,3 +6295,81 @@ action_ev_matrixと相手側weightsは、ガード計算後に破棄する。監
 - #32: turn/riverサンプリング閾値は、weight下限root比5e-4以上、かつ自己EV矛盾 <= 1.0% potとする。これは初期値であり、パイロット複数ボード検証で最終確定する（§94.1）。
 - #33: 同型turn/riverカードは代表1枚のみ抽出する。これは無損失圧縮として採用する（§94.3）。
 - #34: turn/river教師の初期目標総量は計1,200万例とする。内訳はturn 600万例、river 600万例であり、配分はパイロットで最終化する（§94.4）。
+
+## §95. turn/river新スキーマ正式仕様（7語彙・固定スロット・合法マスク）
+
+### 95.0 位置づけ
+本節は、§92.6で骨子化したturn/river用アクション空間を、SC-1実測に基づいて正式仕様へ落とした記録である。SPEC §4.9へ、turn/river教師スキーマとして反映した。
+
+対象成果物は、`data\teacher_proto\tr_probe\schema_design\`配下の`sc1_`プレフィックスファイルである。これは非追跡成果物であり、既存のp3_5 responseはread-onlyのまま解析した。
+
+### 95.1 SC-1実測結果
+SC-1では、p3_5の80ノードについて、`available_actions`を全件収集し、新スキーマ候補の7語彙で機械分類できるかを確認した。
+
+0.5%版responseでは、出現した生アクション文字列は41 distinctであった。全208 action entryが、以下の7語彙へ一意分類された。
+
+```text
+Fold
+Check
+Call
+Bet60%
+BetGeometric
+AllIn
+Raise2.5x
+```
+
+分類不能または曖昧なactionは0件であった。語彙別件数は、Fold 57、Check 23、Call 57、Bet60% 15、BetGeometric 4、AllIn 40、Raise2.5x 12である。
+
+1ノードあたりのaction数分布は、2 actionsが40ノード、3 actionsが32ノード、4 actionsが8ノードであった。最大は4 actionsである。これは理論上の上限とも一致する。非フェイシングでは `{Check, Bet60%, BetGeometric, AllIn}`、フェイシングでは `{Fold, Call, Raise2.5x, AllIn}` が最大構成である。
+
+0.5%版と0.25%版の同一80ノードで`available_actions`を比較したところ、差分は0件であった。したがって、action setはsolve品質設定に依存せず、ゲーム木構造から決まることを確認した。
+
+### 95.2 併合・消滅の実測
+SC-1では、実際に出力されたactionだけでなく、公式設定#23から理論的に候補となるactionが、stack制約やmergingにより消滅・併合されるケースも確認した。
+
+分類不能は0件であり、以下は語彙欠陥ではなく合法性の問題である。
+
+```text
+merged_with_nearby_size_within_0_1_pot: 6件
+missing: 46件
+candidate_exceeds_allin_total: 41件
+```
+
+0.1 pot以内で近接サイズへ併合された6件は以下である。
+
+```text
+Raise2.5x Raise 7015 -> AllIn 7687, diff/pot 0.0898
+Raise2.5x Raise 7390 -> AllIn 7562, diff/pot 0.0218
+Bet60% Bet 5280 -> AllIn 5625, diff/pot 0.0392
+Raise2.5x Raise 7015 -> AllIn 7687, diff/pot 0.0898
+Raise2.5x Raise 7015 -> AllIn 7687, diff/pot 0.0898
+Raise2.5x Raise 8250 -> AllIn 8925, diff/pot 0.0990
+```
+
+これらは、理論サイズが存在しても、実際のノードではAllInへ寄せられる、またはstack制約で出ないことを示す。したがって、新スキーマでは語彙slotを固定し、各ノードで合法マスクを持つ必要がある。
+
+### 95.3 7スロット採用の判断
+位置4スロット案は不採用とした。SC-1の最大action数は4であり、単純な出力次元だけを見れば4スロットでも足りる。しかし、位置スロット方式ではslotの意味が文脈依存になる。
+
+例えば、非フェイシングノードのslot 2はBet60%であり得るが、フェイシングノードのslot 2はRaise2.5xであり得る。同じ出力次元が別の戦略的意味を持つため、学習対象が不安定になる。
+
+したがって、意味固定7スロットと合法マスクを採用する。モデルは常に同じindexに同じ意味を出力し、非合法slotはmaskで0にする。金額は別フィールドとして絶対額とpot比を併記する。
+
+### 95.4 フェイルセーフ設計
+SC-1は4sKcAh単一flop由来の80ノードであり、全ボード・全ラインの完全証明ではない。そのため、本番生成ではフェイルセーフを入れる。
+
+分類不能または曖昧なactionを含むノードは保存しない。該当ノードは、path、street、pot、effective_stack、available_actions、分類不能理由をエラーログへ記録する。これにより、別ボードで語彙不足が起きた場合でも、教師汚染ではなく機械的な検出で止められる。
+
+パイロット生成の合格条件は分類エラー0件とする。
+
+### 95.5 確定制約の追加
+本節の結果により、以下の制約を追加する。
+
+- #35: turn/river新スキーマは、7語彙・意味固定7スロット・合法マスク・絶対額とpot比併記とする。分類不能ノードは保存しない（§95）。
+
+### 95.6 BetGeometric分類規則のstreet依存（コミット前修正）
+SC-1で用いたBetGeometricの分類式はturn用である。SPEC初稿では、これをstreet非依存の式であるかのように記載していた。
+
+しかし、§4.9.6では全streetを新スキーマで再生成し、既存flop教師の`Bet 637`をBetGeometricへ写像可能とする。このままでは、flop再生成時に幾何ベットが分類不能となり、§4.9.5のフェイルセーフでflopノードが弾かれる矛盾が残る。
+
+コミット前確認でこの矛盾を検出したため、SPEC §4.9.4を修正した。BetGeometricはsolver設定`e`（幾何サイズ）の理論額とし、その理論額は残りstreet数に依存する。turnではSC-1で使った式を用いる。flop用の幾何式はconverter設計時に実測で確定する。riverでは幾何サイズはAllInと一致するため、BetGeometricは原則出現しない。万一出現した場合はフェイルセーフで検出する。

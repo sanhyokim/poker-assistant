@@ -858,6 +858,149 @@ hero_cards_changed_after_recommendation
 active hand中に一時的に読めた別Heroカードで、確定済みHeroカードを即上書きしてはならない。
 ```
 
+---
+
+### 4.9 Turn/River教師スキーマ
+
+turn/river教師データは、PokerNet系の数値入力モデルで使用するため、意味固定のアクション語彙と合法マスクを持つ構造化JSONLとして生成する。
+
+#### 4.9.1 アクション語彙
+
+アクション語彙は7種類で固定する。indexは以下の通りであり、学習・評価・推論で変更してはならない。
+
+```text
+0 = Fold
+1 = Check
+2 = Call
+3 = Bet60%
+4 = BetGeometric
+5 = AllIn
+6 = Raise2.5x
+```
+
+#### 4.9.2 出力形式
+
+モデル出力は、意味固定7スロットと合法マスクを用いる。
+
+```text
+logits: [7]
+legal_mask: [7] bool
+probabilities: [7]
+```
+
+masked softmaxにより、非合法スロットの確率は0とする。位置スロット方式（available_actionsの1番目、2番目、...に意味を持たせる方式）は採用しない。各indexの意味は常に§4.9.1の語彙に固定する。
+
+#### 4.9.3 教師例フィールド
+
+turn/river教師例は、少なくとも以下のフィールドを持つ。
+
+```text
+path
+street
+board
+pot
+effective_stack
+available_actions
+legal_mask
+hands
+label.probabilities
+source_manifest
+```
+
+各フィールドの意味:
+
+```text
+path:
+  solver木上のノード到達パス。action文字列とchance card文字列の列。
+
+street:
+  "flop" / "turn" / "river" のいずれか。
+
+board:
+  5枚固定のboard表現。flop例ではturn/river枠をパディングする。
+
+pot:
+  ノード時点のpot額。
+
+effective_stack:
+  手番プレイヤーの残り有効スタック。
+
+available_actions:
+  合法アクションの配列。各要素は以下を持つ。
+    - vocab_id: §4.9.1の語彙ID
+    - amount: 絶対額。Fold / Check / Callでは原則null。ただしCall額を別途保持する場合はcall_amountで表す。
+    - pot_ratio: amount / pot。額なしアクションではnull。
+
+legal_mask:
+  7次元bool。合法な語彙slotのみtrue。
+
+hands:
+  手番プレイヤーのhand一覧。
+
+label.probabilities:
+  7次元の混合戦略分布。合法slot上で正規化し、非合法slotは0。
+
+source_manifest:
+  監査メタ。少なくともノード到達weight、自己EV矛盾値、solve exploitabilityを含む。
+```
+
+#### 4.9.4 アクション分類規則
+
+solverの金額付きaction文字列は、以下の規則で§4.9.1の語彙へ分類する。
+
+```text
+Fold:
+  action文字列 "Fold" と一致。
+
+Check:
+  action文字列 "Check" と一致。
+
+Call:
+  action文字列 "Call" と一致。
+
+Bet60%:
+  facing betでないノードにおいて、Bet額が round(pot * 0.60) と一致。
+
+BetGeometric:
+  facing betでないノードにおいて、Bet額がsolver設定 "e"（幾何サイズ）の理論額と一致。
+  幾何サイズの理論額は残りstreet数に依存する。
+  turn（残り2street）では、
+  round((-pot + sqrt(pot^2 + 2 * pot * stack)) / 2)
+  と一致する。
+  flop（残り3street）の式はconverter設計時に実測で確定する。
+  riverでは幾何サイズはAllInと一致するため、BetGeometricは原則出現しない。
+  万一出現した場合は§4.9.5のフェイルセーフで検出する。
+
+AllIn:
+  AllIn額が「現street投入済み額 + stack behind」と一致。
+
+Raise2.5x:
+  facing betノードにおいて、Raise額が
+  round(2.5 * 現street最大投入額)
+  と一致。
+```
+
+分類は完全一致を原則とする。ただし、solver側の丸め差を吸収するため、±1チップまでは許容しWARNINGログへ記録してよい。
+
+#### 4.9.5 フェイルセーフ
+
+分類不能または複数語彙に該当する曖昧なactionを含むノードは、教師データとして保存しない。該当ノードはエラーログへ記録し、path、street、pot、effective_stack、available_actions、分類不能理由を保存する。
+
+パイロット生成の合格条件は、分類エラー0件である。
+
+#### 4.9.6 既存flop教師との関係
+
+turn/river拡張では、全streetを新スキーマで再生成する。既存flop教師との互換シムは作らない。
+
+既存のflop教師180万行とPokerNet v1モデルは、read-onlyの対照成果物として維持する（制約#27）。既存4アクションは、新語彙index 1, 3, 4, 5へ写像できる。
+
+```text
+Check      -> 1 = Check
+Bet 330    -> 3 = Bet60%
+Bet 637    -> 4 = BetGeometric
+AllIn 9750 -> 5 = AllIn
+```
+
 
 ---
 
@@ -4196,6 +4339,8 @@ SOLVER STILL RUNNING
 
 
 ## 10A. PokerRL+GRPO推論ブリッジ
+
+> **【改訂予定注記】** 本章はLLM方式（DESIGN_NOTES §80以前）を前提とした記述を含み、PokerNet転換（DESIGN_NOTES §89）後の実態と乖離している。推論ブリッジ接続フェーズで全面改訂する。現時点の正はDESIGN_NOTES §89〜§95である。
 
 ### 10A.1 概要
 
