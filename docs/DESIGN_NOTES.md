@@ -6736,3 +6736,128 @@ teacher.jsonl: 6,102,290 bytes
 ```
 
 本番では成功boardの中間slimは削除する運用とする。失敗時には中間slimが残置されるため、連続失敗時は約5.7GB/boardの追加空きが必要になる。教師JSONLの累積は、4sKcAh実測を1,755 boardへ単純外挿すると約10.7GBである。
+
+## §98. パイロット判定と本番実行計画（P-1/P-2）
+
+### 98.1 P-1構成と結果
+P-1では、5boardでturn/river教師生成パイロットを行った。対象は、既存成果物を流用した `4sKcAh` と、新規に実行した `2c2d2h`、`AcKcQc`、`9c9d2h`、`Jc8c3d` である。
+
+`2c2d2h` と `AcKcQc` はcanonical代表そのものとして確認した。ペア系候補 `9h9d2s` はcanonical代表 `9c9d2h`、ツートーン候補 `Jh8h3c` はcanonical代表 `Jc8c3d` に照合した。なお、`4sKcAh` 自体はcanonical代表形ではなく、同型代表は `AcKd4h` である。本番リストは、必ず `enumerate_canonical_flops()` が返す1,755代表を使う。
+
+board別の主要実測値は以下である。
+
+```text
+board    exploitability  iter  wall秒    memory bytes     teacher rows
+4sKcAh   0.464054%       210   1,288.10  14,924,382,640   6,586
+2c2d2h   0.480804%       250     575.25   5,275,572,832   6,267
+AcKcQc   0.482178%       210     378.58   4,184,039,144   6,428
+9c9d2h   0.499409%       270   1,169.68   9,752,488,416   6,794
+Jc8c3d   0.491710%       180   1,318.29   9,378,344,688   6,691
+```
+
+新規4boardでは、wall time 378.58-1,318.29秒、メモリ4.18-9.75GBであった。5board全体では、全boardで分類エラー0件、teacher JSONLのhash決定性、recursive恒等式、スキーマ全行PASSを確認した。また、全boardで no_bet / single_bet / raised の3層すべてに候補が存在した。
+
+### 98.2 §96.7実証（G_fix訂正の実務的必要性）
+§96.7でパイロット項目に追加した、G_setで併合されていたriverペアの実測比較を行った。対象は `2c2d2h` + turn `2s` 配下のriver `5h` と `5s` である。
+
+抽出solve上の `5h` vs `5s` 比較では、weighted row MAD は `0.0071996819`、max row MAD は `0.4442404858`、最大差handは `Qh5h` であった。`5c` は `5h` 側の代表として同じ差分になった。
+
+さらに判定分解能を上げるため、各riverノードのraw weightsからrangeを構成し、river単体solve 0.1%で比較した。単体solveのexploitabilityは `5h` が `0.096576%`、`5s` が `0.094830%` であった。この0.1%単体solve比較では、weighted row MAD は `0.0150258769`、max row MAD は `0.2807614852`、最大差handは `Tc8h` であった。
+
+P3.1のturn整合値 `0.0035` 級と比べると、抽出比較で約2倍、単体solve 0.1%比較で約4倍である。したがって、G_setを採用したままなら、戦略の異なるriver局面を同一教師へ潰していたことが実務上も確認された。river圧縮群をturn固定群G_fixへ訂正した§96の判断は妥当である。
+
+### 98.3 §94.3留保の解消（bet入り同型）
+§94.3では、同型turnカード間のsolver出力一致をパッシブライン1組で実証していたが、bet入りラインでは留保が残っていた。P-1では、`AcKcQc` で `d` と `h` を入れ替えるスート置換を使い、bet入り同型スポットを追加検証した。
+
+比較対象は以下である。
+
+```text
+turn pair:
+  ["Check","Check","2d","Bet 330"]
+  ["Check","Check","2h","Bet 330"]
+
+river pair:
+  ["Check","Check","2d","Bet 330","Call","3d"]
+  ["Check","Check","2h","Bet 330","Call","3h"]
+```
+
+同型対応後、turn pair / river pair のいずれも、`strategy_matrix`、`action_ev_matrix`、`raw_weights_oop`、`raw_weights_ip`、`normalized_weights_oop`、`normalized_weights_ip` の全フィールド最大差は `0.0`、missing hand数は0であった。これにより、#33の同型圧縮の無損失性は、少なくともbet入りライン1組でも成立することを確認した。
+
+### 98.4 分布監査と#36判断
+5board合計のteacherは `32,766` 行、合計サイズは `30,305,571 bytes` であった。語彙別に、label確率が正である行数は以下である。
+
+```text
+Fold        7,596  23.18%
+Check      21,027  64.17%
+Call        6,541  19.96%
+Bet60%     19,409  59.24%
+BetGeo      7,155  21.84%
+AllIn       6,848  20.90%
+Raise2.5x   6,895  21.04%
+```
+
+7語彙すべてが出現し、Fold / Call / Raise2.5x も約2割の行で正ラベルを持った。したがって、#36への追加制約、例えば層別最低例数や語彙別カバレッジ保証は、この時点では不採用とする。現行の3層化 + 最低保証1ノードで、パイロット範囲では語彙カバレッジが回復している。
+
+自己EV矛盾は、#32ガードにより採用教師からは除外される。一方で、候補全体のriver側tailは残っており、board別maxは `4sKcAh` 39.59% pot、`2c2d2h` 20.55% pot、`AcKcQc` 14.78% pot、`9c9d2h` 23.35% pot、`Jc8c3d` 9.08% pot であった。本番でも、auditから自己EV矛盾tailの定期監査を行う。
+
+### 98.5 保存内容棚卸し
+P-1では、教師JSONL、audit、manifestの保存内容を、訓練、評価、推論ブリッジ、将来の再サンプリングの4観点で棚卸しした。
+
+訓練に必要な `path`、`street`、`board`、`pot`、`effective_stack`、`current_player`、`hand`、`available_actions`、`legal_mask`、`label.probabilities`、および `source_manifest` の到達weight root比、自己EV矛盾値、solve exploitability は保存されている。評価に必要な教師確率、合法マスク、アクション情報、street/path/board/hand も保存されている。推論ブリッジで参照しうる語彙ID、絶対額、pot比、pot、effective stack も保持されている。
+
+再サンプリングについては、auditに `path`、`street`、`layer`、`reason`、`root_ratio`、`self_ev_contradiction_pct_pot`、`example_count` が残るため、非採用ノードをpathから再抽出できる。非採用ノードの `strategy_matrix`、`action_ev_matrix`、`available_actions` は保存しないが、これはサイズ削減のための設計判断であり、pathから再クエリ可能である。前回フロップ生成で問題になった「後から取り出せない」構造にはしていない。
+
+teacher JSONLへの `action_ev_matrix` 追加は不採用とする。確率評価には不要であり、EV診断が必要な場合はsolverから再抽出する方が、保存サイズ増に対して妥当である。
+
+### 98.6 P-2並列実験と#25の理解更新
+§82.5での#25制定理由は、同一timeoutの並列実行でiterationが減り、exploitabilityが悪化したことであった。今回のP-2では、現構成のtarget exploitability駆動パイプラインで、並列化が品質ではなく時間にどう転嫁されるかを確認した。
+
+実験boardは、canonical代表かつ未使用の対称性強board `3c3d3h` と `KcQcJc` である。単独直列2本と、同じ2boardの2並列1セットを比較した。
+
+```text
+3c3d3h:
+  single exploitability 0.493613%, iter 340, teacher hash 4342F63C...
+  parallel exploitability 0.493613%, iter 340, teacher hash 4342F63C...
+
+KcQcJc:
+  single exploitability 0.463469%, iter 220, teacher hash E8D38B44...
+  parallel exploitability 0.463469%, iter 220, teacher hash E8D38B44...
+```
+
+並列時も品質、iteration、teacher hash は完全一致した。2並列の合計メモリピークは `15,620,771,840 bytes`、約 `14.548 GiB` であり、搭載RAM約31.86GiBの範囲内に収まった。
+
+しかし、速度面では効果が小さかった。単独直列合計は `1,078.951` 秒、並列wallは `968.284` 秒であり、短縮率は `10.26%` に留まった。判定基準として置いた20%以上の短縮に届かないため、本番では並列運転を不採用とし、#25を維持する。
+
+ただし、#25の理解は更新する。現構成での並列は「壊れる」または「品質が落ちる」ものではなく、target exploitabilityにより品質は維持される一方、CPU飽和によりほとんど速くならないものとみなす。付随知見として、`3c3d3h` はstabilizer size 6であっても wall `669.974` 秒、iter 340であり、対称性の強さと計算コストは単純には相関しない。本番時間見積は対称性タイプではなく、実測分布に基づいて行う。
+
+### 98.7 本番実行計画（案A確定）
+本番は案A、すなわち直列・分割運用を採用する。
+
+本番boardリストは、`enumerate_canonical_flops()` が返す1,755代表を使う。パイロットに含まれた `4sKcAh` のような非代表形は、本番リストには直接含めない。
+
+実行は、まず先行バッチ100boardで行う。先行バッチでは、エラー率、分類エラー、時間分布、メモリ、audit tail、語彙分布、層別採用分布を確認し、継続可否を判断する。その後、本体はresume前提の日次バッチに分割し、着火と再開はユーザー手動で行う。
+
+5boardパイロットの平均wallは `945.98` 秒/boardであり、1,755boardへの単純外挿は約 `19.2` 日である。実測レンジとして、最軽board外挿は約 `7.69` 日、最重board外挿は約 `26.78` 日である。これは見積であり、100board先行バッチで更新する。
+
+保存量の見積は、teacher累積が約 `9.9 GiB`、Stage2一時slimはmedian `3.47 GiB`/board、max `5.28 GiB`/boardである。成功boardでは中間slimを削除するが、失敗時は残置されるため、日次でディスク空きと失敗残置を確認する。
+
+運用チェック項目は以下とする。
+
+```text
+日次確認:
+  completed / failed / remaining board数
+  board別wall timeとメモリ
+  exploitabilityとiteration
+  classification_errors
+  recursive恒等式
+  teacher行数と語彙分布
+  auditの自己EV矛盾tail
+  Cドライブ空きと失敗時slim残置
+```
+
+### 98.8 制約の判断記録
+P-1/P-2により、以下を判断として記録する。
+
+- #25は維持する。現構成では2並列でも品質・hashは一致するが、短縮率が `10.26%` と小さく、本番短縮策として採用しない（§98.6）。
+- #32のweight下限と自己EV矛盾ガードは維持する。5board合計で、weight下限未満としてCLI側で枝刈りされたノードはStage1 `5,997` 件、Stage2 `322,616` 件であった。これら非保存ノードの個別分布はauditには残していないが、#32通過後の候補に対する自己EV矛盾tailはauditで監査可能であり、パイロットでは緩和不要と判断した。
+- #36への追加制約は不採用とする。5board合計で7語彙すべてが出現し、Fold / Call / Raise2.5x も約2割の正ラベルを持ったため、層別最低例数や語彙別カバレッジ保証は先行バッチ100boardの監査結果を見るまで追加しない（§98.4）。
