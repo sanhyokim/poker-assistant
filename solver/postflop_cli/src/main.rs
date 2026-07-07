@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{File, OpenOptions};
 use std::io::{self, BufRead, BufWriter, Write};
 use std::time::{Duration, Instant};
@@ -44,6 +44,9 @@ struct SolveRequest {
     output_jsonl_path: Option<String>,
     output_mode: Option<String>,
     error_jsonl_path: Option<String>,
+    expand_same_street: Option<bool>,
+    expansion_min_weight_root_ratio: Option<f64>,
+    expansion_max_depth: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -84,6 +87,28 @@ struct JsonlSummaryResponse {
     error_nodes: usize,
     error_count: usize,
     errors: Vec<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expand_same_street: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expansion_min_weight_root_ratio: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expansion_max_depth: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root_baseline_oop: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    root_baseline_ip: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    visited_nodes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expanded_nodes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pruned_nodes: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terminal_edges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chance_edges: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_expansion_depth_observed: Option<usize>,
 }
 
 #[derive(Serialize)]
@@ -123,9 +148,29 @@ struct QueryWriteResult {
     written_nodes: usize,
     error_nodes: usize,
     errors: Vec<serde_json::Value>,
+    visited_nodes: usize,
+    expanded_nodes: usize,
+    pruned_nodes: usize,
+    terminal_edges: usize,
+    chance_edges: usize,
+    max_expansion_depth_observed: usize,
+    root_baseline_oop: Option<f64>,
+    root_baseline_ip: Option<f64>,
 }
 
 const ERROR_SAMPLE_LIMIT: usize = 20;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum NavigationEnd {
+    Player,
+    Terminal,
+    Chance,
+}
+
+struct FrontierPath {
+    path: Vec<String>,
+    depth: usize,
+}
 
 impl OutputMode {
     fn as_str(self) -> &'static str {
@@ -143,6 +188,14 @@ impl QueryWriteResult {
             written_nodes: 0,
             error_nodes: 0,
             errors: Vec::new(),
+            visited_nodes: 0,
+            expanded_nodes: 0,
+            pruned_nodes: 0,
+            terminal_edges: 0,
+            chance_edges: 0,
+            max_expansion_depth_observed: 0,
+            root_baseline_oop: None,
+            root_baseline_ip: None,
         }
     }
 
@@ -417,23 +470,49 @@ fn process_request(line: &str) -> serde_json::Value {
     } else {
         None
     };
+    if req.output_jsonl_path.is_none() && req.expand_same_street.unwrap_or(false) {
+        return legacy_error_value(
+            "expand_same_street requires output_jsonl_path".to_string(),
+            started_at,
+        );
+    }
     if let Some(ref output_jsonl_path) = req.output_jsonl_path {
         let output_mode = match parse_output_mode(req.output_mode.as_deref()) {
             Ok(value) => value,
             Err(error) => return legacy_error_value(error, started_at),
         };
         let paths = req.actions_played_many.as_deref().unwrap_or(&[]);
-        let write_result = match write_queried_nodes_jsonl(
-            &mut game,
-            paths,
-            req.starting_pot,
-            req.effective_stack,
-            output_jsonl_path,
-            req.error_jsonl_path.as_deref(),
-            output_mode,
-        ) {
-            Ok(value) => value,
-            Err(error) => return legacy_error_value(error, started_at),
+        let expand_same_street = req.expand_same_street.unwrap_or(false);
+        let expansion_min_weight_root_ratio = req.expansion_min_weight_root_ratio.unwrap_or(0.0);
+        let expansion_max_depth = req.expansion_max_depth.unwrap_or(32);
+        let write_result = if expand_same_street {
+            match write_expanded_same_street_jsonl(
+                &mut game,
+                paths,
+                req.starting_pot,
+                req.effective_stack,
+                output_jsonl_path,
+                req.error_jsonl_path.as_deref(),
+                output_mode,
+                expansion_min_weight_root_ratio,
+                expansion_max_depth,
+            ) {
+                Ok(value) => value,
+                Err(error) => return legacy_error_value(error, started_at),
+            }
+        } else {
+            match write_queried_nodes_jsonl(
+                &mut game,
+                paths,
+                req.starting_pot,
+                req.effective_stack,
+                output_jsonl_path,
+                req.error_jsonl_path.as_deref(),
+                output_mode,
+            ) {
+                Ok(value) => value,
+                Err(error) => return legacy_error_value(error, started_at),
+            }
         };
         let response = JsonlSummaryResponse {
             success: true,
@@ -452,6 +531,18 @@ fn process_request(line: &str) -> serde_json::Value {
             error_nodes: write_result.error_nodes,
             error_count: write_result.error_nodes,
             errors: write_result.errors,
+            expand_same_street: expand_same_street.then_some(true),
+            expansion_min_weight_root_ratio: expand_same_street.then_some(expansion_min_weight_root_ratio),
+            expansion_max_depth: expand_same_street.then_some(expansion_max_depth),
+            root_baseline_oop: write_result.root_baseline_oop,
+            root_baseline_ip: write_result.root_baseline_ip,
+            visited_nodes: expand_same_street.then_some(write_result.visited_nodes),
+            expanded_nodes: expand_same_street.then_some(write_result.expanded_nodes),
+            pruned_nodes: expand_same_street.then_some(write_result.pruned_nodes),
+            terminal_edges: expand_same_street.then_some(write_result.terminal_edges),
+            chance_edges: expand_same_street.then_some(write_result.chance_edges),
+            max_expansion_depth_observed: expand_same_street
+                .then_some(write_result.max_expansion_depth_observed),
         };
         return serde_json::to_value(response).expect("summary response serializes");
     }
@@ -574,6 +665,170 @@ fn write_queried_nodes_jsonl(
     Ok(result)
 }
 
+fn write_expanded_same_street_jsonl(
+    game: &mut PostFlopGame,
+    paths: &[Vec<String>],
+    starting_pot: i32,
+    effective_stack: i32,
+    output_jsonl_path: &str,
+    error_jsonl_path: Option<&str>,
+    output_mode: OutputMode,
+    min_weight_root_ratio: f64,
+    max_depth: usize,
+) -> Result<QueryWriteResult, String> {
+    let baselines = compute_root_baselines(game)?;
+    let output_file = create_new_file(output_jsonl_path, "output_jsonl_path")?;
+    let mut output_writer = BufWriter::new(output_file);
+    let mut error_writer = match error_jsonl_path {
+        Some(path) => Some(BufWriter::new(create_new_file(path, "error_jsonl_path")?)),
+        None => None,
+    };
+    let mut result = QueryWriteResult::new(paths.len());
+    result.root_baseline_oop = Some(baselines[0]);
+    result.root_baseline_ip = Some(baselines[1]);
+
+    let mut frontier = VecDeque::new();
+    let mut seen = HashSet::new();
+    for path in paths {
+        let key = path_key(path);
+        if seen.insert(key) {
+            frontier.push_back(FrontierPath {
+                path: path.clone(),
+                depth: 0,
+            });
+        }
+    }
+
+    while let Some(item) = frontier.pop_front() {
+        match navigate_to_any_end(game, &item.path) {
+            Ok(NavigationEnd::Terminal) => {
+                result.terminal_edges += 1;
+                continue;
+            }
+            Ok(NavigationEnd::Chance) => {
+                result.chance_edges += 1;
+                continue;
+            }
+            Ok(NavigationEnd::Player) => {}
+            Err(error) => {
+                write_path_error(&mut result, error_writer.as_mut(), &item.path, error)?;
+                continue;
+            }
+        }
+
+        result.visited_nodes += 1;
+        result.max_expansion_depth_observed =
+            result.max_expansion_depth_observed.max(item.depth);
+        game.cache_normalized_weights();
+        let node = match extract_current_node(game, starting_pot, effective_stack) {
+            Ok(value) => value,
+            Err(error) => {
+                write_path_error(&mut result, error_writer.as_mut(), &item.path, error)?;
+                continue;
+            }
+        };
+        let root_ratio = root_ratio_for_node(&node, baselines);
+        if root_ratio < min_weight_root_ratio {
+            result.pruned_nodes += 1;
+            continue;
+        }
+
+        let actions = node.strategy.actions.clone();
+        let value = serialize_extracted_node(&item.path, node, output_mode);
+        serde_json::to_writer(&mut output_writer, &value)
+            .map_err(|error| format!("output_jsonl serialize error: {}", error))?;
+        output_writer
+            .write_all(b"\n")
+            .map_err(|error| format!("output_jsonl write error: {}", error))?;
+        output_writer
+            .flush()
+            .map_err(|error| format!("output_jsonl flush error: {}", error))?;
+        result.written_nodes += 1;
+
+        if item.depth >= max_depth {
+            continue;
+        }
+        for action in actions {
+            let mut child_path = item.path.clone();
+            child_path.push(action);
+            let key = path_key(&child_path);
+            if seen.insert(key) {
+                frontier.push_back(FrontierPath {
+                    path: child_path,
+                    depth: item.depth + 1,
+                });
+                result.expanded_nodes += 1;
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+fn write_path_error(
+    result: &mut QueryWriteResult,
+    error_writer: Option<&mut BufWriter<File>>,
+    path: &[String],
+    error: String,
+) -> Result<(), String> {
+    let value = serde_json::json!({
+        "path": path,
+        "error": error,
+    });
+    result.error_nodes += 1;
+    if let Some(writer) = error_writer {
+        serde_json::to_writer(&mut *writer, &value)
+            .map_err(|error| format!("error_jsonl serialize error: {}", error))?;
+        writer
+            .write_all(b"\n")
+            .map_err(|error| format!("error_jsonl write error: {}", error))?;
+        writer
+            .flush()
+            .map_err(|error| format!("error_jsonl flush error: {}", error))?;
+    } else {
+        result.push_error_sample(value);
+    }
+    Ok(())
+}
+
+fn path_key(path: &[String]) -> String {
+    serde_json::to_string(path).expect("path serializes")
+}
+
+fn compute_root_baselines(game: &mut PostFlopGame) -> Result<[f64; 2], String> {
+    let root: Vec<String> = Vec::new();
+    navigate_to_node(game, &root)?;
+    game.cache_normalized_weights();
+    let oop = game
+        .normalized_weights(0)
+        .iter()
+        .map(|value| *value as f64)
+        .sum::<f64>();
+
+    let check = vec!["Check".to_string()];
+    navigate_to_node(game, &check)?;
+    game.cache_normalized_weights();
+    let ip = game
+        .normalized_weights(1)
+        .iter()
+        .map(|value| *value as f64)
+        .sum::<f64>();
+    Ok([oop, ip])
+}
+
+fn root_ratio_for_node(node: &ExtractedNode, baselines: [f64; 2]) -> f64 {
+    let (weights, baseline) = if node.current_player == "OOP" {
+        (&node.normalized_weights_oop, baselines[0])
+    } else {
+        (&node.normalized_weights_ip, baselines[1])
+    };
+    if baseline <= 0.0 {
+        0.0
+    } else {
+        weights.iter().sum::<f64>() / baseline
+    }
+}
+
 fn create_new_file(path: &str, label: &str) -> Result<File, String> {
     OpenOptions::new()
         .write(true)
@@ -653,6 +908,14 @@ fn navigate_and_extract_node(
 ) -> Result<ExtractedNode, String> {
     navigate_to_node(game, actions_played)?;
     game.cache_normalized_weights();
+    extract_current_node(game, starting_pot, effective_stack)
+}
+
+fn extract_current_node(
+    game: &mut PostFlopGame,
+    starting_pot: i32,
+    effective_stack: i32,
+) -> Result<ExtractedNode, String> {
     let current_player = game.current_player();
     let hands_oop = holes_to_strings(game.private_cards(0))
         .map_err(|error| format!("OOP hand conversion error: {}", error))?;
@@ -737,6 +1000,53 @@ fn navigate_to_node(game: &mut PostFlopGame, actions_played: &[String]) -> Resul
     }
 
     Ok(())
+}
+
+fn navigate_to_any_end(
+    game: &mut PostFlopGame,
+    actions_played: &[String],
+) -> Result<NavigationEnd, String> {
+    game.back_to_root();
+
+    for (step, action_str) in actions_played.iter().enumerate() {
+        if game.is_terminal_node() {
+            return Ok(NavigationEnd::Terminal);
+        }
+
+        if game.is_chance_node() {
+            let card_str = action_str.trim();
+            let card = card_from_str(card_str).map_err(|e| {
+                format!("invalid chance card '{}' at step {}: {}", card_str, step, e)
+            })?;
+            let possible = game.possible_cards();
+            if possible & (1u64 << card) == 0 {
+                return Err(format!(
+                    "card '{}' is not a possible deal at step {}",
+                    card_str, step
+                ));
+            }
+            game.play(card as usize);
+            continue;
+        }
+
+        let available = game.available_actions();
+        let action_index = match_action(&available, action_str).ok_or_else(|| {
+            let available_strs: Vec<String> = available.iter().map(format_action).collect();
+            format!(
+                "action '{}' not found at step {}. available: {:?}",
+                action_str, step, available_strs
+            )
+        })?;
+        game.play(action_index);
+    }
+
+    if game.is_terminal_node() {
+        Ok(NavigationEnd::Terminal)
+    } else if game.is_chance_node() {
+        Ok(NavigationEnd::Chance)
+    } else {
+        Ok(NavigationEnd::Player)
+    }
 }
 
 fn match_action(available: &[Action], action_str: &str) -> Option<usize> {
@@ -1281,6 +1591,110 @@ mod tests {
             .as_str()
             .expect("error string")
             .contains("failed to create output_jsonl_path"));
+    }
+
+    #[test]
+    fn recursive_jsonl_expands_same_street_and_counts_identity() {
+        let output_path = temp_path("recursive_nodes");
+        let mut request = base_request();
+        request["actions_played_many"] = json!([["Check", "Check", "2c"]]);
+        request["output_jsonl_path"] = json!(output_path);
+        request["output_mode"] = json!("slim");
+        request["expand_same_street"] = json!(true);
+        request["expansion_min_weight_root_ratio"] = json!(0.0);
+        request["expansion_max_depth"] = json!(1);
+
+        let response = solve_value(request);
+        assert_eq!(response["success"], true);
+        assert_eq!(response["expand_same_street"], true);
+        assert_eq!(response["expansion_max_depth"], 1);
+        assert!(response["root_baseline_oop"].as_f64().expect("oop baseline") > 0.0);
+        assert!(response["root_baseline_ip"].as_f64().expect("ip baseline") > 0.0);
+        let visited = response["visited_nodes"].as_u64().expect("visited");
+        let written = response["written_nodes"].as_u64().expect("written");
+        let pruned = response["pruned_nodes"].as_u64().expect("pruned");
+        let errors = response["error_nodes"].as_u64().expect("errors");
+        assert_eq!(visited, written + pruned + errors);
+        assert!(response["expanded_nodes"].as_u64().expect("expanded") > 0);
+        assert!(written > 1);
+
+        let output_path = response["output_jsonl_path"]
+            .as_str()
+            .expect("output path string");
+        let lines = read_jsonl(output_path);
+        fs::remove_file(output_path).ok();
+        assert_eq!(lines.len() as u64, written);
+        assert!(lines
+            .iter()
+            .any(|line| line["path"].as_array().expect("path").len() > 3));
+    }
+
+    #[test]
+    fn recursive_jsonl_prunes_by_weight_threshold() {
+        let output_path = temp_path("recursive_pruned");
+        let mut request = base_request();
+        request["actions_played_many"] = json!([["Check", "Check", "2c"]]);
+        request["output_jsonl_path"] = json!(output_path);
+        request["output_mode"] = json!("slim");
+        request["expand_same_street"] = json!(true);
+        request["expansion_min_weight_root_ratio"] = json!(2.0);
+        request["expansion_max_depth"] = json!(2);
+
+        let response = solve_value(request);
+        assert_eq!(response["success"], true);
+        let visited = response["visited_nodes"].as_u64().expect("visited");
+        let written = response["written_nodes"].as_u64().expect("written");
+        let pruned = response["pruned_nodes"].as_u64().expect("pruned");
+        let errors = response["error_nodes"].as_u64().expect("errors");
+        assert_eq!(visited, written + pruned + errors);
+        assert_eq!(written, 0);
+        assert!(pruned > 0);
+        let output_path = response["output_jsonl_path"]
+            .as_str()
+            .expect("output path string");
+        let lines = read_jsonl(output_path);
+        fs::remove_file(output_path).ok();
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn recursive_jsonl_reports_terminal_and_chance_edges() {
+        let output_path = temp_path("recursive_edges");
+        let mut request = base_request();
+        request["actions_played_many"] = json!([["Check", "Check", "2c"]]);
+        request["output_jsonl_path"] = json!(output_path);
+        request["output_mode"] = json!("slim");
+        request["expand_same_street"] = json!(true);
+        request["expansion_min_weight_root_ratio"] = json!(0.0);
+        request["expansion_max_depth"] = json!(3);
+
+        let response = solve_value(request);
+        assert_eq!(response["success"], true);
+        let terminal = response["terminal_edges"].as_u64().expect("terminal");
+        let chance = response["chance_edges"].as_u64().expect("chance");
+        assert!(terminal + chance > 0);
+        let visited = response["visited_nodes"].as_u64().expect("visited");
+        let written = response["written_nodes"].as_u64().expect("written");
+        let pruned = response["pruned_nodes"].as_u64().expect("pruned");
+        let errors = response["error_nodes"].as_u64().expect("errors");
+        assert_eq!(visited, written + pruned + errors);
+        let output_path = response["output_jsonl_path"]
+            .as_str()
+            .expect("output path string");
+        fs::remove_file(output_path).ok();
+    }
+
+    #[test]
+    fn recursive_without_jsonl_is_rejected() {
+        let mut request = base_request();
+        request["expand_same_street"] = json!(true);
+
+        let response = solve_value(request);
+        assert_eq!(response["success"], false);
+        assert!(response["error"]
+            .as_str()
+            .expect("error string")
+            .contains("expand_same_street requires output_jsonl_path"));
     }
 
     fn assert_strategy_action_ev_shape_and_weighted_ev(strategy: &Value) {
