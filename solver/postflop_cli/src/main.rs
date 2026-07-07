@@ -1,5 +1,6 @@
 use std::collections::HashMap;
-use std::io::{self, BufRead, Write};
+use std::fs::{File, OpenOptions};
+use std::io::{self, BufRead, BufWriter, Write};
 use std::time::{Duration, Instant};
 
 use postflop_solver::*;
@@ -40,6 +41,9 @@ struct SolveRequest {
     enable_compression: Option<bool>,
     actions_played: Option<Vec<String>>,
     actions_played_many: Option<Vec<Vec<String>>>,
+    output_jsonl_path: Option<String>,
+    output_mode: Option<String>,
+    error_jsonl_path: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -59,6 +63,27 @@ struct SolveResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     node_strategy: Option<RootStrategy>,
     queried_nodes: Vec<serde_json::Value>,
+}
+
+#[derive(Serialize)]
+struct JsonlSummaryResponse {
+    success: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    exploitability: f64,
+    exploitability_pct: f64,
+    solve_time_ms: u64,
+    memory_usage_bytes: u64,
+    memory_uncompressed: u64,
+    memory_compressed: u64,
+    iterations_run: u32,
+    output_jsonl_path: String,
+    output_mode: String,
+    requested_nodes: usize,
+    written_nodes: usize,
+    error_nodes: usize,
+    error_count: usize,
+    errors: Vec<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -85,6 +110,62 @@ struct ExtractedNode {
     pot: i32,
     effective_stack_oop: i32,
     effective_stack_ip: i32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OutputMode {
+    Full,
+    Slim,
+}
+
+struct QueryWriteResult {
+    requested_nodes: usize,
+    written_nodes: usize,
+    error_nodes: usize,
+    errors: Vec<serde_json::Value>,
+}
+
+const ERROR_SAMPLE_LIMIT: usize = 20;
+
+impl OutputMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            OutputMode::Full => "full",
+            OutputMode::Slim => "slim",
+        }
+    }
+}
+
+impl QueryWriteResult {
+    fn new(requested_nodes: usize) -> Self {
+        Self {
+            requested_nodes,
+            written_nodes: 0,
+            error_nodes: 0,
+            errors: Vec::new(),
+        }
+    }
+
+    fn push_error_sample(&mut self, value: serde_json::Value) {
+        if self.errors.len() < ERROR_SAMPLE_LIMIT {
+            self.errors.push(value);
+        }
+    }
+}
+
+fn parse_output_mode(value: Option<&str>) -> Result<OutputMode, String> {
+    match value.unwrap_or("full").to_ascii_lowercase().as_str() {
+        "full" => Ok(OutputMode::Full),
+        "slim" => Ok(OutputMode::Slim),
+        other => Err(format!(
+            "invalid output_mode '{}': expected full or slim",
+            other
+        )),
+    }
+}
+
+fn legacy_error_value(error: String, started_at: Instant) -> serde_json::Value {
+    serde_json::to_value(error_response(error, started_at)).expect("error response serializes")
 }
 
 fn main() {
@@ -127,25 +208,31 @@ fn main() {
     }
 }
 
-fn process_request(line: &str) -> SolveResponse {
+fn process_request(line: &str) -> serde_json::Value {
     let started_at = Instant::now();
     let req = match serde_json::from_str::<SolveRequest>(line) {
         Ok(value) => value,
-        Err(error) => return error_response(format!("json parse error: {}", error), started_at),
+        Err(error) => {
+            return serde_json::to_value(error_response(
+                format!("json parse error: {}", error),
+                started_at,
+            ))
+            .expect("error response serializes")
+        }
     };
     let _ = &req.bunching;
 
     let flop = match flop_from_str(&req.board) {
         Ok(value) => value,
-        Err(error) => return error_response(format!("invalid board: {}", error), started_at),
+        Err(error) => return legacy_error_value(format!("invalid board: {}", error), started_at),
     };
     let turn = match optional_card_from_str(req.turn.as_deref(), "turn") {
         Ok(value) => value,
-        Err(error) => return error_response(error, started_at),
+        Err(error) => return legacy_error_value(error, started_at),
     };
     let river = match optional_card_from_str(req.river.as_deref(), "river") {
         Ok(value) => value,
-        Err(error) => return error_response(error, started_at),
+        Err(error) => return legacy_error_value(error, started_at),
     };
     let initial_state = if river != NOT_DEALT {
         BoardState::River
@@ -157,11 +244,15 @@ fn process_request(line: &str) -> SolveResponse {
 
     let range_oop = match req.range_oop.parse::<Range>() {
         Ok(value) => value,
-        Err(error) => return error_response(format!("invalid range_oop: {}", error), started_at),
+        Err(error) => {
+            return legacy_error_value(format!("invalid range_oop: {}", error), started_at)
+        }
     };
     let range_ip = match req.range_ip.parse::<Range>() {
         Ok(value) => value,
-        Err(error) => return error_response(format!("invalid range_ip: {}", error), started_at),
+        Err(error) => {
+            return legacy_error_value(format!("invalid range_ip: {}", error), started_at)
+        }
     };
 
     let flop_bet_sizes_oop = match parse_bet_sizes(
@@ -171,7 +262,7 @@ fn process_request(line: &str) -> SolveResponse {
         started_at,
     ) {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return serde_json::to_value(response).expect("error response serializes"),
     };
     let flop_bet_sizes_ip = match parse_bet_sizes(
         &req.flop_bet_sizes_ip,
@@ -180,7 +271,7 @@ fn process_request(line: &str) -> SolveResponse {
         started_at,
     ) {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return serde_json::to_value(response).expect("error response serializes"),
     };
     let turn_bet_sizes_oop = match parse_bet_sizes(
         &req.turn_bet_sizes_oop,
@@ -189,7 +280,7 @@ fn process_request(line: &str) -> SolveResponse {
         started_at,
     ) {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return serde_json::to_value(response).expect("error response serializes"),
     };
     let turn_bet_sizes_ip = match parse_bet_sizes(
         &req.turn_bet_sizes_ip,
@@ -198,7 +289,7 @@ fn process_request(line: &str) -> SolveResponse {
         started_at,
     ) {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return serde_json::to_value(response).expect("error response serializes"),
     };
     let river_bet_sizes_oop = match parse_bet_sizes(
         &req.river_bet_sizes_oop,
@@ -207,7 +298,7 @@ fn process_request(line: &str) -> SolveResponse {
         started_at,
     ) {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return serde_json::to_value(response).expect("error response serializes"),
     };
     let river_bet_sizes_ip = match parse_bet_sizes(
         &req.river_bet_sizes_ip,
@@ -216,17 +307,21 @@ fn process_request(line: &str) -> SolveResponse {
         started_at,
     ) {
         Ok(value) => value,
-        Err(response) => return response,
+        Err(response) => return serde_json::to_value(response).expect("error response serializes"),
     };
     let turn_donk_sizes =
         match parse_donk_sizes(req.turn_donk_sizes.as_deref(), "turn donk", started_at) {
             Ok(value) => value,
-            Err(response) => return response,
+            Err(response) => {
+                return serde_json::to_value(response).expect("error response serializes")
+            }
         };
     let river_donk_sizes =
         match parse_donk_sizes(req.river_donk_sizes.as_deref(), "river donk", started_at) {
             Ok(value) => value,
-            Err(response) => return response,
+            Err(response) => {
+                return serde_json::to_value(response).expect("error response serializes")
+            }
         };
 
     let card_config = CardConfig {
@@ -253,11 +348,15 @@ fn process_request(line: &str) -> SolveResponse {
 
     let action_tree = match ActionTree::new(tree_config) {
         Ok(value) => value,
-        Err(error) => return error_response(format!("action tree error: {}", error), started_at),
+        Err(error) => {
+            return legacy_error_value(format!("action tree error: {}", error), started_at)
+        }
     };
     let mut game = match PostFlopGame::with_config(card_config, action_tree) {
         Ok(value) => value,
-        Err(error) => return error_response(format!("game config error: {}", error), started_at),
+        Err(error) => {
+            return legacy_error_value(format!("game config error: {}", error), started_at)
+        }
     };
 
     let (memory_uncompressed, memory_compressed) = game.memory_usage();
@@ -300,7 +399,7 @@ fn process_request(line: &str) -> SolveResponse {
 
     let root_strategy = match extract_strategy(&game) {
         Ok(value) => Some(value),
-        Err(error) => return error_response(error, started_at),
+        Err(error) => return legacy_error_value(error, started_at),
     };
 
     let node_strategy = if let Some(ref actions) = req.actions_played {
@@ -318,13 +417,52 @@ fn process_request(line: &str) -> SolveResponse {
     } else {
         None
     };
+    if let Some(ref output_jsonl_path) = req.output_jsonl_path {
+        let output_mode = match parse_output_mode(req.output_mode.as_deref()) {
+            Ok(value) => value,
+            Err(error) => return legacy_error_value(error, started_at),
+        };
+        let paths = req.actions_played_many.as_deref().unwrap_or(&[]);
+        let write_result = match write_queried_nodes_jsonl(
+            &mut game,
+            paths,
+            req.starting_pot,
+            req.effective_stack,
+            output_jsonl_path,
+            req.error_jsonl_path.as_deref(),
+            output_mode,
+        ) {
+            Ok(value) => value,
+            Err(error) => return legacy_error_value(error, started_at),
+        };
+        let response = JsonlSummaryResponse {
+            success: true,
+            error: None,
+            exploitability: final_exploitability,
+            exploitability_pct,
+            solve_time_ms: elapsed_ms(started_at),
+            memory_usage_bytes,
+            memory_uncompressed,
+            memory_compressed,
+            iterations_run,
+            output_jsonl_path: output_jsonl_path.clone(),
+            output_mode: output_mode.as_str().to_string(),
+            requested_nodes: write_result.requested_nodes,
+            written_nodes: write_result.written_nodes,
+            error_nodes: write_result.error_nodes,
+            error_count: write_result.error_nodes,
+            errors: write_result.errors,
+        };
+        return serde_json::to_value(response).expect("summary response serializes");
+    }
+
     let queried_nodes = if let Some(ref paths) = req.actions_played_many {
         extract_queried_nodes(&mut game, paths, req.starting_pot, req.effective_stack)
     } else {
         Vec::new()
     };
 
-    SolveResponse {
+    serde_json::to_value(SolveResponse {
         success: true,
         error: None,
         exploitability: final_exploitability,
@@ -337,7 +475,8 @@ fn process_request(line: &str) -> SolveResponse {
         root_strategy,
         node_strategy,
         queried_nodes,
-    }
+    })
+    .expect("solve response serializes")
 }
 
 fn extract_queried_nodes(
@@ -377,6 +516,124 @@ fn extract_queried_nodes(
             },
         )
         .collect()
+}
+
+fn write_queried_nodes_jsonl(
+    game: &mut PostFlopGame,
+    paths: &[Vec<String>],
+    starting_pot: i32,
+    effective_stack: i32,
+    output_jsonl_path: &str,
+    error_jsonl_path: Option<&str>,
+    output_mode: OutputMode,
+) -> Result<QueryWriteResult, String> {
+    let output_file = create_new_file(output_jsonl_path, "output_jsonl_path")?;
+    let mut output_writer = BufWriter::new(output_file);
+    let mut error_writer = match error_jsonl_path {
+        Some(path) => Some(BufWriter::new(create_new_file(path, "error_jsonl_path")?)),
+        None => None,
+    };
+    let mut result = QueryWriteResult::new(paths.len());
+
+    for path in paths {
+        match navigate_and_extract_node(game, path, starting_pot, effective_stack) {
+            Ok(node) => {
+                let value = serialize_extracted_node(path, node, output_mode);
+                serde_json::to_writer(&mut output_writer, &value)
+                    .map_err(|error| format!("output_jsonl serialize error: {}", error))?;
+                output_writer
+                    .write_all(b"\n")
+                    .map_err(|error| format!("output_jsonl write error: {}", error))?;
+                output_writer
+                    .flush()
+                    .map_err(|error| format!("output_jsonl flush error: {}", error))?;
+                result.written_nodes += 1;
+            }
+            Err(error) => {
+                let value = serde_json::json!({
+                    "path": path,
+                    "error": error,
+                });
+                result.error_nodes += 1;
+                if let Some(writer) = error_writer.as_mut() {
+                    serde_json::to_writer(&mut *writer, &value)
+                        .map_err(|error| format!("error_jsonl serialize error: {}", error))?;
+                    writer
+                        .write_all(b"\n")
+                        .map_err(|error| format!("error_jsonl write error: {}", error))?;
+                    writer
+                        .flush()
+                        .map_err(|error| format!("error_jsonl flush error: {}", error))?;
+                } else {
+                    result.push_error_sample(value);
+                }
+            }
+        }
+    }
+
+    Ok(result)
+}
+
+fn create_new_file(path: &str, label: &str) -> Result<File, String> {
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|error| format!("failed to create {} '{}': {}", label, path, error))
+}
+
+fn serialize_extracted_node(
+    path: &[String],
+    node: ExtractedNode,
+    output_mode: OutputMode,
+) -> serde_json::Value {
+    match output_mode {
+        OutputMode::Full => serialize_full_node(path, node),
+        OutputMode::Slim => serialize_slim_node(path, node),
+    }
+}
+
+fn serialize_full_node(path: &[String], node: ExtractedNode) -> serde_json::Value {
+    let strategy = node.strategy;
+    let available_actions = strategy.actions.clone();
+    serde_json::json!({
+        "path": path,
+        "available_actions": available_actions,
+        "weights": node.weights,
+        "current_player": node.current_player,
+        "hands_oop": node.hands_oop,
+        "hands_ip": node.hands_ip,
+        "raw_weights_oop": node.raw_weights_oop,
+        "raw_weights_ip": node.raw_weights_ip,
+        "normalized_weights_oop": node.normalized_weights_oop,
+        "normalized_weights_ip": node.normalized_weights_ip,
+        "pot": node.pot,
+        "effective_stack_oop": node.effective_stack_oop,
+        "effective_stack_ip": node.effective_stack_ip,
+        "strategy": strategy,
+    })
+}
+
+fn serialize_slim_node(path: &[String], node: ExtractedNode) -> serde_json::Value {
+    let strategy = node.strategy;
+    let available_actions = strategy.actions;
+    let (hands, normalized_weights) = if node.current_player == "OOP" {
+        (node.hands_oop, node.normalized_weights_oop)
+    } else {
+        (node.hands_ip, node.normalized_weights_ip)
+    };
+    serde_json::json!({
+        "path": path,
+        "available_actions": available_actions,
+        "current_player": node.current_player,
+        "hands": hands,
+        "strategy_matrix": strategy.strategy_matrix,
+        "action_ev_matrix": strategy.action_ev_matrix,
+        "normalized_weights": normalized_weights,
+        "pot": node.pot,
+        "effective_stack_oop": node.effective_stack_oop,
+        "effective_stack_ip": node.effective_stack_ip,
+    })
 }
 
 fn navigate_and_extract(
@@ -703,6 +960,8 @@ fn elapsed_ms(started_at: Instant) -> u64 {
 mod tests {
     use super::*;
     use serde_json::{json, Value};
+    use std::fs;
+    use std::path::PathBuf;
 
     fn base_request() -> Value {
         json!({
@@ -738,8 +997,29 @@ mod tests {
     }
 
     fn solve_value(request: Value) -> Value {
-        let response = process_request(&request.to_string());
-        serde_json::to_value(response).expect("response serializes")
+        process_request(&request.to_string())
+    }
+
+    fn temp_path(name: &str) -> String {
+        let mut path: PathBuf = std::env::temp_dir();
+        path.push(format!(
+            "postflop_cli_{}_{}_{}.jsonl",
+            name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("time ok")
+                .as_nanos()
+        ));
+        path.to_string_lossy().into_owned()
+    }
+
+    fn read_jsonl(path: &str) -> Vec<Value> {
+        fs::read_to_string(path)
+            .expect("jsonl file exists")
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("jsonl line parses"))
+            .collect()
     }
 
     #[test]
@@ -872,6 +1152,135 @@ mod tests {
                 .len(),
             0
         );
+    }
+
+    #[test]
+    fn jsonl_slim_output_writes_summary_and_nodes() {
+        let output_path = temp_path("slim_nodes");
+        let mut request = base_request();
+        request["actions_played_many"] = json!([["Check"], ["Check", "Check", "2c"],]);
+        request["output_jsonl_path"] = json!(output_path);
+        request["output_mode"] = json!("slim");
+
+        let response = solve_value(request);
+        assert_eq!(response["success"], true);
+        assert_eq!(response["output_mode"], "slim");
+        assert_eq!(response["requested_nodes"], 2);
+        assert_eq!(response["written_nodes"], 2);
+        assert_eq!(response["error_nodes"], 0);
+        assert_eq!(response["error_count"], 0);
+        assert_eq!(response["queried_nodes"], Value::Null);
+
+        let output_path = response["output_jsonl_path"]
+            .as_str()
+            .expect("output path string");
+        let lines = read_jsonl(output_path);
+        fs::remove_file(output_path).ok();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0]["path"], json!(["Check"]));
+        assert!(lines[0].get("hands").is_some());
+        assert!(lines[0].get("strategy_matrix").is_some());
+        assert!(lines[0].get("action_ev_matrix").is_some());
+        assert!(lines[0].get("normalized_weights").is_some());
+        assert!(lines[0].get("raw_weights_oop").is_none());
+        assert!(lines[0].get("strategy").is_none());
+        assert_eq!(
+            lines[0]["hands"].as_array().expect("hands array").len(),
+            lines[0]["normalized_weights"]
+                .as_array()
+                .expect("normalized weights array")
+                .len()
+        );
+    }
+
+    #[test]
+    fn jsonl_full_output_matches_legacy_node_shape() {
+        let output_path = temp_path("full_nodes");
+        let mut request = base_request();
+        request["actions_played_many"] = json!([["Check"]]);
+        request["output_jsonl_path"] = json!(output_path);
+        request["output_mode"] = json!("full");
+
+        let response = solve_value(request);
+        assert_eq!(response["success"], true);
+        assert_eq!(response["requested_nodes"], 1);
+        assert_eq!(response["written_nodes"], 1);
+        assert_eq!(response["error_nodes"], 0);
+
+        let output_path = response["output_jsonl_path"]
+            .as_str()
+            .expect("output path string");
+        let lines = read_jsonl(output_path);
+        fs::remove_file(output_path).ok();
+        assert_eq!(lines.len(), 1);
+        let node = &lines[0];
+        assert!(node.get("strategy").is_some());
+        assert!(node.get("hands_oop").is_some());
+        assert!(node.get("hands_ip").is_some());
+        assert!(node.get("raw_weights_oop").is_some());
+        assert!(node.get("normalized_weights_ip").is_some());
+        assert_eq!(node["available_actions"], node["strategy"]["actions"]);
+    }
+
+    #[test]
+    fn jsonl_output_keeps_path_errors_separate_and_counts_identity() {
+        let output_path = temp_path("slim_nodes_with_error");
+        let error_path = temp_path("slim_errors");
+        let mut request = base_request();
+        request["actions_played_many"] = json!([["Check"], ["NotARealAction"],]);
+        request["output_jsonl_path"] = json!(output_path);
+        request["error_jsonl_path"] = json!(error_path);
+        request["output_mode"] = json!("slim");
+
+        let response = solve_value(request);
+        assert_eq!(response["success"], true);
+        let requested = response["requested_nodes"].as_u64().expect("requested int");
+        let written = response["written_nodes"].as_u64().expect("written int");
+        let errors = response["error_nodes"].as_u64().expect("error int");
+        assert_eq!(requested, written + errors);
+        assert_eq!(requested, 2);
+        assert_eq!(written, 1);
+        assert_eq!(errors, 1);
+        assert_eq!(
+            response["errors"].as_array().expect("summary errors").len(),
+            0
+        );
+
+        let output_path = response["output_jsonl_path"]
+            .as_str()
+            .expect("output path string");
+        let output_lines = read_jsonl(output_path);
+        let error_lines = read_jsonl(&error_path);
+        fs::remove_file(output_path).ok();
+        fs::remove_file(error_path).ok();
+        assert_eq!(output_lines.len(), 1);
+        assert_eq!(error_lines.len(), 1);
+        assert!(error_lines[0]["error"]
+            .as_str()
+            .expect("error string")
+            .contains("NotARealAction"));
+    }
+
+    #[test]
+    fn jsonl_output_refuses_to_overwrite_existing_file() {
+        let output_path = temp_path("existing");
+        fs::write(&output_path, "already here").expect("write temp file");
+        let mut request = base_request();
+        request["actions_played_many"] = json!([["Check"]]);
+        request["output_jsonl_path"] = json!(output_path);
+        request["output_mode"] = json!("slim");
+        let output_path = request["output_jsonl_path"]
+            .as_str()
+            .expect("output path string")
+            .to_string();
+
+        let response = solve_value(request);
+        fs::remove_file(output_path).ok();
+        assert_eq!(response["success"], false);
+        assert!(response["error"]
+            .as_str()
+            .expect("error string")
+            .contains("failed to create output_jsonl_path"));
     }
 
     fn assert_strategy_action_ev_shape_and_weighted_ev(strategy: &Value) {
