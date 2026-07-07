@@ -6484,3 +6484,255 @@ data\teacher_proto\tr_probe\schema_design\taskA_verify_*
 ```
 
 これらは非追跡成果物であり、制約#26に従ってgit管理しない。
+
+## §97. turn/river生成パイプラインの実装（CLI大規模抽出・同street再帰展開・層カバレッジ）
+
+### 97.0 位置づけ
+本節は、§95で正式化したturn/river新スキーマと、§96で訂正したturn/river canonical列挙を受けて、実際に教師生成パイプラインを実装したフェーズの記録である。
+
+対象範囲は、flop幾何式の確定、multinode CLIの大規模抽出対応、同street再帰展開、生成パイプライン本体、層欠落の発見と修正、ディスク整理である。
+
+### 97.1 flop幾何式の確定（B-0 Part 1）
+SPEC §4.9.4で「実測確定予定」としていたflop用BetGeometric式を、B-0 Part 1で確定した。
+
+flop（残り3street）の幾何betは以下で分類する。
+
+```text
+r = ((1 + 2 * stack / pot)^(1/3) - 1) / 2
+bet = round(pot * r)
+```
+
+既存flop教師の代表行では、flop時点のpotは550、effective stackは9750であり、上式の理論値は636.84、丸め後637であった。これは既存教師の `Bet 637` と一致する。`Bet 330` は `round(550 * 0.60)`、`AllIn 9750` は残りstackと一致した。
+
+さらに、p3_consistency配下のflop rootノード4件でも同式とsolver出力の幾何betが一致した。これにより、SPEC §4.9.4のflop幾何式注記を確定式へ改訂した。
+
+### 97.2 CLI出力規模問題とslim JSONL出力（B-0/B-0b/C0）
+B-0では、river階層51,744パスを従来のstdout一括JSONで抽出しようとしたところ、`JSONDecodeError` が発生した。失敗時stdoutの完全保存がなかったため、原因を最終断定はしない。ただし、B-0b/C0の実測から、従来のfull responseをstdoutへ一括返却する方式では大規模抽出に不向きであることは確定した。
+
+C0では、multinode CLIにslim出力とJSONLファイル出力を追加した（コミット `3b93626`、新バイナリSHA `74DB8CA4...`）。この改修では、1リクエスト内でsolveを1回だけ実行し、`actions_played_many` の各pathを順に辿って、ノードを1行1JSONのJSONLへ逐次書き出す。stdoutにはsummaryのみを返す。
+
+slimノードには、教師生成と品質ガード計算に必要な最小フィールドだけを残した。
+
+```text
+path
+available_actions
+current_player
+hands
+strategy_matrix
+action_ev_matrix
+normalized_weights
+pot
+effective_stack_oop
+effective_stack_ip
+```
+
+落とした主なフィールドは、非手番側weights、raw_weights、average_strategy、equity、hand別scalar ev、互換weightsである。自己EV矛盾ガードは、slimに残した `strategy_matrix`、`action_ev_matrix`、`normalized_weights`、`pot` だけで計算できる。
+
+C0検証では、P3保存済みrequestおよびchunk100 requestで既存互換差分0を確認した。full/stdout版とslim/JSONL版の共通フィールド差分も0であり、slim JSONLから計算した自己EV矛盾はfull response由来と最大差0.0で一致した。不正path混在時も `requested_nodes = written_nodes + error_nodes` が成立した。
+
+51,744パスの大規模疎通では、slim JSONLが2.09GiB、wall time 499.8秒で完走した。実測サイズは約43.4KB/ノードであり、P3.2時点のfull response約161KB/ノードから大幅に削減された。full比の正確な削減率は対象フィールド・ノード集合に依存するが、本番抽出ではslim JSONLが必須であると判断した。
+
+同時に検討した常駐セッション方式は不採用とした。実物確認では、CLIはstdinを行単位で読む常駐ループを持つものの、2行目のrequestでも再solveが走る構造であり、solve済みgame/木を次requestへ保持して抽出だけ繰り返すには中規模以上の設計変更が必要だったためである。
+
+### 97.3 候補列挙の層欠落の発見と修正（B-1c/B-2/C1）
+B-1初版では、Stage1/Stage2ともchance終端パスだけを候補化していた。その結果、turn/riverのstreet開始直後ノードは取れるが、同street内でbetを受けた後のfacing局面、raise局面が候補にならなかった。
+
+B-1cの監査で、この欠落は実測で明確になった。4sKcAhの#32通過候補は、turn 98ノード、river 25,416ノードで、いずれも全てno_bet層だった。single_bet層とraised層は空集合であり、Fold、Call、Raise2.5xの教師例が0件だった。これは設計承認時の見落としであり、§95で定義した7語彙のうちfacing局面の語彙を学習できない重大な欠落であった。
+
+対処案として、静的テンプレート展開、Python側BFS、CLI側同street再帰展開を比較した。静的テンプレートはノードごとに異なるbet/raise額を扱えず、不正pathを大量に混ぜる。Python側BFSはroundごとにCLI requestが増え、solve回数または抽出request数が増えて本番日数が伸びる。したがって、solve1回を維持したままCLI内でavailable_actionsを辿る同street再帰展開を採用した。
+
+C1では、multinode CLIに同street再帰展開を追加した（コミット `21214e1`、新バイナリSHA `6DC1120F...`）。追加フィールドは以下である。
+
+```text
+expand_same_street
+expansion_min_weight_root_ratio
+expansion_max_depth
+```
+
+展開は同street内に限定し、chance nodeへ到達した場合はそこで停止する。riverカードの列挙はPython側のG_fix canonical列挙器の責務として残した。枝刈りはweightのみで行い、自己EV矛盾ガードはPython側の事後判定に残した。これはB-0b-2でアクションエッジのweight単調性違反0を確認したことに基づく。
+
+root分母はPython側B-0b-2と同じ定義に揃えた。実測値は以下である。
+
+```text
+OOP root baseline: 212,938.5
+IP root baseline: 212,842.80807495117
+```
+
+C1のB-2突き合わせでは、CLIの実判定基準で再集計したriver one-step展開136,416ノードと完全一致した。本番相当の `expand_same_street=true`、threshold 5e-4、slim JSONLでは、written 119,696、pruned 99,171、terminal_edges 165,352、wall time 551.17秒、出力5.6GBであった。この時点で、single_bet/raised候補が非ゼロになることも確認した。
+
+### 97.4 生成パイプライン実装と検証（B-1/B-2-2/B-2c）
+pokerrl-training側では、turn/river教師生成パイプラインを実装した（コミット `e106ee2`）。
+
+実装ファイルは以下である。
+
+```text
+data/teacher_proto/generate_turn_river_teachers.py
+data/teacher_proto/tr_teacher_pipeline.py
+tests/test_tr_teacher_pipeline.py
+```
+
+パイプラインは、1boardについて以下を行う。
+
+```text
+Stage1 solve + recursive slim抽出
+turn #32判定
+k=1 weight枝刈りに基づくriver起点構築
+Stage2 solve + recursive slim抽出
+river #32判定
+#36予算サンプリング
+SPEC §4.9教師JSONL出力
+manifest/resume記録
+成功時の中間slim削除（--keep-intermediate時は残置）
+```
+
+Stage2のriver起点は、Stage1のrecursive出力から動的に導出する。具体的には、turnノードの `available_actions` を読み、`Check` after previous `Check`、またはfacing bet/raise/all-inに対する `Call` が次street chanceへ進むactionとして扱われる。このprefixにG_fix canonical river代表を付与してStage2起点を作る。これにより、静的テンプレートに依存せず、ノード固有のbet/raise額を正しく扱う。
+
+4sKcAhの通し実行では、以下を実測した。
+
+```text
+Stage1 paths: 737
+Stage2 paths: 29,616
+Stage1 wall time: 450.34秒
+Stage2 wall time: 561.33秒
+コマンド全体wall time: 1,288.1秒
+classification_errors: 0
+teacher records: 6,586
+teacher.jsonl size: 6,102,290 bytes
+teacher SHA-256: C69247BE6335CC802E95370F2871CEAC2FE69C2D399B67AA359B417422EE7EE1
+```
+
+Stage1 recursive統計は以下である。
+
+```text
+visited 1,958
+written 720
+pruned 1,238
+errors 0
+expanded 2,364
+terminal_edges 568
+chance_edges 575
+max_depth 4
+```
+
+Stage2 recursive統計は以下である。
+
+```text
+visited 194,531
+written 119,696
+pruned 74,835
+errors 0
+expanded 332,475
+terminal_edges 167,560
+chance_edges 0
+max_depth 6
+```
+
+層別#32通過候補と採用は以下である。
+
+```text
+turn candidates:
+  no_bet 198 / single_bet 306 / raised 206
+turn selected:
+  no_bet 5 nodes, 2,310 examples
+  single_bet 1 node, 521 examples
+  raised 1 node, 462 examples
+
+river candidates:
+  no_bet 72,673 / single_bet 28,199 / raised 17,804
+river selected:
+  no_bet 5 nodes, 2,310 examples
+  single_bet 1 node, 521 examples
+  raised 1 node, 462 examples
+```
+
+各streetの採用例数は3,293例であり、目標3,419例に対して96.31%であった。超過直前打ち切りと最低保証1ノードのルールにより、目標ぴったりにはならないが、#34の1boardあたり目安と整合する。
+
+同一slim成果物からdry-run再変換したteacher JSONLは、通し実行のteacher JSONLとhash完全一致した。resume再実行ではcompleted boardがskipされることも確認した。
+
+B-2cでは、C1本番相当JSONLとB2通し実行のStage2 JSONLをpath集合で比較した。written nodeのpath集合は完全一致した。
+
+```text
+C1 written paths: 119,696
+B2 written paths: 119,696
+only C1: 0
+only B2: 0
+```
+
+一方、起点集合は単純な部分集合ではなかった。B2の29,616起点はC1の51,744起点から24,336を除外し、新たに2,208を含む形だった。新規2,208起点は全て `AllIn -> Call -> river` 形であり、terminal_edgesの差分 +2,208 と一致した。最終written集合に差はなかったため、教師候補集合は変わらない。除外されたC1起点のうち、親weightを実測できた4,368件は全て5e-4未満であり、B2のk=1枝刈りと整合した。
+
+### 97.5 #36の正式化
+本フェーズの実装と検証により、turn/river教師生成の予算サンプリング設計を#36として正式化する。
+
+#36の内容は以下である。
+
+```text
+予算単位:
+  例数で管理する。
+  初期目標は turn 3,419 examples / board、river 3,419 examples / board。
+
+層:
+  現street内のアクション列から no_bet / single_bet / raised の3層へ分類する。
+
+層枠:
+  #32通過ノードのnormalized weight合計シェアに比例して例数枠を配分する。
+  候補が存在する層には最低保証1ノードを与える。
+
+端数:
+  小数部降順で配布する。
+
+層内選定:
+  weight降順の決定的採用。
+  タイブレークは path長、path辞書順、current_player。
+
+超過:
+  原則として予算超過直前で打ち切る。
+  ただし最低保証1ノードだけは例数超過を許容する。
+
+残余:
+  層候補が枠未満の場合、残余は同street内の他層へ再配分する。
+  board間の持ち越しはしない。
+```
+
+この設計により、B-1初版で欠落していたsingle_bet/raised層からも最低1ノードずつ採用され、Fold/Call/Raise2.5x語彙の教師が生成されることを4sKcAhで確認した。
+
+ただし、層別最低例数や語彙別カバレッジ保証をさらに追加するかは保留とする。今回の設計は最低保証1ノードであり、全ボード・全streetでの語彙分布が十分かはまだ未確定である。パイロットでは、層別候補数、層別採用数、Fold/Call/Raise2.5x出現数を監査し、必要なら#36の上に追加制約を設ける。
+
+### 97.6 確定制約の追加・更新
+本節により、以下の制約を追加する。
+
+- #36: turn/river教師生成の予算サンプリングは、例数管理、3層化、weightシェア比例、最低保証1ノード、層内weight降順決定的採用、保証枠以外の超過禁止、同street内再配分、board間持ち越しなしとする（§97.5）。
+- #37: turn/river候補列挙は、同street再帰展開を含める。枝刈りはweight root比5e-4のk=1で行い、自己EV矛盾ガードはPython側の事後判定に残す。chance node到達で展開を停止し、次streetカード列挙はPython側G_fix canonical列挙器の責務とする（§97.3-§97.4）。
+
+health check期待値も更新する。実測内訳は以下である。
+
+```text
+tests/test_tr_teacher_pipeline.py: 12 passed
+tests/test_canonical_flop_enumerator.py: 12 passed
+既存4ファイル:
+  tests/test_poker_nn.py
+  tests/test_unified_prompt_calculator.py
+  tests/test_solver_teacher_converter.py
+  tests/test_train_aux_heads_soft.py
+  合計47 passed
+```
+
+従来のhealth check期待値は5ファイル56 passedであり、canonical列挙器拡張後は同5ファイルで59 passedであった。本フェーズで `tests/test_tr_teacher_pipeline.py` の12件が加わったため、今後のhealth check期待値は6ファイル合計71 passedを正とする。
+
+### 97.7 運用記録
+D-1/D-2では、本番7日運転前のディスク状況を確認し、検証済み大型成果物を整理した。
+
+D-1時点のCドライブ空きは281,212,289,024 bytesであった。`schema_design`配下には、C0/C1/B1/B2の検証用slim JSONLが残っており、削除可候補として約23.185GiBを特定した。
+
+D-2では、承認済みの6ファイルのみを個別指定で削除した。削除対象は、C1 depth=1、C1 threshold=5e-4、B2 full stage2 slim、C0 verify5 slim、B1 full stage2 slim、C1 turn depth=1の各大型JSONLである。`b0_stage1_turn_response.json` はroot分母や過去検証の参照として保留し、削除しなかった。
+
+削除後のCドライブ空きは305,948,266,496 bytesであり、回収量は24,727,609,344 bytes、約23.03GiBであった。
+
+1boardあたりの実測コストは以下である。
+
+```text
+4sKcAh通しwall time: 1,288.1秒
+Stage2一時slim: 5,622,345,998 bytes
+teacher.jsonl: 6,102,290 bytes
+```
+
+本番では成功boardの中間slimは削除する運用とする。失敗時には中間slimが残置されるため、連続失敗時は約5.7GB/boardの追加空きが必要になる。教師JSONLの累積は、4sKcAh実測を1,755 boardへ単純外挿すると約10.7GBである。

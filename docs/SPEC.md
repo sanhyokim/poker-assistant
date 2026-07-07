@@ -967,7 +967,12 @@ BetGeometric:
   turn（残り2street）では、
   round((-pot + sqrt(pot^2 + 2 * pot * stack)) / 2)
   と一致する。
-  flop（残り3street）の式はconverter設計時に実測で確定する。
+  flop（残り3street）では、
+  r = ((1 + 2 * stack / pot)^(1/3) - 1) / 2
+  bet = round(pot * r)
+  と一致する。
+  既存flop教師 pot 550 / stack 9750 の実額 Bet 637 と一致する（理論値636.84）。
+  p3_consistency のflop rootノード4件でも同式との一致をB-0 Part 1で実測確認済み。
   riverでは幾何サイズはAllInと一致するため、BetGeometricは原則出現しない。
   万一出現した場合は§4.9.5のフェイルセーフで検出する。
 
